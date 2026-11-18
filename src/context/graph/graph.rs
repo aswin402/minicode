@@ -234,6 +234,46 @@ pub struct BlastRadiusReport {
     pub composite_risk_score: f64,
 }
 
+/// Pre-parsed AST symbol entry with body identifier hashes for $O(|\Delta|)$ shard relinking
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct SymbolAstRecord {
+    pub def: SymbolDef,
+    /// Sorted, deduplicated 64-bit FNV-1a hashes of candidate identifiers referenced inside this symbol.
+    pub body_ref_hashes: Vec<u64>,
+}
+
+/// Per-file cached AST shard avoiding whole-repository Tree-sitter re-parsing on incremental edits
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+pub struct FileAstShard {
+    pub content_hash: u64,
+    pub mtime_nanos: u64,
+    pub byte_len: u64,
+    pub recorded_at_nanos: u64,
+    pub all_symbols: Vec<SymbolDef>,
+    pub symbol_records: Vec<SymbolAstRecord>,
+    pub file_ref_hashes: Vec<u64>,
+}
+
+/// Non-blocking CodeGraph telemetry exposed to the Orchestrator so the LLM decides when to invoke graph tools
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CodeGraphTelemetry {
+    Empty,
+    Unindexed {
+        source_files: usize,
+    },
+    Synced {
+        indexed_files: usize,
+        symbol_count: usize,
+    },
+    DeltaPending {
+        indexed_files: usize,
+        symbol_count: usize,
+        modified: usize,
+        added: usize,
+        removed: usize,
+    },
+}
+
 pub struct CodeGraph {
     graph: DiGraph<SymbolNode, EdgeKind>,
     symbol_node_indices: HashMap<String, NodeIndex>, // qualified_name -> NodeIndex
@@ -245,8 +285,9 @@ pub struct CodeGraph {
     symbol_to_file: HashMap<String, Vec<(PathBuf, SymbolDef)>>,
     file_to_symbols: HashMap<PathBuf, Vec<SymbolDef>>,
 
-    // Incremental hash tracking:
+    // Incremental hash & per-file AST shard tracking:
     file_tracker: FileHashTracker,
+    file_shards: HashMap<PathBuf, FileAstShard>,
 
     // AST extractor:
     extractor: RepoMapExtractor,
@@ -257,6 +298,9 @@ type CachedCodeGraphEntry = Option<(PathBuf, std::time::Instant, std::sync::Arc<
 static GLOBAL_CODE_GRAPH_CACHE: std::sync::OnceLock<std::sync::RwLock<CachedCodeGraphEntry>> =
     std::sync::OnceLock::new();
 
+static ACTIVE_BACKGROUND_SYNCS: std::sync::OnceLock<std::sync::Mutex<HashSet<PathBuf>>> =
+    std::sync::OnceLock::new();
+
 impl Default for CodeGraph {
     fn default() -> Self {
         Self::new()
@@ -264,6 +308,14 @@ impl Default for CodeGraph {
 }
 
 impl CodeGraph {
+    /// Maximum supported source file count automatically cold-indexed on post-turn mutation when no prior `.minicode/graph.json` exists.
+    /// Larger unindexed monorepos index lazily on demand when the Orchestrator invokes CodeGraph tools.
+    pub const MAX_AUTO_INDEX_SOURCE_FILES: usize = 512;
+
+    /// Git-style racily-clean guard window (10ms in nanoseconds): when a shard was recorded strictly after `mtime + 10ms`
+    /// and `(mtime_nanos, byte_len)` matches, the file is guaranteed clean without reading disk bytes.
+    const RACILY_CLEAN_WINDOW_NANOS: u64 = 10_000_000;
+
     pub fn new() -> Self {
         Self {
             graph: DiGraph::new(),
@@ -274,7 +326,19 @@ impl CodeGraph {
             symbol_to_file: HashMap::new(),
             file_to_symbols: HashMap::new(),
             file_tracker: FileHashTracker::new(),
+            file_shards: HashMap::new(),
             extractor: RepoMapExtractor::new(),
+        }
+    }
+
+    /// Publishes an updated `Arc<CodeGraph>` into the process-wide in-memory cache.
+    pub fn store_in_global_cache(workspace_root: &Path, arc_graph: std::sync::Arc<Self>) {
+        let cache_lock = GLOBAL_CODE_GRAPH_CACHE.get_or_init(|| std::sync::RwLock::new(None));
+        let canonical = workspace_root
+            .canonicalize()
+            .unwrap_or_else(|_| workspace_root.to_path_buf());
+        if let Ok(mut guard) = cache_lock.write() {
+            *guard = Some((canonical, std::time::Instant::now(), arc_graph));
         }
     }
 
@@ -297,18 +361,12 @@ impl CodeGraph {
         let mut graph = Self::new();
         graph.build_graph(workspace_root)?;
         let arc_graph = std::sync::Arc::new(graph);
-        if let Ok(mut guard) = cache_lock.write() {
-            *guard = Some((
-                canonical,
-                std::time::Instant::now(),
-                std::sync::Arc::clone(&arc_graph),
-            ));
-        }
+        Self::store_in_global_cache(workspace_root, std::sync::Arc::clone(&arc_graph));
         Ok(arc_graph)
     }
 
     /// Non-blocking fast lookup: returns the in-memory cached `CodeGraph` if available, or loads the
-    /// persisted binary snapshot from `.minicode/graph/code_graph.bin` without triggering a full AST rebuild.
+    /// persisted snapshot from `.minicode/graph.json` without triggering an AST rebuild.
     #[must_use]
     pub fn try_get_or_load_fast(workspace_root: &Path) -> Option<std::sync::Arc<Self>> {
         let cache_lock = GLOBAL_CODE_GRAPH_CACHE.get_or_init(|| std::sync::RwLock::new(None));
@@ -329,13 +387,7 @@ impl CodeGraph {
             return None;
         }
         let arc_graph = std::sync::Arc::new(graph);
-        if let Ok(mut guard) = cache_lock.write() {
-            *guard = Some((
-                canonical,
-                std::time::Instant::now(),
-                std::sync::Arc::clone(&arc_graph),
-            ));
-        }
+        Self::store_in_global_cache(workspace_root, std::sync::Arc::clone(&arc_graph));
         Some(arc_graph)
     }
 
@@ -351,7 +403,7 @@ impl CodeGraph {
     /// Builds or incrementally updates the symbol-level dependency graph, leveraging disk cache if available.
     pub fn build_graph(&mut self, workspace_root: &Path) -> Result<()> {
         if self.load_cached(workspace_root) {
-            tracing::debug!("Loaded cached code graph snapshot; running incremental update");
+            tracing::debug!("Loaded cached code graph snapshot; running incremental shard update");
             if let Ok(stats) = self.incremental_update(workspace_root) {
                 if stats.files_reparsed > 0 || stats.files_removed > 0 {
                     let _ = self.save_to_disk(workspace_root);
@@ -361,7 +413,11 @@ impl CodeGraph {
         }
 
         self.full_rebuild(workspace_root)?;
-        let _ = self.save_to_disk(workspace_root);
+        if !self.file_tracker.hashes.is_empty()
+            || crate::context::graph_store::GraphStore::graph_file_path(workspace_root).exists()
+        {
+            let _ = self.save_to_disk(workspace_root);
+        }
         Ok(())
     }
 
@@ -395,8 +451,108 @@ impl CodeGraph {
         source_files
     }
 
-    /// Performs a full, cold-start re-indexing of the workspace.
-    pub fn full_rebuild(&mut self, workspace_root: &Path) -> Result<()> {
+    #[inline]
+    fn current_epoch_nanos() -> u64 {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos() as u64)
+            .unwrap_or(0)
+    }
+
+    #[inline]
+    fn stat_file_nanos_and_len(file: &Path) -> (u64, u64) {
+        match std::fs::metadata(file) {
+            Ok(meta) => {
+                let mtime_nanos = meta
+                    .modified()
+                    .ok()
+                    .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                    .map(|d| d.as_nanos() as u64)
+                    .unwrap_or(0);
+                (mtime_nanos, meta.len())
+            }
+            Err(_) => (0, 0),
+        }
+    }
+
+    /// Extracts a standalone per-file AST shard (`FileAstShard`) containing symbols and candidate identifier hashes.
+    fn extract_file_shard(
+        extractor: &mut RepoMapExtractor,
+        file: &Path,
+        content: &str,
+        content_hash: u64,
+        mtime_nanos: u64,
+        byte_len: u64,
+        recorded_at_nanos: u64,
+    ) -> FileAstShard {
+        let ext = file.extension().and_then(|e| e.to_str()).unwrap_or("");
+        let all_symbols = match extractor.extract_symbols_from_str(ext, content) {
+            Ok(syms) => syms,
+            Err(e) => {
+                tracing::debug!(
+                    path = %file.display(),
+                    error = %e,
+                    "Could not extract AST symbols from file"
+                );
+                Vec::new()
+            }
+        };
+
+        let lines: Vec<&str> = content.lines().collect();
+        let mut symbol_records = Vec::new();
+
+        for sym in &all_symbols {
+            if sym.name.len() >= crate::constants::SYMBOL_REFERENCE_MIN_LEN && sym.kind != "import"
+            {
+                let start = sym.line_number.saturating_sub(1);
+                let end = sym.end_line.min(lines.len());
+                let mut body_ref_hashes = Vec::new();
+                if start < lines.len() && start <= end {
+                    for line in &lines[start..end] {
+                        for ident in line
+                            .split(|c: char| !c.is_alphanumeric() && c != '_')
+                            .filter(|w| w.len() >= crate::constants::SYMBOL_REFERENCE_MIN_LEN)
+                        {
+                            if !crate::constants::CODEGRAPH_IGNORED_IDENTIFIERS.contains(&ident) {
+                                body_ref_hashes.push(FileHashTracker::compute_hash(ident));
+                            }
+                        }
+                    }
+                    body_ref_hashes.sort_unstable();
+                    body_ref_hashes.dedup();
+                }
+                symbol_records.push(SymbolAstRecord {
+                    def: sym.clone(),
+                    body_ref_hashes,
+                });
+            }
+        }
+
+        let mut file_ref_hashes: Vec<u64> = content
+            .split(|c: char| !c.is_alphanumeric() && c != '_')
+            .filter(|w| {
+                w.len() >= crate::constants::SYMBOL_REFERENCE_MIN_LEN
+                    && !crate::constants::CODEGRAPH_IGNORED_IDENTIFIERS.contains(w)
+            })
+            .map(FileHashTracker::compute_hash)
+            .collect();
+        file_ref_hashes.sort_unstable();
+        file_ref_hashes.dedup();
+
+        FileAstShard {
+            content_hash,
+            mtime_nanos,
+            byte_len,
+            recorded_at_nanos,
+            all_symbols,
+            symbol_records,
+            file_ref_hashes,
+        }
+    }
+
+    /// Assembles the in-memory `DiGraph` and lookup indices purely from `self.file_shards` in $O(|V| + |E|)$ RAM time,
+    /// avoiding any disk reads or Tree-sitter re-parsing of clean files.
+    fn assemble_from_shards(&mut self, workspace_root: &Path) -> (usize, usize) {
         self.graph.clear();
         self.symbol_node_indices.clear();
         self.name_to_nodes.clear();
@@ -405,175 +561,137 @@ impl CodeGraph {
         self.symbol_to_file.clear();
         self.file_to_symbols.clear();
 
-        let source_files = Self::discover_supported_source_files(workspace_root);
+        let mut sorted_files: Vec<PathBuf> = self.file_shards.keys().cloned().collect();
+        sorted_files.sort();
 
-        let mut file_contents = HashMap::new();
-
-        // 1. Add file nodes and extract AST symbols
-        for file in &source_files {
-            let content = match std::fs::read_to_string(file) {
-                Ok(c) => {
-                    let hash = FileHashTracker::compute_hash(&c);
-                    let mtime = std::fs::metadata(file)
-                        .and_then(|m| m.modified())
-                        .ok()
-                        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
-                        .map(|d| d.as_millis() as u64)
-                        .unwrap_or(0);
-                    self.file_tracker.update(file.clone(), hash, mtime);
-                    c
-                }
-                Err(_) => continue,
+        // Pass 1: Register file nodes and symbol nodes from cached shards
+        for file in &sorted_files {
+            let shard = match self.file_shards.get(file) {
+                Some(s) => s,
+                None => continue,
             };
 
-            // Add File Node
             let file_node = SymbolNode::file_node(file, Some(workspace_root));
             let file_node_idx = self.graph.add_node(file_node.clone());
             self.file_node_indices.insert(file.clone(), file_node_idx);
             self.symbol_node_indices
                 .insert(file_node.qualified_name.clone(), file_node_idx);
 
-            let ext = file.extension().and_then(|e| e.to_str()).unwrap_or("");
-            let symbols_res = self.extractor.extract_symbols_from_str(ext, &content);
-            file_contents.insert(file.clone(), content);
+            let mut file_sym_indices = Vec::with_capacity(shard.symbol_records.len());
+            for rec in &shard.symbol_records {
+                let sym = &rec.def;
+                self.symbol_to_file
+                    .entry(sym.name.clone())
+                    .or_default()
+                    .push((file.clone(), sym.clone()));
 
-            match symbols_res {
-                Ok(symbols) => {
-                    let mut file_sym_indices = Vec::new();
-                    for sym in &symbols {
-                        if sym.name.len() >= crate::constants::SYMBOL_REFERENCE_MIN_LEN
-                            && sym.kind != "import"
-                        {
-                            self.symbol_to_file
-                                .entry(sym.name.clone())
-                                .or_default()
-                                .push((file.clone(), sym.clone()));
+                let sym_node = SymbolNode::new(sym, file, Some(workspace_root));
+                let sym_node_idx = self.graph.add_node(sym_node.clone());
+                self.graph
+                    .add_edge(file_node_idx, sym_node_idx, EdgeKind::Contains);
 
-                            let sym_node = SymbolNode::new(sym, file, Some(workspace_root));
-                            let sym_node_idx = self.graph.add_node(sym_node.clone());
+                self.symbol_node_indices
+                    .insert(sym_node.qualified_name.clone(), sym_node_idx);
+                self.name_to_nodes
+                    .entry(sym.name.clone())
+                    .or_default()
+                    .push(sym_node_idx);
+                file_sym_indices.push(sym_node_idx);
+            }
+            self.file_to_nodes.insert(file.clone(), file_sym_indices);
+            self.file_to_symbols
+                .insert(file.clone(), shard.all_symbols.clone());
+        }
 
-                            // File Contains Symbol edge
-                            self.graph
-                                .add_edge(file_node_idx, sym_node_idx, EdgeKind::Contains);
+        // Build hash-indexed symbol tables for fast O(1) integer reference linking
+        let mut hash_to_symbol_nodes: HashMap<u64, Vec<NodeIndex>> =
+            HashMap::with_capacity(self.name_to_nodes.len());
+        for (name, indices) in &self.name_to_nodes {
+            hash_to_symbol_nodes
+                .entry(FileHashTracker::compute_hash(name))
+                .or_default()
+                .extend(indices.iter().copied());
+        }
 
-                            self.symbol_node_indices
-                                .insert(sym_node.qualified_name.clone(), sym_node_idx);
-                            self.name_to_nodes
-                                .entry(sym.name.clone())
-                                .or_default()
-                                .push(sym_node_idx);
-                            file_sym_indices.push(sym_node_idx);
-                        }
-                    }
-                    self.file_to_nodes.insert(file.clone(), file_sym_indices);
-                    self.file_to_symbols.insert(file.clone(), symbols);
-                }
-                Err(e) => {
-                    tracing::debug!(path = %file.display(), error = %e, "Could not extract AST symbols from file");
-                }
+        let mut hash_to_symbol_files: HashMap<u64, Vec<PathBuf>> =
+            HashMap::with_capacity(self.symbol_to_file.len());
+        for (name, entries) in &self.symbol_to_file {
+            let bucket = hash_to_symbol_files
+                .entry(FileHashTracker::compute_hash(name))
+                .or_default();
+            for (p, _) in entries {
+                bucket.push(p.clone());
             }
         }
 
-        // 2. Build directed edges between symbols and files
-        for file in &source_files {
+        // Pass 2: Link directed symbol-level and file-level edges
+        for file in &sorted_files {
             let file_node_idx = match self.file_node_indices.get(file) {
                 Some(&idx) => idx,
                 None => continue,
             };
+            let shard = match self.file_shards.get(file) {
+                Some(s) => s,
+                None => continue,
+            };
 
-            if let Some(content) = file_contents.get(file) {
-                let lines: Vec<&str> = content.lines().collect();
+            if let Some(sym_indices) = self.file_to_nodes.get(file).cloned() {
+                for (rec, caller_idx) in shard.symbol_records.iter().zip(sym_indices) {
+                    let caller_kind = self
+                        .graph
+                        .node_weight(caller_idx)
+                        .map(|n| n.kind)
+                        .unwrap_or(SymbolKind::Other);
+                    let edge_kind = if caller_kind == SymbolKind::Impl {
+                        EdgeKind::Implements
+                    } else {
+                        EdgeKind::Calls
+                    };
 
-                // Connect symbol-to-symbol calls and file dependencies
-                if let Some(sym_indices) = self.file_to_nodes.get(file) {
-                    for &caller_idx in sym_indices {
-                        let caller_node = match self.graph.node_weight(caller_idx) {
-                            Some(n) => n.clone(),
-                            None => continue,
-                        };
-
-                        let start = caller_node.start_line.saturating_sub(1);
-                        let end = caller_node.end_line.min(lines.len());
-                        let body_text = if start < lines.len() && start <= end {
-                            lines[start..end].join("\n")
-                        } else {
-                            String::new()
-                        };
-
-                        let identifiers: HashSet<&str> = body_text
-                            .split(|c: char| !c.is_alphanumeric() && c != '_')
-                            .filter(|w| w.len() >= crate::constants::SYMBOL_REFERENCE_MIN_LEN)
-                            .collect();
-
-                        for ident in identifiers {
-                            if crate::constants::CODEGRAPH_IGNORED_IDENTIFIERS.contains(&ident) {
-                                continue;
-                            }
-                            if let Some(target_indices) = self.name_to_nodes.get(ident) {
-                                // Lexical scoping: if a symbol with `ident` is defined in the same
-                                // file as `caller_node`, bind the reference to the local definition(s)
-                                // rather than creating spurious cross-file edges to unrelated private
-                                // helpers with the same name in other modules.
-                                let same_file_targets: Vec<NodeIndex> = target_indices
-                                    .iter()
-                                    .copied()
-                                    .filter(|&t_idx| {
-                                        self.graph
-                                            .node_weight(t_idx)
-                                            .map(|n| &n.file_path == file)
-                                            .unwrap_or(false)
-                                    })
-                                    .collect();
-                                let resolved_targets: &[NodeIndex] =
-                                    if !same_file_targets.is_empty() {
-                                        &same_file_targets
-                                    } else {
-                                        target_indices.as_slice()
-                                    };
-                                for &target_idx in resolved_targets {
-                                    if target_idx != caller_idx {
-                                        let edge_kind = if caller_node.kind == SymbolKind::Impl {
-                                            EdgeKind::Implements
-                                        } else {
-                                            EdgeKind::Calls
-                                        };
-                                        if !self.graph.contains_edge(caller_idx, target_idx) {
-                                            self.graph.add_edge(caller_idx, target_idx, edge_kind);
-                                        }
-                                    }
+                    for &ref_hash in &rec.body_ref_hashes {
+                        if let Some(target_indices) = hash_to_symbol_nodes.get(&ref_hash) {
+                            let same_file_targets: Vec<NodeIndex> = target_indices
+                                .iter()
+                                .copied()
+                                .filter(|&t_idx| {
+                                    self.graph
+                                        .node_weight(t_idx)
+                                        .map(|n| &n.file_path == file)
+                                        .unwrap_or(false)
+                                })
+                                .collect();
+                            let resolved_targets: &[NodeIndex] = if !same_file_targets.is_empty() {
+                                &same_file_targets
+                            } else {
+                                target_indices.as_slice()
+                            };
+                            for &target_idx in resolved_targets {
+                                if target_idx != caller_idx
+                                    && !self.graph.contains_edge(caller_idx, target_idx)
+                                {
+                                    self.graph.add_edge(caller_idx, target_idx, edge_kind);
                                 }
                             }
                         }
                     }
                 }
+            }
 
-                // File-level dependency edges (for fast file-level traversal & backward compat)
-                let all_identifiers: HashSet<&str> = content
-                    .split(|c: char| !c.is_alphanumeric() && c != '_')
-                    .filter(|w| w.len() >= crate::constants::SYMBOL_REFERENCE_MIN_LEN)
-                    .collect();
-
-                for ident in all_identifiers {
-                    if crate::constants::CODEGRAPH_IGNORED_IDENTIFIERS.contains(&ident) {
-                        continue;
-                    }
-                    if let Some(targets) = self.symbol_to_file.get(ident) {
-                        let has_same_file_symbol =
-                            targets.iter().any(|(target_file, _)| target_file == file);
-                        if !has_same_file_symbol {
-                            for (target_file, _) in targets {
-                                if target_file != file {
-                                    if let Some(&target_file_idx) =
-                                        self.file_node_indices.get(target_file)
-                                    {
-                                        if !self.graph.contains_edge(file_node_idx, target_file_idx)
-                                        {
-                                            self.graph.add_edge(
-                                                file_node_idx,
-                                                target_file_idx,
-                                                EdgeKind::DependsOn,
-                                            );
-                                        }
+            for &ref_hash in &shard.file_ref_hashes {
+                if let Some(target_files) = hash_to_symbol_files.get(&ref_hash) {
+                    let has_same_file_symbol = target_files.iter().any(|tf| tf == file);
+                    if !has_same_file_symbol {
+                        for target_file in target_files {
+                            if target_file != file {
+                                if let Some(&target_file_idx) =
+                                    self.file_node_indices.get(target_file)
+                                {
+                                    if !self.graph.contains_edge(file_node_idx, target_file_idx) {
+                                        self.graph.add_edge(
+                                            file_node_idx,
+                                            target_file_idx,
+                                            EdgeKind::DependsOn,
+                                        );
                                     }
                                 }
                             }
@@ -583,6 +701,39 @@ impl CodeGraph {
             }
         }
 
+        (self.graph.node_count(), self.graph.edge_count())
+    }
+
+    /// Performs a full, cold-start re-indexing of the workspace.
+    pub fn full_rebuild(&mut self, workspace_root: &Path) -> Result<()> {
+        self.file_shards.clear();
+        self.file_tracker = FileHashTracker::new();
+
+        let source_files = Self::discover_supported_source_files(workspace_root);
+        let now_nanos = Self::current_epoch_nanos();
+
+        for file in &source_files {
+            let (mtime_nanos, byte_len) = Self::stat_file_nanos_and_len(file);
+            let content = match std::fs::read_to_string(file) {
+                Ok(c) => c,
+                Err(_) => continue,
+            };
+            let hash = FileHashTracker::compute_hash(&content);
+            self.file_tracker
+                .update(file.clone(), hash, mtime_nanos / 1_000_000);
+            let shard = Self::extract_file_shard(
+                &mut self.extractor,
+                file,
+                &content,
+                hash,
+                mtime_nanos,
+                byte_len,
+                now_nanos,
+            );
+            self.file_shards.insert(file.clone(), shard);
+        }
+
+        self.assemble_from_shards(workspace_root);
         Ok(())
     }
 
@@ -659,7 +810,7 @@ impl CodeGraph {
         Ok(())
     }
 
-    /// Attempts to load cached graph from `.minicode/graph.json`. Returns true if loaded successfully.
+    /// Attempts to load cached graph from `.minicode/graph.json` (plus `.minicode/graph_shards.bin` when present).
     pub fn load_cached(&mut self, workspace_root: &Path) -> bool {
         match crate::context::graph_store::GraphStore::load_snapshot(workspace_root) {
             Ok(Some(snapshot)) => {
@@ -667,6 +818,9 @@ impl CodeGraph {
                     tracing::debug!(error = %e, "Failed to restore graph from snapshot");
                     false
                 } else {
+                    self.file_shards =
+                        crate::context::graph_store::GraphStore::load_shards(workspace_root)
+                            .unwrap_or_default();
                     true
                 }
             }
@@ -674,8 +828,8 @@ impl CodeGraph {
         }
     }
 
-    /// Loads a cached graph from disk if available and runs an incremental update,
-    /// or performs a full build if no valid cache exists. Automatically persists the resulting graph.
+    /// Loads a cached graph from disk if available and runs an incremental shard update,
+    /// or performs a full build if no valid cache exists.
     pub fn load_or_build(workspace_root: &Path) -> Result<Self> {
         let mut graph = Self::new();
         if graph.load_cached(workspace_root) {
@@ -687,61 +841,129 @@ impl CodeGraph {
             Ok(graph)
         } else {
             graph.build_graph(workspace_root)?;
-            let _ = graph.save_to_disk(workspace_root);
             Ok(graph)
         }
     }
 
-    /// Persists current graph state to `.minicode/graph.json`.
+    /// Persists current graph state to `.minicode/graph.json` and `.minicode/graph_shards.bin`.
     pub fn save_to_disk(&self, workspace_root: &Path) -> Result<()> {
         let snapshot =
             crate::context::graph_store::GraphStore::create_snapshot(self, workspace_root);
-        crate::context::graph_store::GraphStore::save_snapshot(&snapshot, workspace_root)
+        crate::context::graph_store::GraphStore::save_snapshot(&snapshot, workspace_root)?;
+        if !self.file_shards.is_empty()
+            || crate::context::graph_store::GraphStore::shards_file_path(workspace_root).exists()
+        {
+            let _ = crate::context::graph_store::GraphStore::save_shards(
+                &self.file_shards,
+                workspace_root,
+            );
+        }
+        Ok(())
     }
 
-    /// Incrementally updates the code graph: only re-parses dirty or added files and removes deleted files.
+    /// True $O(|\Delta|)$ per-file AST shard update:
+    /// 1. Short-circuits untouched files via `(mtime_nanos, byte_len)` metadata with Git-style racily-clean safety (`0` bytes read).
+    /// 2. Short-circuits metadata-touched files whose `FNV-1a` content hash is unchanged (`0` Tree-sitter parses).
+    /// 3. Runs Tree-sitter **only** on dirty or newly added files ($\Delta$), drops deleted shards, and relinks edges in memory.
     pub fn incremental_update(&mut self, workspace_root: &Path) -> Result<IncrementalStats> {
         let current_files: HashSet<PathBuf> = Self::discover_supported_source_files(workspace_root)
             .into_iter()
             .collect();
 
+        let prev_nodes = self.graph.node_count();
         let mut stats = IncrementalStats {
             files_scanned: current_files.len(),
             ..Default::default()
         };
 
-        // 1. Check for removed files
+        // 1. Prune removed files from tracker and shard table
         let removed_files = self.file_tracker.removed_files(&current_files);
+        let removed_count = removed_files.len();
+        for removed in &removed_files {
+            self.file_tracker.remove(removed);
+            self.file_shards.remove(removed);
+        }
+        self.file_shards
+            .retain(|path, _| current_files.contains(path));
 
-        // 2. Identify dirty / new files
-        let mut reparsed_count = 0;
+        // 2. Screen current files: stat-first -> hash-check -> Tree-sitter on Δ only
+        let now_nanos = Self::current_epoch_nanos();
+        let mut reparsed_count = 0usize;
+        let mut hydrated_legacy_shards = false;
+
         for file in &current_files {
-            if let Ok(content) = std::fs::read_to_string(file) {
-                let hash = FileHashTracker::compute_hash(&content);
-                if self.file_tracker.is_dirty(file, hash) {
-                    reparsed_count += 1;
+            let (mtime_nanos, byte_len) = Self::stat_file_nanos_and_len(file);
+
+            if let Some(shard) = self.file_shards.get(file) {
+                let racily_safe = mtime_nanos > 0
+                    && shard.recorded_at_nanos
+                        > mtime_nanos.saturating_add(Self::RACILY_CLEAN_WINDOW_NANOS);
+                if racily_safe && shard.mtime_nanos == mtime_nanos && shard.byte_len == byte_len {
+                    self.file_tracker.update(
+                        file.clone(),
+                        shard.content_hash,
+                        mtime_nanos / 1_000_000,
+                    );
+                    continue;
                 }
             }
+
+            let content = match std::fs::read_to_string(file) {
+                Ok(c) => c,
+                Err(_) => continue,
+            };
+            let hash = FileHashTracker::compute_hash(&content);
+            let was_dirty = self.file_tracker.is_dirty(file, hash);
+
+            if !was_dirty {
+                if let Some(existing_shard) = self.file_shards.get_mut(file) {
+                    existing_shard.mtime_nanos = mtime_nanos;
+                    existing_shard.byte_len = byte_len;
+                    existing_shard.recorded_at_nanos = now_nanos;
+                    self.file_tracker
+                        .update(file.clone(), hash, mtime_nanos / 1_000_000);
+                    continue;
+                }
+                hydrated_legacy_shards = true;
+            } else {
+                reparsed_count += 1;
+            }
+
+            let shard = Self::extract_file_shard(
+                &mut self.extractor,
+                file,
+                &content,
+                hash,
+                mtime_nanos,
+                byte_len,
+                now_nanos,
+            );
+            self.file_shards.insert(file.clone(), shard);
+            self.file_tracker
+                .update(file.clone(), hash, mtime_nanos / 1_000_000);
         }
 
-        if reparsed_count == 0 && removed_files.is_empty() {
+        if reparsed_count == 0 && removed_count == 0 {
+            if hydrated_legacy_shards {
+                let _ = crate::context::graph_store::GraphStore::save_shards(
+                    &self.file_shards,
+                    workspace_root,
+                );
+            }
             return Ok(stats);
         }
 
-        // When files are dirty or removed, performing piecemeal `remove_node` on petgraph::Graph
-        // causes swap-removal, invalidating external NodeIndex maps and causing
-        // "Graph::add_edge: node indices out of bounds" panics on real-world repositories.
-        // A full AST rebuild guarantees 100% graph consistency and takes < 50ms.
-        let removed_count = removed_files.len();
-        self.full_rebuild(workspace_root)?;
+        let (new_nodes, edges_rebuilt) = self.assemble_from_shards(workspace_root);
         stats.files_reparsed = reparsed_count;
         stats.files_removed = removed_count;
+        stats.nodes_added = new_nodes.saturating_sub(prev_nodes);
+        stats.nodes_removed = prev_nodes.saturating_sub(new_nodes);
+        stats.edges_rebuilt = edges_rebuilt;
 
         Ok(stats)
     }
 
-    /// Evaluates whether the workspace has significantly drifted from the cached graph.
-    /// Uses lightweight metadata screening (file existence and mtime/hash) to avoid heavy re-parsing.
+    /// Evaluates whether the workspace has drifted from the cached graph using metadata-first screening.
     pub fn check_drift(&self, workspace_root: &Path) -> Result<GraphDriftReport> {
         let current_files: HashSet<PathBuf> = Self::discover_supported_source_files(workspace_root)
             .into_iter()
@@ -749,11 +971,8 @@ impl CodeGraph {
 
         let total_current_files = current_files.len();
         let cached_files_count = self.file_tracker.hashes.len();
-
-        // 1. Files removed since last snapshot
         let removed_count = self.file_tracker.removed_files(&current_files).len();
 
-        // 2. Added and modified files
         let mut added_count = 0;
         let mut modified_count = 0;
 
@@ -763,19 +982,25 @@ impl CodeGraph {
                     added_count += 1;
                 }
                 Some(&(stored_hash, stored_mtime)) => {
-                    let current_mtime = std::fs::metadata(file)
-                        .and_then(|m| m.modified())
-                        .ok()
-                        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
-                        .map(|d| d.as_millis() as u64)
-                        .unwrap_or(0);
+                    let (mtime_nanos, byte_len) = Self::stat_file_nanos_and_len(file);
+                    if let Some(shard) = self.file_shards.get(file) {
+                        let racily_safe = mtime_nanos > 0
+                            && shard.recorded_at_nanos
+                                > mtime_nanos.saturating_add(Self::RACILY_CLEAN_WINDOW_NANOS);
+                        if racily_safe
+                            && shard.mtime_nanos == mtime_nanos
+                            && shard.byte_len == byte_len
+                        {
+                            continue;
+                        }
+                    } else if mtime_nanos > 0 && (mtime_nanos / 1_000_000) == stored_mtime {
+                        continue;
+                    }
 
-                    if current_mtime != stored_mtime {
-                        if let Ok(content) = std::fs::read_to_string(file) {
-                            let current_hash = FileHashTracker::compute_hash(&content);
-                            if current_hash != stored_hash {
-                                modified_count += 1;
-                            }
+                    if let Ok(content) = std::fs::read_to_string(file) {
+                        let current_hash = FileHashTracker::compute_hash(&content);
+                        if current_hash != stored_hash {
+                            modified_count += 1;
                         }
                     }
                 }
@@ -797,6 +1022,156 @@ impl CodeGraph {
             total_current_files,
             cached_files_count,
         })
+    }
+
+    /// Synchronously updates or initializes `.minicode/graph.json` + `.minicode/graph_shards.bin`
+    /// after workspace mutations, deduplicating concurrent runs per workspace root.
+    pub fn sync_after_workspace_mutation(workspace_root: &Path) -> Result<bool> {
+        let canonical = workspace_root
+            .canonicalize()
+            .unwrap_or_else(|_| workspace_root.to_path_buf());
+        let active_set =
+            ACTIVE_BACKGROUND_SYNCS.get_or_init(|| std::sync::Mutex::new(HashSet::new()));
+        {
+            let mut guard = match active_set.lock() {
+                Ok(g) => g,
+                Err(_) => return Ok(false),
+            };
+            if !guard.insert(canonical.clone()) {
+                return Ok(false);
+            }
+        }
+
+        struct SyncGuard {
+            canonical: PathBuf,
+        }
+        impl Drop for SyncGuard {
+            fn drop(&mut self) {
+                if let Some(lock) = ACTIVE_BACKGROUND_SYNCS.get() {
+                    if let Ok(mut g) = lock.lock() {
+                        g.remove(&self.canonical);
+                    }
+                }
+            }
+        }
+        let _guard = SyncGuard { canonical };
+
+        let graph_file = crate::context::graph_store::GraphStore::graph_file_path(workspace_root);
+        let shards_file = crate::context::graph_store::GraphStore::shards_file_path(workspace_root);
+        let source_files = Self::discover_supported_source_files(workspace_root);
+
+        if source_files.is_empty() {
+            if graph_file.exists() {
+                let _ = std::fs::remove_file(&graph_file);
+            }
+            if shards_file.exists() {
+                let _ = std::fs::remove_file(&shards_file);
+            }
+            Self::invalidate_cache();
+            return Ok(false);
+        }
+
+        if graph_file.exists() {
+            let mut graph = Self::new();
+            if graph.load_cached(workspace_root) {
+                let stats = graph.incremental_update(workspace_root)?;
+                if stats.files_reparsed > 0 || stats.files_removed > 0 {
+                    graph.save_to_disk(workspace_root)?;
+                }
+                Self::store_in_global_cache(workspace_root, std::sync::Arc::new(graph));
+                return Ok(true);
+            }
+
+            // Self-heal unreadable/corrupted snapshot without blocking the user
+            if source_files.len() <= Self::MAX_AUTO_INDEX_SOURCE_FILES {
+                graph.full_rebuild(workspace_root)?;
+                graph.save_to_disk(workspace_root)?;
+                Self::store_in_global_cache(workspace_root, std::sync::Arc::new(graph));
+                return Ok(true);
+            }
+            let _ = std::fs::remove_file(&graph_file);
+            let _ = std::fs::remove_file(&shards_file);
+            Self::invalidate_cache();
+            return Ok(false);
+        }
+
+        if source_files.len() <= Self::MAX_AUTO_INDEX_SOURCE_FILES {
+            let mut graph = Self::new();
+            graph.full_rebuild(workspace_root)?;
+            graph.save_to_disk(workspace_root)?;
+            Self::store_in_global_cache(workspace_root, std::sync::Arc::new(graph));
+            return Ok(true);
+        }
+
+        Ok(false)
+    }
+
+    /// Spawns a non-blocking background AST shard sync after turn completion or detected external delta.
+    pub fn spawn_background_mutation_sync(workspace_root: PathBuf) {
+        if let Ok(handle) = tokio::runtime::Handle::try_current() {
+            handle.spawn_blocking(move || {
+                if let Err(e) = Self::sync_after_workspace_mutation(&workspace_root) {
+                    tracing::debug!(
+                        path = %workspace_root.display(),
+                        error = %e,
+                        "Background CodeGraph shard sync skipped"
+                    );
+                }
+            });
+        } else {
+            let _ = std::thread::Builder::new()
+                .name("minicode-graph-sync".to_string())
+                .spawn(move || {
+                    let _ = Self::sync_after_workspace_mutation(&workspace_root);
+                });
+        }
+    }
+
+    /// Inspects live CodeGraph readiness without blocking or running Tree-sitter,
+    /// triggering silent background healing if an existing `.minicode/graph.json` has drifted.
+    pub fn inspect_workspace_telemetry(
+        workspace_root: &Path,
+        discovered_code_files: &[PathBuf],
+    ) -> CodeGraphTelemetry {
+        if discovered_code_files.is_empty() {
+            return CodeGraphTelemetry::Empty;
+        }
+
+        let graph_file = crate::context::graph_store::GraphStore::graph_file_path(workspace_root);
+        if !graph_file.exists() {
+            return CodeGraphTelemetry::Unindexed {
+                source_files: discovered_code_files.len(),
+            };
+        }
+
+        let Some(graph) = Self::try_get_or_load_fast(workspace_root) else {
+            // Corrupted or outdated schema on disk: heal silently in background
+            Self::spawn_background_mutation_sync(workspace_root.to_path_buf());
+            return CodeGraphTelemetry::Unindexed {
+                source_files: discovered_code_files.len(),
+            };
+        };
+
+        let symbol_count = graph.symbol_nodes().count();
+        let indexed_files = graph.file_count();
+
+        if let Ok(drift) = graph.check_drift(workspace_root) {
+            if drift.total_drift() > 0 {
+                Self::spawn_background_mutation_sync(workspace_root.to_path_buf());
+                return CodeGraphTelemetry::DeltaPending {
+                    indexed_files,
+                    symbol_count,
+                    modified: drift.modified_count,
+                    added: drift.added_count,
+                    removed: drift.removed_count,
+                };
+            }
+        }
+
+        CodeGraphTelemetry::Synced {
+            indexed_files,
+            symbol_count,
+        }
     }
 
     /// Computes symbol-level PageRank scores across all nodes.
@@ -1790,6 +2165,125 @@ mod tests {
         );
         assert!(lines[0].contains("clamp_score"));
         assert!(lines[0].contains("hash_key"));
+
+        std::fs::remove_dir_all(&temp_dir).ok();
+    }
+
+    #[test]
+    fn test_empty_workspace_build_does_not_pollute_zero_file_graph_json() {
+        let temp_dir =
+            std::env::temp_dir().join(format!("minicode_empty_ws_{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&temp_dir).unwrap();
+
+        let mut graph = CodeGraph::new();
+        graph.build_graph(&temp_dir).unwrap();
+
+        let graph_file = crate::context::graph_store::GraphStore::graph_file_path(&temp_dir);
+        assert!(
+            !graph_file.exists(),
+            "Empty fresh workspace must not persist a premature 0-file graph.json"
+        );
+
+        std::fs::remove_dir_all(&temp_dir).ok();
+    }
+
+    #[test]
+    fn test_per_file_ast_shards_incremental_delta_and_deletion() {
+        let temp_dir =
+            std::env::temp_dir().join(format!("minicode_shards_inc_{}", uuid::Uuid::new_v4()));
+        let src_dir = temp_dir.join("src");
+        std::fs::create_dir_all(&src_dir).unwrap();
+
+        let api_file = src_dir.join("api.ts");
+        let card_file = src_dir.join("Card.tsx");
+        let legacy_file = src_dir.join("legacy.ts");
+
+        std::fs::write(
+            &api_file,
+            "export function fetchProducts(): string[] { return ['a']; }\n",
+        )
+        .unwrap();
+        std::fs::write(
+            &card_file,
+            "import { fetchProducts } from './api';\nexport function ProductCard() { return fetchProducts(); }\n",
+        )
+        .unwrap();
+        std::fs::write(
+            &legacy_file,
+            "export function oldUnusedHelper() { return 1; }\n",
+        )
+        .unwrap();
+
+        let mut graph = CodeGraph::new();
+        graph.build_graph(&temp_dir).unwrap();
+        assert!(crate::context::graph_store::GraphStore::shards_file_path(&temp_dir).exists());
+
+        // Reload in a brand-new session instance and verify 0 reparses when clean
+        let mut session2 = CodeGraph::new();
+        assert!(session2.load_cached(&temp_dir));
+        let clean_stats = session2.incremental_update(&temp_dir).unwrap();
+        assert_eq!(clean_stats.files_reparsed, 0);
+        assert_eq!(clean_stats.files_removed, 0);
+
+        // Modify 1 file, delete 1 file, leave `Card.tsx` untouched
+        std::fs::write(
+            &api_file,
+            "export function fetchProducts(): string[] { return ['a']; }\nexport function fetchCartTotal(): number { return 42; }\n",
+        )
+        .unwrap();
+        std::fs::remove_file(&legacy_file).unwrap();
+
+        let delta_stats = session2.incremental_update(&temp_dir).unwrap();
+        assert_eq!(delta_stats.files_reparsed, 1);
+        assert_eq!(delta_stats.files_removed, 1);
+
+        let sym_names: HashSet<String> = session2.symbol_nodes().map(|s| s.name.clone()).collect();
+        assert!(sym_names.contains("fetchCartTotal"));
+        assert!(sym_names.contains("ProductCard"));
+        assert!(!sym_names.contains("oldUnusedHelper"));
+
+        // Verify cross-file edge from untouched `ProductCard` -> updated `fetchProducts` remained intact
+        let report = session2
+            .get_blast_radius("fetchProducts", &temp_dir)
+            .unwrap();
+        assert!(
+            report
+                .direct_caller_symbols
+                .iter()
+                .any(|s| s.contains("ProductCard")),
+            "Cross-file caller edge from untouched shard must be preserved: {:?}",
+            report.direct_caller_symbols
+        );
+
+        std::fs::remove_dir_all(&temp_dir).ok();
+    }
+
+    #[test]
+    fn test_sync_after_workspace_mutation_indexes_website_and_persists_across_sessions() {
+        let temp_dir =
+            std::env::temp_dir().join(format!("minicode_website_sync_{}", uuid::Uuid::new_v4()));
+        let src_dir = temp_dir.join("src");
+        std::fs::create_dir_all(&src_dir).unwrap();
+
+        // Simulate Turn 1 building a 20-file website from a fresh empty directory
+        for i in 0..20 {
+            std::fs::write(
+                src_dir.join(format!("Section{}.tsx", i)),
+                format!("export function Section{}() {{ return <section/>; }}\n", i),
+            )
+            .unwrap();
+        }
+
+        let synced = CodeGraph::sync_after_workspace_mutation(&temp_dir).unwrap();
+        assert!(synced);
+
+        // Reopen in a fresh session: zero drift, all 20 files already indexed on disk
+        let mut reopened = CodeGraph::new();
+        assert!(reopened.load_cached(&temp_dir));
+        assert_eq!(reopened.file_count(), 20);
+        let drift = reopened.check_drift(&temp_dir).unwrap();
+        assert_eq!(drift.total_drift(), 0);
+        assert!(!drift.is_stale);
 
         std::fs::remove_dir_all(&temp_dir).ok();
     }

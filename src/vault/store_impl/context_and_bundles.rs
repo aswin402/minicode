@@ -21,77 +21,67 @@ impl VaultStore {
         )
     }
 
-    /// Evaluates if a skill matches the workspace stack based on token-set intersection
-    /// between the skill's identifier tokens (`skill.name`) and detected workspace package tokens.
+    /// Evaluates if a skill matches the workspace stack via pure set-theoretic inclusion
+    /// ($S_{\text{id}}(d) \subseteq T_{\text{pkg}}$) in [`crate::vault::ranking::matches_stack_set_inclusion`].
     pub fn matches_skill_to_stack(
         &self,
         skill: &VaultSkill,
         stack_tokens: &std::collections::HashSet<String>,
     ) -> bool {
-        if stack_tokens.is_empty() || skill.category().eq_ignore_ascii_case("efficiency") {
-            return false;
-        }
-        let name_lower = skill.name.to_lowercase();
-        if stack_tokens.contains(&name_lower) {
-            return true;
-        }
-
-        // Extract non-version identifier tokens from skill name (e.g. "tailwind-v4" -> ["tailwind"],
-        // "rust-tokio" -> ["rust", "tokio"], "slack-gif-creator" -> ["slack", "gif", "creator"]).
-        let name_tokens: Vec<&str> = name_lower
-            .split('-')
-            .filter(|part| {
-                part.len() >= 3
-                    && !(part.starts_with('v') && part[1..].chars().all(|c| c.is_ascii_digit()))
-            })
-            .collect();
-
-        if name_tokens.is_empty() {
-            return false;
-        }
-
-        let token_in_stack = |tok: &str| -> bool {
-            let tok_stem = tok
-                .strip_suffix("js")
-                .or_else(|| tok.strip_suffix("css"))
-                .unwrap_or(tok);
-            stack_tokens.contains(tok)
-                || stack_tokens.contains(tok_stem)
-                || (tok_stem.len() >= 3
-                    && stack_tokens.iter().any(|st| {
-                        let st_stem = st
-                            .strip_suffix("js")
-                            .or_else(|| st.strip_suffix("css"))
-                            .unwrap_or(st.as_str());
-                        st_stem == tok_stem
-                    }))
-        };
-
-        // Reference and Runtime skills match when any primary technology token in their name is
-        // present in `stack_tokens`; Workflow/Core skills require all name tokens to match.
-        match skill.kind() {
-            SkillKind::Runtime | SkillKind::Reference => {
-                name_tokens.iter().any(|tok| token_in_stack(tok))
-            }
-            SkillKind::Workflow | SkillKind::Core => {
-                name_tokens.iter().all(|tok| token_in_stack(tok))
-            }
-        }
+        crate::vault::ranking::matches_stack_set_inclusion(skill, stack_tokens)
     }
 
-    /// Synchronizes workspace-applicable skills (stack dependencies, concrete file globs, and
-    /// `always_apply` orchestrator skills) into `minikit.json` / `onpkg.json` (`active_skills`).
-    /// Returns the updated list of active skill names in the project.
+    /// Synchronizes workspace-applicable skills into `minikit.json` / `onpkg.json` (`active_skills`)
+    /// using differential set algebra:
+    /// $$U = (M_{\text{prev}} \setminus A_{\text{prev}}) \cup D_{\text{installed}}, \qquad M_{\text{now}} = (U \cup A_{\text{now}}) \setminus \text{Deleted}$$
+    /// Preserves all user-pinned skills (regardless of category) while automatically pruning stale
+    /// auto-detected skills when dependencies or files are removed from the workspace.
     pub fn sync_project_active_skills<P: AsRef<Path>>(&self, workspace_files: &[P]) -> Vec<String> {
         let all_skills = self.list_all_skills();
         let stack_tokens = self.detect_workspace_package_tokens();
+        let deleted = self.load_deleted_skills();
         let project_skills_dir = self.project_skills_dir();
+        let dot_skills_dir = self.workspace_root.join(crate::constants::SKILLS_DIR_NAME);
 
-        let mut desired: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+        let manifest_prev: std::collections::HashSet<String> =
+            self.get_manifest_active_skills().into_iter().collect();
+        let auto_ledger_path = self.project_auto_skills_file();
+        let auto_prev = Self::read_tombstone_set(&auto_ledger_path);
+
+        // User-pinned set: anything previously in manifest that wasn't merely auto-synced
+        let mut user_pinned: std::collections::BTreeSet<String> = manifest_prev
+            .difference(&auto_prev)
+            .filter(|name| !deleted.contains(*name))
+            .cloned()
+            .collect();
+
+        let code_workspace_files: Vec<&Path> = workspace_files
+            .iter()
+            .map(AsRef::as_ref)
+            .filter(|p| {
+                let rel = p.strip_prefix(&self.workspace_root).unwrap_or(p);
+                let rel_str = rel.to_string_lossy();
+                let clean = rel_str.trim_start_matches("./");
+                let ext = rel
+                    .extension()
+                    .and_then(|e| e.to_str())
+                    .unwrap_or("")
+                    .to_ascii_lowercase();
+                !clean.starts_with("minikit_docs/")
+                    && !clean.starts_with("onpkg_docs/")
+                    && !clean.starts_with(".minicode/")
+                    && !clean.starts_with(".git/")
+                    && !matches!(ext.as_str(), "md" | "mdx" | "markdown" | "txt" | "lock")
+            })
+            .collect();
+
+        let mut auto_now: std::collections::HashSet<String> = std::collections::HashSet::new();
 
         for skill in &all_skills {
-            // Skip on-disk minikit_docs/core/ and minikit_docs/packages/ files (which are tracked under their own doc sections)
+            let lower = skill.name.to_lowercase();
             let is_ondisk_doc = skill.kind() == SkillKind::Core
+                || lower.starts_with("minikit-")
+                || lower.starts_with("pkg-")
                 || skill.path.as_ref().is_some_and(|p| {
                     p.components()
                         .any(|c| matches!(c.as_os_str().to_str(), Some("packages" | "core")))
@@ -100,27 +90,54 @@ impl VaultStore {
                 continue;
             }
 
-            let is_efficiency = skill.category().eq_ignore_ascii_case("efficiency");
-            let explicitly_installed_on_disk = project_skills_dir.join(&skill.name).is_dir()
+            let installed_on_disk = project_skills_dir.join(&skill.name).is_dir()
                 || project_skills_dir
                     .join(format!("{}.md", skill.name))
-                    .is_file();
+                    .is_file()
+                || dot_skills_dir.join(&skill.name).is_dir()
+                || dot_skills_dir.join(format!("{}.md", skill.name)).is_file();
 
-            let should_activate = if is_efficiency {
-                explicitly_installed_on_disk
-            } else {
-                skill.is_active_in_project
-                    || skill.frontmatter.always_apply
-                    || self.matches_skill_to_stack(skill, &stack_tokens)
-                    || (!workspace_files.is_empty()
-                        && workspace_files
-                            .iter()
-                            .any(|f| skill.matches_file(&self.workspace_root, f.as_ref())))
-            };
-
-            if should_activate {
-                desired.insert(skill.name.to_lowercase());
+            if installed_on_disk {
+                user_pinned.insert(lower.clone());
             }
+
+            // Persistent workspace auto-sync pins:
+            // 1. Standing `always_apply` invariants,
+            // 2. Exact stack dependency set-inclusion (`S_id(d) \subseteq T_pkg`),
+            // 3. Language/framework `Reference` or `Runtime` manuals matched by real source-code files
+            //    (excluding episodic `Workflow` skills, which activate dynamically per-turn via BM25F).
+            let stack_matched = skill.frontmatter.category.as_deref() != Some("efficiency")
+                && crate::vault::ranking::matches_stack_set_inclusion(skill, &stack_tokens);
+            let reference_glob_matched =
+                matches!(skill.kind(), SkillKind::Reference | SkillKind::Runtime)
+                    && skill.frontmatter.when_repo_state.is_empty()
+                    && crate::vault::ranking::compute_file_glob_specificity(
+                        skill,
+                        &self.workspace_root,
+                        &code_workspace_files,
+                    ) > 0.0;
+            let auto_matched =
+                skill.frontmatter.always_apply || stack_matched || reference_glob_matched;
+
+            if auto_matched && !deleted.contains(&lower) {
+                auto_now.insert(lower);
+            }
+        }
+
+        let mut desired: std::collections::BTreeSet<String> = user_pinned;
+        for s in &auto_now {
+            desired.insert(s.clone());
+        }
+
+        let has_manifest = ["minikit.json", "onpkg.json"]
+            .into_iter()
+            .any(|name| self.workspace_root.join(name).exists());
+        if has_manifest
+            || auto_ledger_path.exists()
+            || !workspace_files.is_empty()
+            || !stack_tokens.is_empty()
+        {
+            let _ = Self::write_tombstone_set(&auto_ledger_path, &auto_now);
         }
 
         let desired_vec: Vec<String> = desired.into_iter().collect();
@@ -165,57 +182,6 @@ impl VaultStore {
         )
     }
 
-    fn score_skill_for_context<P: AsRef<Path>>(
-        &self,
-        skill: &VaultSkill,
-        stack_tokens: &std::collections::HashSet<String>,
-        repo_state: Option<crate::agent::orchestrator::RepoState>,
-        prompt_lower: Option<&str>,
-        objective_lower: Option<&str>,
-        active_files: &[P],
-    ) -> usize {
-        let is_efficiency = skill.category().eq_ignore_ascii_case("efficiency");
-        let mut score = 0usize;
-
-        let prompt_score = prompt_lower.map_or(0, |p| skill.prompt_match_score(p));
-        let repo_state_match = Self::matches_declared_repo_state(skill, repo_state);
-        if repo_state_match == Some(false) && prompt_score < 85 && !skill.is_active_in_project {
-            return 0;
-        }
-
-        if skill.is_active_in_project {
-            score = score.saturating_add(100);
-        }
-        if skill.frontmatter.always_apply {
-            score = score.saturating_add(90);
-        }
-        if repo_state_match == Some(true) {
-            score = score.saturating_add(35);
-        }
-        if prompt_score >= 45 {
-            score = score.saturating_add(40usize.saturating_add(prompt_score));
-        }
-        if let Some(obj) = objective_lower {
-            let obj_score = skill.prompt_match_score(obj);
-            if obj_score >= 45 {
-                score = score.saturating_add(30usize.saturating_add(obj_score / 2));
-            }
-        }
-        if !is_efficiency && self.matches_skill_to_stack(skill, stack_tokens) {
-            score = score.saturating_add(50);
-        }
-        if !is_efficiency
-            && !active_files.is_empty()
-            && active_files
-                .iter()
-                .any(|f| skill.matches_file(&self.workspace_root, f.as_ref()))
-        {
-            score = score.saturating_add(40);
-        }
-
-        score
-    }
-
     fn match_from_loaded_skills<P: AsRef<Path>>(
         &self,
         all_skills: &[VaultSkill],
@@ -224,33 +190,29 @@ impl VaultStore {
         session_objective: Option<&str>,
         active_files: &[P],
     ) -> Vec<VaultSkill> {
-        let prompt_lower = prompt.map(|p| p.to_lowercase());
-        let objective_lower = session_objective.map(|o| o.to_lowercase());
         let (repo_state, _, _) =
             crate::agent::orchestrator::WorkflowRouter::scan_repository_state(&self.workspace_root);
-
-        let mut scored: Vec<(usize, VaultSkill)> = all_skills
-            .iter()
-            .filter_map(|skill| {
-                let score = self.score_skill_for_context(
-                    skill,
-                    stack_tokens,
-                    Some(repo_state),
-                    prompt_lower.as_deref(),
-                    objective_lower.as_deref(),
-                    active_files,
-                );
-                (score > 0).then(|| (score, skill.clone()))
-            })
-            .collect();
-
-        scored.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| a.1.name.cmp(&b.1.name)));
-        scored.dedup_by(|a, b| a.1.name == b.1.name);
-        scored.into_iter().map(|(_, s)| s).collect()
+        let telemetry = self.load_skill_telemetry();
+        let corpus = crate::vault::ranking::SkillCorpusIndex::build(all_skills);
+        corpus
+            .rank_all(
+                &self.workspace_root,
+                stack_tokens,
+                Some(repo_state),
+                prompt,
+                session_objective,
+                active_files,
+                self.available_tools.as_ref(),
+                self.active_tools.as_ref(),
+                Some(&telemetry),
+            )
+            .into_iter()
+            .map(|cand| cand.skill)
+            .collect()
     }
 
-    /// Matches skills for the current context (stack tokens, active files, user prompt, and session objective).
-    /// Purely metadata-driven: checks frontmatter `always_apply`, `globs`, `triggers`, and project scope.
+    /// Matches skills for the current context (stack tokens, active files, user prompt, and session objective)
+    /// using multi-field BM25F + set-theoretic stack & glob specificity ranking.
     pub fn match_skills_for_context<P: AsRef<Path>>(
         &self,
         prompt: Option<&str>,
@@ -269,7 +231,7 @@ impl VaultStore {
     }
 
     /// Resolves the specific domain and workflow skills actively matched for this turn
-    /// based on prompt intent, session objective, and active file paths.
+    /// via BM25F corpus ranking + stack inclusion + glob specificity + live tool capability gating.
     pub fn resolve_turn_active_skills<P: AsRef<Path>>(
         &self,
         prompt: &str,
@@ -281,63 +243,41 @@ impl VaultStore {
             return Vec::new();
         }
         let stack_tokens = self.detect_workspace_package_tokens();
-        let mut ranked: Vec<(usize, String)> = all_skills
+        let (repo_state, _, _) =
+            crate::agent::orchestrator::WorkflowRouter::scan_repository_state(&self.workspace_root);
+        let telemetry = self.load_skill_telemetry();
+        let corpus = crate::vault::ranking::SkillCorpusIndex::build(&all_skills);
+        corpus
+            .rank_all(
+                &self.workspace_root,
+                &stack_tokens,
+                Some(repo_state),
+                Some(prompt),
+                session_objective,
+                active_files,
+                self.available_tools.as_ref(),
+                self.active_tools.as_ref(),
+                Some(&telemetry),
+            )
             .into_iter()
-            .filter(|s| {
-                matches!(
-                    s.kind(),
-                    SkillKind::Runtime | SkillKind::Reference | SkillKind::Workflow
-                )
-            })
-            .filter_map(|skill| {
-                let prompt_score = skill.prompt_match_score(prompt);
-                let is_package_doc = skill.kind() == SkillKind::Reference
-                    && skill
-                        .path
-                        .as_ref()
-                        .is_some_and(|p| p.components().any(|c| c.as_os_str() == "packages"));
-                // Auto-generated `minikit_docs/packages/` stubs are passive API references;
-                // only surface them as active turn skills when directly queried in the user prompt.
-                if is_package_doc && prompt_score < 45 && !skill.is_active_in_project {
-                    return None;
+            .filter(|cand| {
+                // Global `always_apply` baseline skills are already present in the static prompt;
+                // only report them in turn-level `SkillActivity` when directly queried in `prompt`.
+                if cand.skill.frontmatter.always_apply && cand.prompt_bm25 < 3.0 {
+                    return false;
                 }
-                let obj_score = session_objective
-                    .map(|obj| skill.prompt_match_score(obj) / 2)
-                    .unwrap_or(0);
-                let is_efficiency = skill.category().eq_ignore_ascii_case("efficiency");
-                let active_project_bonus = if skill.is_active_in_project {
-                    60usize
-                } else {
-                    0usize
-                };
-                let stack_score =
-                    if !is_efficiency && self.matches_skill_to_stack(&skill, &stack_tokens) {
-                        50usize
-                    } else {
-                        0usize
-                    };
-                let file_score = if !active_files.is_empty()
-                    && !is_efficiency
-                    && active_files
-                        .iter()
-                        .any(|f| skill.matches_file(&self.workspace_root, f.as_ref()))
-                {
-                    50usize
-                } else {
-                    0usize
-                };
-                let total = prompt_score
-                    .max(obj_score)
-                    .saturating_add(active_project_bonus)
-                    .saturating_add(stack_score)
-                    .saturating_add(file_score);
-                (total >= 45).then_some((total, skill.name))
+                let domain_grounded = cand.matched_stack
+                    || (cand.glob_specificity > 0.0
+                        && (cand.skill.is_active_in_project || cand.lexical_score >= 1.8));
+                matches!(
+                    cand.skill.kind(),
+                    SkillKind::Runtime | SkillKind::Reference | SkillKind::Workflow
+                ) && (cand.lexical_score >= 2.8 || domain_grounded)
+                    && cand.total_score >= 4.5
             })
-            .collect();
-
-        ranked.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| a.1.cmp(&b.1)));
-        ranked.dedup_by(|a, b| a.1 == b.1);
-        ranked.into_iter().take(4).map(|(_, name)| name).collect()
+            .take(4)
+            .map(|cand| cand.skill.name)
+            .collect()
     }
 
     /// Formats progressive agent prompt context using Anthropic/Hermes 3-Level Progressive Disclosure:
@@ -412,24 +352,6 @@ impl VaultStore {
             }
         }
 
-        // 2. Runtime & Architecture Workflow Conventions
-        let runtime_workflows: Vec<_> = matched
-            .iter()
-            .filter(|s| s.kind() == SkillKind::Runtime)
-            .collect();
-        if !runtime_workflows.is_empty() {
-            out.push_str("\n# Project Architecture & Runtime Workflow Conventions:\n");
-            out.push_str("The workspace runtime conventions are active. Adhere strictly to these patterns:\n\n");
-            for r in runtime_workflows {
-                out.push_str(&format!(
-                    "## Runtime `{}`\n_{}_\n\n{}\n\n",
-                    r.name,
-                    r.description,
-                    r.instructions.trim()
-                ));
-            }
-        }
-
         // Helper to determine if a Reference skill is an on-disk `minikit_docs/packages/<pkg>.md` manual
         let is_package_manual = |s: &VaultSkill| -> bool {
             s.kind() == SkillKind::Reference
@@ -439,8 +361,13 @@ impl VaultStore {
                 && s.instructions.len() > crate::constants::VAULT_PACKAGE_MANUAL_MIN_CHARS
         };
 
-        // 3. Active Technology & Methodology Skills (prioritized first in Level-2 budget) & 4. Active Procedural & Behavioral Skills
+        // 2, 3 & 4. Unified Progressive Level-2 Budget across Runtime, Reference & Workflow Skills
         for (kind, heading, subheading) in [
+            (
+                SkillKind::Runtime,
+                "\n# Project Architecture & Runtime Workflow Conventions:\n",
+                "The workspace runtime conventions are active. Adhere strictly to these patterns:\n\n",
+            ),
             (
                 SkillKind::Reference,
                 "\n# Active Technology & Methodology Skills:\n",
@@ -461,7 +388,8 @@ impl VaultStore {
                 out.push_str(heading);
                 out.push_str(subheading);
                 for skill in group {
-                    let body = skill.instructions.trim();
+                    let rendered = skill.render_instructions(&self.workspace_root);
+                    let body = rendered.trim();
                     let bundled = skill.discover_bundled_resources();
                     let bundled_line = if !bundled.is_empty() {
                         format!(
@@ -472,13 +400,12 @@ impl VaultStore {
                         String::new()
                     };
 
-                    let kind_budget = match kind {
-                        SkillKind::Reference => crate::constants::VAULT_DYNAMIC_LEVEL2_BUDGET_CHARS,
-                        _ => total_level2_budget_chars,
-                    };
+                    let is_fork =
+                        skill.frontmatter.context_mode() == crate::vault::models::SkillContextMode::Fork;
 
-                    if body.len() <= max_inline_skill_chars
-                        && used_level2_chars.saturating_add(body.len()) <= kind_budget
+                    if !is_fork
+                        && body.len() <= max_inline_skill_chars
+                        && used_level2_chars.saturating_add(body.len()) <= total_level2_budget_chars
                     {
                         used_level2_chars = used_level2_chars.saturating_add(body.len());
                         out.push_str(&format!(
@@ -489,7 +416,10 @@ impl VaultStore {
                             bundled_line,
                             body
                         ));
-                    } else {
+                    } else if !is_fork
+                        && used_level2_chars.saturating_add(executive_summary_chars)
+                            <= total_level2_budget_chars.saturating_mul(2)
+                    {
                         let preview_end = body
                             .char_indices()
                             .take_while(|(idx, _)| *idx < executive_summary_chars)
@@ -497,10 +427,15 @@ impl VaultStore {
                             .map(|(idx, ch)| idx + ch.len_utf8())
                             .unwrap_or(0);
                         let preview = body[..preview_end].trim();
+                        used_level2_chars = used_level2_chars.saturating_add(preview.len());
                         let path_hint = skill
                             .path
                             .as_ref()
-                            .and_then(|p| p.strip_prefix(&self.workspace_root).ok().or(Some(p.as_path())))
+                            .and_then(|p| {
+                                p.strip_prefix(&self.workspace_root)
+                                    .ok()
+                                    .or(Some(p.as_path()))
+                            })
                             .map(|p| format!(" or `read_file(\"{}\")`", p.display()))
                             .unwrap_or_default();
                         out.push_str(&format!(
@@ -513,8 +448,26 @@ impl VaultStore {
                             skill.name,
                             path_hint
                         ));
+                    } else {
+                        let fork_hint = if is_fork {
+                            let role = skill.frontmatter.agent.as_deref().unwrap_or("scout");
+                            format!(
+                                " [context: fork -> `delegate_task(role=\"{}\", load_skills=[\"{}\"])`]",
+                                role, skill.name
+                            )
+                        } else {
+                            format!(" [load: `vault_show(\"{}\")`]", skill.name)
+                        };
+                        out.push_str(&format!(
+                            "• **`{}`** ({}) — {}{}\n",
+                            skill.name,
+                            skill.category(),
+                            skill.description,
+                            fork_hint
+                        ));
                     }
                 }
+                out.push('\n');
             }
         }
 
@@ -522,7 +475,7 @@ impl VaultStore {
         let package_manuals: Vec<_> = matched.iter().filter(|s| is_package_manual(s)).collect();
         if !package_manuals.is_empty() {
             out.push_str("\n# Local Package References & Self-Improving Knowledge Base:\n");
-            out.push_str("Installed Workspace Package Manuals (inspect on-demand via `read_file` or `kit_skill_show(name)`):\n");
+            out.push_str("Installed Workspace Package Manuals (inspect on-demand via `read_file` or `vault_show(name)`):\n");
             for pkg in package_manuals {
                 let rel_path = pkg
                     .path
@@ -538,59 +491,258 @@ impl VaultStore {
             out.push('\n');
         }
 
-        // Section 6: Compact Category-Grouped Directory of Available Skills (Level 1 Metadata Index)
-        let mut by_category: std::collections::BTreeMap<String, Vec<String>> =
+        // Section 6: Ecosystem-Scoped Semantic Directory of Available Skills (Level 1 Metadata Index)
+        let mut by_category: std::collections::BTreeMap<String, Vec<(String, String)>> =
             std::collections::BTreeMap::new();
+        let mut hidden_foreign_refs = 0usize;
         for s in all_skills
             .into_iter()
             .filter(|s| !matched_names.contains(&s.name.to_lowercase()))
         {
+            if !crate::vault::ranking::is_capability_eligible(
+                &s,
+                self.available_tools.as_ref(),
+                self.active_tools.as_ref(),
+            ) {
+                continue;
+            }
+            // When the project has a concrete detected dependency set, omit disjoint foreign-stack
+            // API Reference cheatsheets from the static prompt (keeping 100% searchable via `vault_search`).
+            if !stack_tokens.is_empty() && s.kind() == SkillKind::Reference {
+                let id_tokens = crate::vault::ranking::extract_skill_identifier_tokens(&s.name);
+                if !id_tokens.is_empty() && id_tokens.iter().all(|tok| !stack_tokens.contains(tok))
+                {
+                    hidden_foreign_refs += 1;
+                    continue;
+                }
+            }
+            let short_desc = crate::utils::strings::truncate_chars(&s.description, 56).to_string();
             by_category
                 .entry(s.category().to_lowercase())
                 .or_default()
-                .push(format!("`{}`", s.name));
+                .push((s.name, short_desc));
         }
 
-        if !by_category.is_empty() {
+        if !by_category.is_empty() || hidden_foreign_refs > 0 {
             out.push_str("# Available Domain Skills in Vault:\n");
             out.push_str("<available_skills>\n");
-            for (cat, mut names) in by_category {
-                names.sort();
+            for (cat, mut items) in by_category {
+                items.sort_by(|a, b| a.0.cmp(&b.0));
+                let formatted: Vec<String> = items
+                    .into_iter()
+                    .map(|(name, desc)| format!("`{}` ({})", name, desc))
+                    .collect();
                 out.push_str(&format!(
                     "  • {} ({}): {}\n",
                     cat,
-                    names.len(),
-                    names.join(", ")
+                    formatted.len(),
+                    formatted.join("; ")
+                ));
+            }
+            if hidden_foreign_refs > 0 {
+                out.push_str(&format!(
+                    "  • cross-stack-references ({} omitted for token efficiency): query anytime via `vault_search(query=\"...\")`\n",
+                    hidden_foreign_refs
                 ));
             }
             out.push_str("</available_skills>\n");
             out.push_str("<skills_guidance>\n");
-            out.push_str("Call `vault_show(name=\"<skill>\")` (or `kit_skill_show(name=\"<skill>\")`) to load full Level-2 instructions or `vault_show(name=\"<skill>\", file_path=\"references/...\")` for Level-3 bundled resources.\n");
+            out.push_str("Select relevant skills autonomously for the task: call `vault_show(name=\"<skill>\")` to load Level-2 instructions, `vault_show(name=\"<skill>\", file_path=\"references/...\")` for Level-3 bundled resources, or pass `load_skills: [\"<skill>\"]` to `delegate_task` for isolated subagent execution.\n");
             out.push_str("</skills_guidance>\n\n");
         }
 
         out
     }
 
-    /// Collects the lowercase skill names that are inlined in full into the static baseline system prompt.
+    /// Collects the lowercase skill names that are actually inlined in full into the static baseline system prompt
+    /// within `VAULT_STATIC_LEVEL2_BUDGET_CHARS`.
     #[must_use]
     pub fn collect_baseline_inlined_skill_names(&self) -> Vec<String> {
         let max_inline_skill_chars = crate::constants::VAULT_MAX_INLINE_SKILL_CHARS;
+        let total_budget = crate::constants::VAULT_STATIC_LEVEL2_BUDGET_CHARS;
         let all_skills = self.list_all_skills();
         let stack_tokens = self.detect_workspace_package_tokens();
         let (_, mut workspace_files, doc_files) =
             crate::agent::orchestrator::WorkflowRouter::scan_repository_state(&self.workspace_root);
         workspace_files.extend(doc_files);
-        self.match_from_loaded_skills(&all_skills, &stack_tokens, None, None, &workspace_files)
-            .into_iter()
-            .filter(|s| s.instructions.trim().len() <= max_inline_skill_chars)
-            .map(|s| s.name.to_lowercase())
-            .collect()
+        let matched =
+            self.match_from_loaded_skills(&all_skills, &stack_tokens, None, None, &workspace_files);
+
+        let mut used = 0usize;
+        let mut inlined = Vec::new();
+        for kind in [
+            SkillKind::Runtime,
+            SkillKind::Reference,
+            SkillKind::Workflow,
+        ] {
+            for skill in matched.iter().filter(|s| s.kind() == kind) {
+                let body_len = skill.instructions.trim().len();
+                let is_fork = skill.frontmatter.context_mode()
+                    == crate::vault::models::SkillContextMode::Fork;
+                if !is_fork
+                    && body_len <= max_inline_skill_chars
+                    && used.saturating_add(body_len) <= total_budget
+                {
+                    used = used.saturating_add(body_len);
+                    inlined.push(skill.name.to_lowercase());
+                }
+            }
+        }
+        inlined
     }
 
-    /// Formats dynamic turn-level skill activations for Hermes agent orchestration.
-    /// Emits `<auto_activated_skills>` if new skills match the turn prompt or modified files,
-    /// or if a large skill summarized in the static prompt is directly triggered by the current turn.
+    /// Formats dynamic turn-level skill activations and returns `(rendered_block, newly_inlined_skill_names)`
+    /// so `AgentLoop` can record newly inlined skills into `session_active_skills` and never re-dump them
+    /// on subsequent turns.
+    pub fn format_dynamic_turn_skills_with_names<P: AsRef<Path>>(
+        &self,
+        prompt: Option<&str>,
+        session_objective: Option<&str>,
+        active_files: &[P],
+        exclude_skills: &[String],
+    ) -> Option<(String, Vec<String>)> {
+        let max_inline_skill_chars = crate::constants::VAULT_MAX_INLINE_SKILL_CHARS;
+        let total_dynamic_budget = crate::constants::VAULT_DYNAMIC_LEVEL2_BUDGET_CHARS;
+
+        let all_skills = self.list_all_skills();
+        if all_skills.is_empty() {
+            return None;
+        }
+        let stack_tokens = self.detect_workspace_package_tokens();
+        let (repo_state, _, _) =
+            crate::agent::orchestrator::WorkflowRouter::scan_repository_state(&self.workspace_root);
+
+        let mut exclude_set: std::collections::HashSet<String> =
+            exclude_skills.iter().map(|s| s.to_lowercase()).collect();
+
+        if exclude_set.is_empty() {
+            for name in self.collect_baseline_inlined_skill_names() {
+                exclude_set.insert(name);
+            }
+        }
+
+        let telemetry = self.load_skill_telemetry();
+        let corpus = crate::vault::ranking::SkillCorpusIndex::build(&all_skills);
+        let partition = corpus.partition_turn_skills(
+            &self.workspace_root,
+            &stack_tokens,
+            Some(repo_state),
+            prompt,
+            session_objective,
+            active_files,
+            &exclude_set,
+            self.available_tools.as_ref(),
+            self.active_tools.as_ref(),
+            Some(&telemetry),
+            max_inline_skill_chars,
+            total_dynamic_budget,
+        );
+
+        if partition.inline_skills.is_empty() && partition.candidate_slate.is_empty() {
+            return None;
+        }
+
+        let mut newly_inlined_names = Vec::new();
+        let mut out = String::from("<auto_activated_skills>\n");
+        out.push_str("  Hermes Progressive Skill Intelligence Activated:\n");
+        let mut used_dynamic_chars = 0usize;
+        if !partition.inline_skills.is_empty() {
+            out.push_str("  BM25F High-Confidence Active Skills (auto-matched for this turn):\n");
+            for cand in &partition.inline_skills {
+                let skill = &cand.skill;
+                newly_inlined_names.push(skill.name.to_lowercase());
+                let conf_pct = (cand.confidence * 100.0).round() as usize;
+                out.push_str(&format!(
+                    "  • Skill `{}` ({} | relevance: {}%): {}\n",
+                    skill.name,
+                    skill.category(),
+                    conf_pct,
+                    skill.description
+                ));
+                let bundled = skill.discover_bundled_resources();
+                if !bundled.is_empty() {
+                    let skill_dir = skill.base_dir(&self.workspace_root);
+                    out.push_str(&format!(
+                        "    Bundled Level-3 Resources in `{}` (read via `vault_show(name=\"{}\", file_path=\"...\")`): {}\n",
+                        skill_dir.display(),
+                        skill.name,
+                        bundled.join(", ")
+                    ));
+                }
+                out.push_str("    Guidelines & Invariants:\n");
+                let rendered = skill.render_instructions(&self.workspace_root);
+                let trimmed_body = rendered.trim();
+                let remaining = total_dynamic_budget.saturating_sub(used_dynamic_chars);
+                let allowed_for_this = max_inline_skill_chars.min(remaining.max(1_200));
+                let (slice_body, was_truncated) = if trimmed_body.len() > allowed_for_this {
+                    let end = trimmed_body.floor_char_boundary(allowed_for_this);
+                    (&trimmed_body[..end], true)
+                } else {
+                    (trimmed_body, false)
+                };
+                used_dynamic_chars = used_dynamic_chars.saturating_add(slice_body.len());
+                for line in slice_body.lines() {
+                    let trimmed = line.trim();
+                    if !trimmed.is_empty() && !trimmed.starts_with("---") {
+                        out.push_str(&format!("      {}\n", trimmed));
+                    }
+                }
+                if was_truncated {
+                    out.push_str(&format!(
+                        "      > [Progressive Level-2 Cap: call `vault_show(name=\"{}\")` to inspect remaining sections.]\n",
+                        skill.name
+                    ));
+                }
+                out.push('\n');
+            }
+        }
+
+        if !partition.candidate_slate.is_empty() {
+            out.push_str("  Orchestrator Candidate Skill Slate (select & load on-demand if useful for this task):\n");
+            for cand in &partition.candidate_slate {
+                let skill = &cand.skill;
+                let conf_pct = (cand.confidence * 100.0).round() as usize;
+                let bundled = skill.discover_bundled_resources();
+                let res_note = if bundled.is_empty() {
+                    String::new()
+                } else {
+                    format!(" [resources: {}]", bundled.join(", "))
+                };
+                if skill.frontmatter.context_mode() == crate::vault::models::SkillContextMode::Fork
+                {
+                    let role = skill.frontmatter.agent.as_deref().unwrap_or("scout");
+                    out.push_str(&format!(
+                        "  • `{}` ({} | {}% | context: fork): {}{} -> Run isolated via `delegate_task(role=\"{}\", load_skills=[\"{}\"], task=\"...\")`.\n",
+                        skill.name,
+                        skill.category(),
+                        conf_pct,
+                        skill.description,
+                        res_note,
+                        role,
+                        skill.name
+                    ));
+                } else {
+                    out.push_str(&format!(
+                        "  • `{}` ({} | {}%): {}{} -> Inspect via `vault_show(name=\"{}\")`.\n",
+                        skill.name,
+                        skill.category(),
+                        conf_pct,
+                        skill.description,
+                        res_note,
+                        skill.name
+                    ));
+                }
+            }
+        }
+
+        out.push_str(
+            "  Directive: Apply inlined skill invariants and call `vault_show` (or `delegate_task` with `load_skills`) for any candidate skill needed by your plan.\n",
+        );
+        out.push_str("</auto_activated_skills>");
+        Some((out, newly_inlined_names))
+    }
+
+    /// Formats dynamic turn-level skill activations using BM25F + Candidate-Slate-First + Single-Pin partitioning.
     pub fn format_dynamic_turn_skills<P: AsRef<Path>>(
         &self,
         prompt: Option<&str>,
@@ -598,97 +750,49 @@ impl VaultStore {
         active_files: &[P],
         exclude_skills: &[String],
     ) -> Option<String> {
-        let max_inline_skill_chars = crate::constants::VAULT_MAX_INLINE_SKILL_CHARS;
-
-        let all_skills = self.list_all_skills();
-        if all_skills.is_empty() {
-            return None;
-        }
-        let stack_tokens = self.detect_workspace_package_tokens();
-
-        let mut exclude_set: std::collections::HashSet<String> =
-            exclude_skills.iter().map(|s| s.to_lowercase()).collect();
-
-        // When no frozen session-baseline exclude set is provided, compute the current baseline inlined skills
-        if exclude_set.is_empty() {
-            for baseline_skill in
-                self.match_from_loaded_skills::<&str>(&all_skills, &stack_tokens, None, None, &[])
-            {
-                if baseline_skill.instructions.trim().len() <= max_inline_skill_chars {
-                    exclude_set.insert(baseline_skill.name.to_lowercase());
-                }
-            }
-        }
-
-        let matched = self.match_from_loaded_skills(
-            &all_skills,
-            &stack_tokens,
+        self.format_dynamic_turn_skills_with_names(
             prompt,
             session_objective,
             active_files,
-        );
-        let new_skills: Vec<_> = matched
+            exclude_skills,
+        )
+        .map(|(block, _)| block)
+    }
+
+    /// Collects all explicit non-wildcard `allowed_tools` declared on a sticky set of session-active skill names.
+    pub fn collect_allowed_tools_for_skill_names<I, S>(&self, skill_names: I) -> Vec<String>
+    where
+        I: IntoIterator<Item = S>,
+        S: AsRef<str>,
+    {
+        let targets: std::collections::HashSet<String> = skill_names
             .into_iter()
-            .filter(|s| {
-                let matches_turn_intent = [prompt, session_objective]
-                    .into_iter()
-                    .flatten()
-                    .any(|text| s.prompt_match_score(text) >= 45);
-                if s.frontmatter.always_apply && exclude_set.contains(&s.name.to_lowercase()) {
-                    return matches_turn_intent;
-                }
-                matches_turn_intent || !exclude_set.contains(&s.name.to_lowercase())
-            })
-            .take(6)
+            .map(|s| sanitize_skill_name(s.as_ref()))
+            .filter(|s| !s.is_empty())
             .collect();
-
-        if new_skills.is_empty() {
-            return None;
+        if targets.is_empty() {
+            return Vec::new();
         }
-
-        let mut out = String::from("<auto_activated_skills>\n");
-        out.push_str("  Hermes Progressive Skill Intelligence Activated:\n");
-        out.push_str("  The following domain skills automatically matched your prompt intent or active files:\n");
-
-        for skill in new_skills {
-            out.push_str(&format!(
-                "  • Skill `{}` ({}): {}\n",
-                skill.name,
-                skill.category(),
-                skill.description
-            ));
-            let bundled = skill.discover_bundled_resources();
-            if !bundled.is_empty() {
-                if let Some(ref skill_path) = skill.path {
-                    if let Some(skill_dir) = skill_path.parent() {
-                        out.push_str(&format!(
-                            "    Bundled Level-3 Resources in `{}` (read via `vault_show(name=\"{}\", file_path=\"...\")`): {}\n",
-                            skill_dir.display(),
-                            skill.name,
-                            bundled.join(", ")
-                        ));
+        let mut allowed = Vec::new();
+        for skill in self.list_all_skills() {
+            if targets.contains(&skill.name.to_lowercase()) {
+                for tool_name in skill.frontmatter.allowed_tools {
+                    let trimmed = tool_name.trim().to_string();
+                    if !trimmed.is_empty()
+                        && trimmed != "*"
+                        && !trimmed.eq_ignore_ascii_case("all")
+                        && !allowed.contains(&trimmed)
+                    {
+                        allowed.push(trimmed);
                     }
                 }
             }
-            out.push_str("    Guidelines & Invariants:\n");
-            for line in skill.instructions.lines() {
-                let trimmed = line.trim();
-                if !trimmed.is_empty() && !trimmed.starts_with("---") {
-                    out.push_str(&format!("      {}\n", trimmed));
-                }
-            }
-            out.push('\n');
         }
-
-        out.push_str(
-            "  Directive: Adhere strictly to these procedural skill guidelines for this task.\n",
-        );
-        out.push_str("</auto_activated_skills>");
-        Some(out)
+        allowed
     }
 
-    /// Collects all `allowed_tools` (tool names or category identifiers) declared in the YAML frontmatter
-    /// of skills currently active for the workspace, prompt, or active file set.
+    /// Collects all explicit non-wildcard `allowed_tools` declared in the YAML frontmatter
+    /// of skills actively ranked for the workspace, prompt, or active file set.
     pub fn collect_active_skill_allowed_tools<P: AsRef<Path>>(
         &self,
         prompt: Option<&str>,
@@ -700,18 +804,38 @@ impl VaultStore {
             return Vec::new();
         }
         let stack_tokens = self.detect_workspace_package_tokens();
-        let matched = self.match_from_loaded_skills(
-            &all_skills,
+        let (repo_state, _, _) =
+            crate::agent::orchestrator::WorkflowRouter::scan_repository_state(&self.workspace_root);
+        let telemetry = self.load_skill_telemetry();
+        let corpus = crate::vault::ranking::SkillCorpusIndex::build(&all_skills);
+        let ranked = corpus.rank_all(
+            &self.workspace_root,
             &stack_tokens,
+            Some(repo_state),
             prompt,
             session_objective,
             active_files,
+            self.available_tools.as_ref(),
+            self.active_tools.as_ref(),
+            Some(&telemetry),
         );
         let mut allowed = Vec::new();
-        for skill in matched {
-            for tool_name in skill.frontmatter.allowed_tools {
+        for cand in ranked
+            .into_iter()
+            .filter(|c| {
+                c.total_score >= 4.2
+                    && (c.lexical_score >= 2.6
+                        || (c.skill.scope == SkillScope::Project && c.skill.is_active_in_project))
+            })
+            .take(2)
+        {
+            for tool_name in cand.skill.frontmatter.allowed_tools {
                 let trimmed = tool_name.trim().to_string();
-                if !trimmed.is_empty() && !allowed.contains(&trimmed) {
+                if !trimmed.is_empty()
+                    && trimmed != "*"
+                    && !trimmed.eq_ignore_ascii_case("all")
+                    && !allowed.contains(&trimmed)
+                {
                     allowed.push(trimmed);
                 }
             }

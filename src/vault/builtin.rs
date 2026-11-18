@@ -47,7 +47,7 @@ name: "react"
 description: "Modern React 19 patterns, Server Components, hooks, custom hooks, and state management."
 category: "frontend"
 kind: "reference"
-globs: ["*.tsx", "*.jsx", "src/**/*.ts"]
+globs: ["*.tsx", "*.jsx"]
 triggers: ["react", "component", "hook", "useState", "useEffect"]
 always_apply: false
 ---
@@ -314,7 +314,7 @@ name: "vite"
 description: "Vite build tool, dev server, plugins, asset resolution, and environment variables."
 category: "frontend"
 kind: "reference"
-globs: ["vite.config.*", "src/**/*.tsx", "src/**/*.ts"]
+globs: ["vite.config.*"]
 triggers: ["vite", "bundler", "hmr"]
 always_apply: false
 ---
@@ -619,7 +619,7 @@ name: "theme-factory"
 description: "Curated 10-theme color palette and typography pairing system (Ocean Depths, Sunset Boulevard, Forest Canopy, Modern Minimalist, Midnight Galaxy, Botanical Garden, etc.) plus custom theme synthesis."
 category: "ui-styling"
 kind: "reference"
-globs: ["**/theme*.*", "**/*.css", "**/*.pptx", "**/*.html"]
+globs: ["**/theme-presets*.*"]
 triggers: ["theme-factory", "color palette", "font pairing", "theme preset", "retheme", "brand palette"]
 always_apply: false
 ---
@@ -808,7 +808,7 @@ name: "brand-guidelines"
 description: "Anthropic official brand identity, color tokens (#141413 dark, #faf9f5 light, #d97757 terracotta orange, #6a9bcc blue, #788c5d green), and Poppins/Lora typography system."
 category: "ui-styling"
 kind: "reference"
-globs: ["**/brand*.*", "**/*.css", "**/*.pptx", "**/*.html"]
+globs: ["**/anthropic-brand*.*"]
 triggers: ["brand-guidelines", "anthropic brand", "brand styling", "corporate identity", "brand colors"]
 always_apply: false
 ---
@@ -972,6 +972,7 @@ kind: "workflow"
 globs: [".minicode/plan/task_plan.md", "minikit_docs/core/todo.md", ".minicode/decisions.md"]
 triggers: ["executing-plans", "execute plan", "update_progress", "inline execution", "task_plan", "execute_task_dag"]
 after_tools: ["create_plan", "power_plan"]
+enrichments: ["post_plan_skills"]
 allowed_tools: ["read_file", "write_file", "patch_file", "exec_cmd", "update_progress", "record_decision", "power_verify", "power_review", "archive_plan", "execute_task_dag"]
 always_apply: false
 ---
@@ -1322,6 +1323,7 @@ kind: "workflow"
 globs: ["**/*.tsx", "**/*.jsx", "**/*.html", "**/*.css", "**/*.vue", "**/*.svelte"]
 triggers: ["miniblocks-ui", "miniblocks", "block_search", "block_palettes", "block_scaffold", "block_insert", "block_save", "ui component", "color palette", "hex tokens", "landing page", "pricing table", "dark mode", "sidebar", "button", "tailwind", "navbar", "hero"]
 after_tools: ["kit_stack_add"]
+enrichments: ["ui_design"]
 allowed_tools: ["block_palettes", "block_gradients", "block_search", "block_get", "block_scaffold", "block_insert", "block_import", "block_save", "block_update", "block_delete"]
 always_apply: false
 ---

@@ -225,30 +225,13 @@ impl ContinualSkillHarvester {
                 for t in existing.frontmatter.triggers {
                     triggers.insert(t);
                 }
-                let trigger_head = gotcha
-                    .trigger
-                    .lines()
-                    .next()
-                    .unwrap_or(&gotcha.trigger)
-                    .trim();
-                let updated_body = if existing.instructions.contains(trigger_head) {
-                    existing.instructions
-                } else {
-                    format!("{}\n\n{}", existing.instructions.trim(), entry_bullet)
-                };
-                // Bound skill body well below 20KB compaction limit
-                let capped = if updated_body.len() > 12_000 {
-                    let start = updated_body.ceil_char_boundary(updated_body.len() - 12_000);
-                    format!(
-                        "# Learned {} Verification Invariants\n\n{}",
-                        gotcha.context_scope,
-                        &updated_body[start..]
-                    )
-                } else {
-                    updated_body
-                };
+                let updated_body = merge_learned_invariant_bullet(
+                    &gotcha.context_scope,
+                    &existing.instructions,
+                    &entry_bullet,
+                );
                 (
-                    capped,
+                    updated_body,
                     globs.into_iter().collect(),
                     triggers.into_iter().take(12).collect(),
                 )
@@ -297,6 +280,68 @@ impl ContinualSkillHarvester {
             );
         }
     }
+}
+
+/// Deduplicates and bounds learned invariant bullets using Jaccard stem-set similarity
+/// ($J(A, B) = |A \cap B| / |A \cup B| \ge 0.60$) so semantically equivalent compiler/test
+/// diagnostics replace stale entries in place rather than accumulating unbounded duplicates.
+fn merge_learned_invariant_bullet(
+    context_scope: &str,
+    existing_instructions: &str,
+    new_bullet: &str,
+) -> String {
+    const MAX_BULLETS: usize = 12;
+
+    let stem_set = |text: &str| -> BTreeSet<u64> {
+        crate::vault::ranking::tokenize_with_stems(text)
+            .into_iter()
+            .filter(|(raw, _)| !raw.chars().all(|c| c.is_ascii_digit()))
+            .map(|(_, h)| h)
+            .collect()
+    };
+
+    let mut bullets: Vec<String> = existing_instructions
+        .split("\n- **Trigger")
+        .enumerate()
+        .filter_map(|(i, chunk)| {
+            if i == 0 {
+                chunk
+                    .find("- **Trigger")
+                    .map(|pos| chunk[pos..].trim().to_string())
+            } else {
+                Some(format!("- **Trigger{}", chunk.trim_end()))
+            }
+        })
+        .collect();
+
+    let new_stems = stem_set(new_bullet);
+    let mut replaced = false;
+    for existing_b in &mut bullets {
+        let ex_stems = stem_set(existing_b);
+        let inter = new_stems.intersection(&ex_stems).count();
+        let union = new_stems.union(&ex_stems).count().max(1);
+        if (inter as f64 / union as f64) >= 0.60 {
+            *existing_b = new_bullet.to_string();
+            replaced = true;
+            break;
+        }
+    }
+
+    if !replaced {
+        bullets.push(new_bullet.to_string());
+    }
+    if bullets.len() > MAX_BULLETS {
+        let drain_count = bullets.len() - MAX_BULLETS;
+        bullets.drain(0..drain_count);
+    }
+
+    format!(
+        "# Learned {} Verification Invariants\n\n\
+         Automatically harvested from verified multi-step self-healing recoveries in this workspace:\n\n\
+         {}",
+        context_scope,
+        bullets.join("\n\n")
+    )
 }
 
 #[cfg(test)]

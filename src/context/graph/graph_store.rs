@@ -1,4 +1,4 @@
-use crate::context::graph::{CodeGraph, EdgeKind, SymbolNode};
+use crate::context::graph::{CodeGraph, EdgeKind, FileAstShard, SymbolNode};
 use crate::error::{ContextError, Result};
 use petgraph::graph::NodeIndex;
 use petgraph::visit::EdgeRef;
@@ -21,6 +21,7 @@ pub struct GraphSnapshot {
 pub struct GraphStore;
 
 type SnapshotCacheMap = HashMap<PathBuf, (u64, u128, GraphSnapshot)>;
+type ShardCacheMap = HashMap<PathBuf, (u64, u128, HashMap<PathBuf, FileAstShard>)>;
 
 fn snapshot_memory_cache() -> &'static std::sync::Mutex<SnapshotCacheMap> {
     static CACHE: std::sync::OnceLock<std::sync::Mutex<SnapshotCacheMap>> =
@@ -28,17 +29,32 @@ fn snapshot_memory_cache() -> &'static std::sync::Mutex<SnapshotCacheMap> {
     CACHE.get_or_init(|| std::sync::Mutex::new(HashMap::new()))
 }
 
+fn shard_memory_cache() -> &'static std::sync::Mutex<ShardCacheMap> {
+    static CACHE: std::sync::OnceLock<std::sync::Mutex<ShardCacheMap>> = std::sync::OnceLock::new();
+    CACHE.get_or_init(|| std::sync::Mutex::new(HashMap::new()))
+}
+
 impl GraphStore {
     pub const SCHEMA_VERSION: u32 = 1;
+    pub const SHARDS_MAGIC: [u8; 8] = *b"MCGSHRD1";
     pub const GRAPH_FILE_NAME: &'static str = "graph.json";
+    pub const SHARDS_FILE_NAME: &'static str = "graph_shards.bin";
     pub const GRAPH_DIR_NAME: &'static str = ".minicode";
     pub const MAX_GRAPH_FILE_SIZE_BYTES: u64 = 10 * 1024 * 1024; // 10 MB limit to prevent bloat
+    pub const MAX_SHARDS_FILE_SIZE_BYTES: u64 = 24 * 1024 * 1024;
 
     /// Resolves canonical path to `.minicode/graph.json` in workspace root
     pub fn graph_file_path(workspace_root: &Path) -> PathBuf {
         workspace_root
             .join(Self::GRAPH_DIR_NAME)
             .join(Self::GRAPH_FILE_NAME)
+    }
+
+    /// Resolves canonical path to `.minicode/graph_shards.bin` in workspace root
+    pub fn shards_file_path(workspace_root: &Path) -> PathBuf {
+        workspace_root
+            .join(Self::GRAPH_DIR_NAME)
+            .join(Self::SHARDS_FILE_NAME)
     }
 
     /// Serializes a CodeGraph to a GraphSnapshot
@@ -193,6 +209,23 @@ impl GraphStore {
             .into());
         }
 
+        if let Ok(meta) = std::fs::metadata(&path) {
+            let mtime_nanos = meta
+                .modified()
+                .ok()
+                .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                .map(|d| d.as_nanos())
+                .unwrap_or(0);
+            if mtime_nanos > 0 {
+                if let Ok(mut guard) = snapshot_memory_cache().lock() {
+                    if guard.len() >= 16 && !guard.contains_key(&path) {
+                        guard.clear();
+                    }
+                    guard.insert(path.clone(), (meta.len(), mtime_nanos, snapshot.clone()));
+                }
+            }
+        }
+
         tracing::debug!(
             path = %path.display(),
             nodes = snapshot.nodes.len(),
@@ -200,6 +233,116 @@ impl GraphStore {
             "Persisted code graph snapshot to disk"
         );
         Ok(())
+    }
+
+    /// Saves per-file AST shards to `.minicode/graph_shards.bin` atomically using `bincode`.
+    pub fn save_shards(
+        shards: &HashMap<PathBuf, FileAstShard>,
+        workspace_root: &Path,
+    ) -> Result<()> {
+        let dir = workspace_root.join(Self::GRAPH_DIR_NAME);
+        std::fs::create_dir_all(&dir).map_err(|e| {
+            ContextError::Graph(format!(
+                "Failed to create .minicode directory for AST shards: {}",
+                e
+            ))
+        })?;
+
+        let path = Self::shards_file_path(workspace_root);
+        let tmp_path = dir.join(format!(
+            "{}.tmp.{}",
+            Self::SHARDS_FILE_NAME,
+            uuid::Uuid::new_v4()
+        ));
+
+        let payload = bincode::serialize(shards).map_err(|e| {
+            ContextError::Graph(format!("Failed to serialize AST shard cache: {}", e))
+        })?;
+
+        let mut buf = Vec::with_capacity(Self::SHARDS_MAGIC.len() + payload.len());
+        buf.extend_from_slice(&Self::SHARDS_MAGIC);
+        buf.extend_from_slice(&payload);
+
+        std::fs::write(&tmp_path, &buf).map_err(|e| {
+            ContextError::Graph(format!("Failed to write temporary AST shard file: {}", e))
+        })?;
+
+        if let Err(e) = std::fs::rename(&tmp_path, &path) {
+            let _ = std::fs::remove_file(&tmp_path);
+            return Err(ContextError::Graph(format!(
+                "Failed to atomically replace AST shard file: {}",
+                e
+            ))
+            .into());
+        }
+
+        if let Ok(meta) = std::fs::metadata(&path) {
+            let mtime_nanos = meta
+                .modified()
+                .ok()
+                .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                .map(|d| d.as_nanos())
+                .unwrap_or(0);
+            if mtime_nanos > 0 {
+                if let Ok(mut guard) = shard_memory_cache().lock() {
+                    if guard.len() >= 16 && !guard.contains_key(&path) {
+                        guard.clear();
+                    }
+                    guard.insert(path, (meta.len(), mtime_nanos, shards.clone()));
+                }
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Loads per-file AST shards from in-memory cache or `.minicode/graph_shards.bin`.
+    pub fn load_shards(workspace_root: &Path) -> Option<HashMap<PathBuf, FileAstShard>> {
+        let path = Self::shards_file_path(workspace_root);
+        let meta = std::fs::metadata(&path).ok()?;
+        let file_len = meta.len();
+        if file_len < Self::SHARDS_MAGIC.len() as u64 || file_len > Self::MAX_SHARDS_FILE_SIZE_BYTES
+        {
+            return None;
+        }
+
+        let mtime_nanos = meta
+            .modified()
+            .ok()
+            .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
+
+        if mtime_nanos > 0 {
+            if let Ok(guard) = shard_memory_cache().lock() {
+                if let Some((cached_len, cached_mtime, cached_shards)) = guard.get(&path) {
+                    if *cached_len == file_len && *cached_mtime == mtime_nanos {
+                        return Some(cached_shards.clone());
+                    }
+                }
+            }
+        }
+
+        let raw = std::fs::read(&path).ok()?;
+        if raw.len() < Self::SHARDS_MAGIC.len()
+            || raw[..Self::SHARDS_MAGIC.len()] != Self::SHARDS_MAGIC
+        {
+            return None;
+        }
+
+        let shards: HashMap<PathBuf, FileAstShard> =
+            bincode::deserialize(&raw[Self::SHARDS_MAGIC.len()..]).ok()?;
+
+        if mtime_nanos > 0 {
+            if let Ok(mut guard) = shard_memory_cache().lock() {
+                if guard.len() >= 16 && !guard.contains_key(&path) {
+                    guard.clear();
+                }
+                guard.insert(path, (file_len, mtime_nanos, shards.clone()));
+            }
+        }
+
+        Some(shards)
     }
 
     /// Converts a snapshot back into a full in-memory CodeGraph

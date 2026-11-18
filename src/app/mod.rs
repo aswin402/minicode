@@ -71,8 +71,6 @@ pub struct App<'a> {
     pub should_exit: bool,
     pub last_ctrl_c: Option<Instant>,
     pub pending_submission: Option<PendingSubmission>,
-    pub session_skipped_indexing: bool,
-    pub session_skipped_drift: bool,
     pub active_task: Option<String>,
     pub active_plan: Option<crate::ui::view::LivePlanBlock>,
     pub toasts: crate::ui::ToastManager,
@@ -194,8 +192,6 @@ impl<'a> App<'a> {
             should_exit: false,
             last_ctrl_c: None,
             pending_submission: None,
-            session_skipped_indexing: false,
-            session_skipped_drift: false,
             active_task: initial_active_task,
             active_plan: initial_active_plan,
             toasts: crate::ui::ToastManager::new(),
@@ -2310,8 +2306,6 @@ mod tests {
         // Silent startup: unindexed repo does NOT show WorkspaceAnalysis modal
         assert!(matches!(app.modal, ModalState::None));
         assert!(app.pending_submission.is_none());
-        assert!(!app.session_skipped_indexing);
-        assert!(!app.session_skipped_drift);
     }
 
     #[test]

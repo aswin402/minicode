@@ -57,8 +57,10 @@ fn test_turn_summary_extraction_and_markdown() {
 
 #[test]
 fn test_memory_anchor_prompt_injection() {
-    let mut anchor = MemoryAnchor::default();
-    anchor.working_context = Some("Implement Tiered Context Auto-Compactor".to_string());
+    let mut anchor = MemoryAnchor {
+        working_context: Some("Implement Tiered Context Auto-Compactor".to_string()),
+        ..Default::default()
+    };
     anchor
         .key_decisions
         .push("Use algorithmic extraction without extra LLM cost".to_string());

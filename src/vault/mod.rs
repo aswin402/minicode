@@ -2,10 +2,12 @@
 
 pub mod builtin;
 pub mod models;
+pub mod ranking;
 pub mod skillspector;
 pub mod store;
 
 pub use builtin::*;
 pub use models::*;
+pub use ranking::*;
 pub use skillspector::*;
 pub use store::*;

@@ -243,6 +243,96 @@ impl GlobalGotcha {
     }
 }
 
+/// Empirical session usage and verification outcome telemetry for a skill
+/// (persisted in `.minicode/vault/skill_telemetry.json`).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SkillOutcomeStats {
+    #[serde(default)]
+    pub activations: u64,
+    #[serde(default)]
+    pub verify_first_pass: u64,
+    #[serde(default)]
+    pub verify_after_heal: u64,
+    #[serde(default)]
+    pub verify_failures: u64,
+    #[serde(default)]
+    pub last_used_unix_secs: u64,
+}
+
+impl SkillOutcomeStats {
+    /// Computes a bounded Bayesian Beta(2, 1) empirical utility adjustment in `[-2.5, +2.2]`
+    /// combined with exponential staleness decay for unused auto-learned skills (>30 days idle).
+    #[must_use]
+    pub fn empirical_utility_bonus(&self, is_auto_learned: bool, now_unix_secs: u64) -> f64 {
+        let total_verifies = self
+            .verify_first_pass
+            .saturating_add(self.verify_after_heal)
+            .saturating_add(self.verify_failures);
+
+        let verify_adjustment = if total_verifies == 0 {
+            0.0
+        } else {
+            let weighted_success =
+                (self.verify_first_pass as f64) + 0.5 * (self.verify_after_heal as f64) + 2.0;
+            let pass_rate = weighted_success / ((total_verifies as f64) + 3.0);
+            // Neutral baseline at 2/3 (0.667); maps [0.0, 1.0] -> [-2.2, +2.2]
+            ((pass_rate - (2.0 / 3.0)) * 5.5).clamp(-2.2, 2.2)
+        };
+
+        let staleness_penalty = if is_auto_learned
+            && self.last_used_unix_secs > 0
+            && now_unix_secs > self.last_used_unix_secs
+        {
+            let idle_days = (now_unix_secs - self.last_used_unix_secs) as f64 / 86_400.0;
+            if idle_days > 30.0 {
+                -((1.0 - (-(idle_days - 30.0) / 60.0).exp()) * 2.5)
+            } else {
+                0.0
+            }
+        } else {
+            0.0
+        };
+
+        (verify_adjustment + staleness_penalty).clamp(-2.5, 2.2)
+    }
+}
+
+/// Execution isolation mode declared in a skill's YAML frontmatter (`context: inline | fork`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum SkillContextMode {
+    /// Injects or inspects guidelines directly in the active coordinator conversation.
+    #[default]
+    Inline,
+    /// Executes heavy/verbose audit, review, or migration skills inside an isolated `MiniPub` subagent.
+    Fork,
+}
+
+impl SkillContextMode {
+    #[must_use]
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Inline => "inline",
+            Self::Fork => "fork",
+        }
+    }
+}
+
+impl std::str::FromStr for SkillContextMode {
+    type Err = String;
+
+    fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
+        match s.trim().to_ascii_lowercase().as_str() {
+            "" | "inline" | "main" | "coordinator" => Ok(Self::Inline),
+            "fork" | "subagent" | "isolated" | "worker" => Ok(Self::Fork),
+            other => Err(format!(
+                "Invalid skill context mode '{}'. Expected 'inline' or 'fork'",
+                other
+            )),
+        }
+    }
+}
+
 /// Metadata extracted from the YAML frontmatter of a `SKILL.md` or `.md` file.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SkillFrontmatter {
@@ -268,6 +358,16 @@ pub struct SkillFrontmatter {
     pub when_repo_state: Vec<String>,
     #[serde(default, alias = "after-tools")]
     pub after_tools: Vec<String>,
+    #[serde(default, alias = "requires-tools")]
+    pub requires_tools: Vec<String>,
+    #[serde(default, alias = "fallback-for-tools")]
+    pub fallback_for_tools: Vec<String>,
+    #[serde(default)]
+    pub enrichments: Vec<String>,
+    #[serde(default, alias = "execution-context")]
+    pub context: Option<String>,
+    #[serde(default)]
+    pub agent: Option<String>,
 }
 
 impl SkillFrontmatter {
@@ -277,6 +377,15 @@ impl SkillFrontmatter {
             Some(c) if !c.trim().is_empty() => c.trim(),
             _ => "general",
         }
+    }
+
+    /// Resolves the execution context isolation mode (`Inline` vs `Fork`).
+    #[must_use]
+    pub fn context_mode(&self) -> SkillContextMode {
+        self.context
+            .as_deref()
+            .and_then(|c| c.parse::<SkillContextMode>().ok())
+            .unwrap_or(SkillContextMode::Inline)
     }
 
     /// Returns the functional kind (`SkillKind::Reference`, `SkillKind::Workflow`, `SkillKind::Runtime`, `SkillKind::Core`).
@@ -311,6 +420,11 @@ impl Default for SkillFrontmatter {
             allowed_tools: Vec::new(),
             when_repo_state: Vec::new(),
             after_tools: Vec::new(),
+            requires_tools: Vec::new(),
+            fallback_for_tools: Vec::new(),
+            enrichments: Vec::new(),
+            context: None,
+            agent: None,
         }
     }
 }
@@ -450,12 +564,116 @@ impl VaultSkill {
         Some((canon_target, content))
     }
 
+    /// Resolves the canonical base directory for this skill (used for `{baseDir}` substitution).
+    #[must_use]
+    pub fn base_dir(&self, workspace_root: &Path) -> PathBuf {
+        self.path
+            .as_ref()
+            .and_then(|p| p.parent().map(Path::to_path_buf))
+            .unwrap_or_else(|| {
+                workspace_root
+                    .join(".minicode")
+                    .join("skills")
+                    .join(&self.name)
+            })
+    }
+
+    /// Renders `self.instructions` with portable `{baseDir}` token substitution so scripts and
+    /// Level-3 references resolve identically across Global and Project vault scopes.
+    #[must_use]
+    pub fn render_instructions(&self, workspace_root: &Path) -> String {
+        if !self.instructions.contains("{baseDir}") {
+            return self.instructions.clone();
+        }
+        let dir_str = self.base_dir(workspace_root).display().to_string();
+        self.instructions.replace("{baseDir}", &dir_str)
+    }
+
+    /// Validates that a relative Level-3 resource path stays strictly within sanctioned subdirectories
+    /// (`references/`, `reference/`, `scripts/`, `assets/`, `templates/`, `themes/`, `examples/`).
+    fn resolve_sanctioned_resource_target(&self, rel_path: &str) -> Result<PathBuf> {
+        const ALLOWED_SUBDIRS: &[&str] = &[
+            "scripts",
+            "references",
+            "reference",
+            "assets",
+            "templates",
+            "themes",
+            "examples",
+            "ooxml",
+        ];
+        let skill_dir = self.path.as_ref().and_then(|p| p.parent()).ok_or_else(|| {
+            VaultError::InvalidSkill(format!(
+                "Skill '{}' is not materialized as a directory on disk",
+                self.name
+            ))
+        })?;
+        let clean_rel = rel_path.trim().trim_start_matches('/');
+        let mut comps = Path::new(clean_rel).components();
+        let Some(std::path::Component::Normal(first_dir)) = comps.next() else {
+            return Err(VaultError::InvalidSkill(
+                "Bundled resource path must be inside scripts/, references/, assets/, templates/, or examples/".to_string(),
+            ));
+        };
+        let first_str = first_dir.to_string_lossy();
+        if !ALLOWED_SUBDIRS
+            .iter()
+            .any(|d| first_str.eq_ignore_ascii_case(d))
+            || Path::new(clean_rel).components().count() < 2
+            || Path::new(clean_rel).components().any(|c| {
+                matches!(
+                    c,
+                    std::path::Component::ParentDir
+                        | std::path::Component::RootDir
+                        | std::path::Component::Prefix(_)
+                )
+            })
+        {
+            return Err(VaultError::InvalidSkill(format!(
+                "Invalid Level-3 resource path '{}': must reside under scripts/, references/, assets/, templates/, or examples/ without '..'",
+                rel_path
+            )));
+        }
+        Ok(skill_dir.join(clean_rel))
+    }
+
+    /// Writes or updates a Level-3 bundled resource file inside the skill directory.
+    pub fn write_bundled_resource(&self, rel_path: &str, content: &str) -> Result<PathBuf> {
+        let target = self.resolve_sanctioned_resource_target(rel_path)?;
+        if let Some(parent) = target.parent() {
+            std::fs::create_dir_all(parent).map_err(|e| VaultError::Io {
+                path: parent.display().to_string(),
+                source: e,
+            })?;
+        }
+        std::fs::write(&target, content).map_err(|e| VaultError::Io {
+            path: target.display().to_string(),
+            source: e,
+        })?;
+        Ok(target)
+    }
+
+    /// Removes a Level-3 bundled resource file from inside the skill directory.
+    pub fn remove_bundled_resource(&self, rel_path: &str) -> Result<()> {
+        let target = self.resolve_sanctioned_resource_target(rel_path)?;
+        if target.is_file() {
+            std::fs::remove_file(&target).map_err(|e| VaultError::Io {
+                path: target.display().to_string(),
+                source: e,
+            })?;
+        }
+        Ok(())
+    }
+
     /// Normalizes a lowercase alphanumeric word into its morphological stem using a
     /// suffix-stripping table and trailing double-consonant reduction (e.g. `"debugging"` -> `"debug"`,
-    /// `"refactoring"` -> `"refactor"`, `"testing"` -> `"test"`).
+    /// `"refactoring"` -> `"refactor"`, `"authentication"` -> `"authent"`).
     #[must_use]
     pub fn normalize_stem(word: &str) -> &str {
         const MORPH_SUFFIXES: &[(&str, usize)] = &[
+            ("ication", 4),
+            ("ization", 4),
+            ("ation", 3),
             ("ing", 3),
             ("tion", 3),
             ("ment", 4),
@@ -497,99 +715,14 @@ impl VaultSkill {
         stem
     }
 
-    /// Computes a relevance score (`0..=300+`) between this skill and a user prompt using
-    /// stem normalization, trigger phrase matching, and domain token-set intersection.
+    /// Computes a calibrated BM25F relevance score (`0..=300+`) between this skill and `prompt`
+    /// via [`crate::vault::ranking::score_single_skill_bm25f`] (zero regex, zero hardcoded stopword lists).
     #[must_use]
     pub fn prompt_match_score(&self, prompt: &str) -> usize {
-        const STOP_STEMS: &[&str] = &[
-            "the", "and", "for", "with", "from", "into", "when", "before", "after", "use", "using",
-            "pro", "max", "new", "all", "app", "code", "file", "full", "auto", "mode", "skill",
-            "tool", "guide", "best", "practice", "work", "task", "driven", "based", "system",
-            "create", "build", "make", "add", "update", "write", "read", "run",
-        ];
-
-        let prompt_lower = prompt.to_ascii_lowercase();
-        if prompt_lower.trim().is_empty() {
-            return 0;
-        }
-
-        let name_lower = self.name.to_ascii_lowercase();
-        let mut score = 0usize;
-
-        if prompt_lower.contains(&format!("/{}", name_lower))
-            || crate::utils::has_word(&prompt_lower, &name_lower)
-            || (name_lower.contains('-') && prompt_lower.contains(&name_lower))
-        {
-            score = score.saturating_add(120);
-        }
-
-        let prompt_words: Vec<&str> = prompt_lower
-            .split(|c: char| !c.is_ascii_alphanumeric() && c != '_')
-            .filter(|w| w.len() >= 2)
-            .collect();
-        let prompt_stems: std::collections::HashSet<&str> = prompt_words
-            .iter()
-            .map(|w| Self::normalize_stem(w))
-            .collect();
-
-        // 1. Evaluate explicit frontmatter triggers
-        for trigger in &self.frontmatter.triggers {
-            let trig_lower = trigger.trim().to_ascii_lowercase();
-            if trig_lower.is_empty() {
-                continue;
-            }
-            if trig_lower.contains([' ', '-', '.']) {
-                if prompt_lower.contains(&trig_lower) {
-                    score = score.saturating_add(85);
-                }
-            } else {
-                let trig_stem = Self::normalize_stem(&trig_lower);
-                let matched = prompt_stems.contains(trig_stem)
-                    || prompt_words.iter().any(|w| {
-                        *w == trig_lower
-                            || (trig_lower.len() >= 4 && w.starts_with(trig_lower.as_str()))
-                    });
-                if matched {
-                    score = score.saturating_add(60);
-                }
-            }
-        }
-
-        // Efficiency modes (e.g. caveman) only activate on explicit name or trigger match
-        if self.category().eq_ignore_ascii_case("efficiency") {
-            return score;
-        }
-
-        // 2. Evaluate domain identifier stems in `skill.name`
-        for part in name_lower.split(['-', '_']) {
-            let stem = Self::normalize_stem(part);
-            if stem.len() >= 5 && !STOP_STEMS.contains(&stem) && prompt_stems.contains(stem) {
-                score = score.saturating_add(45);
-            }
-        }
-
-        // 3. Evaluate multi-token domain intersection with description + category
-        let desc_lower = self.description.to_ascii_lowercase();
-        let cat_lower = self.category().to_ascii_lowercase();
-        let mut domain_stems: std::collections::HashSet<&str> = std::collections::HashSet::new();
-        for tok in desc_lower
-            .split(|c: char| !c.is_ascii_alphanumeric())
-            .chain(cat_lower.split(|c: char| !c.is_ascii_alphanumeric()))
-        {
-            let stem = Self::normalize_stem(tok);
-            if stem.len() >= 5 && !STOP_STEMS.contains(&stem) {
-                domain_stems.insert(stem);
-            }
-        }
-        let overlap_count = domain_stems.intersection(&prompt_stems).count();
-        if overlap_count >= 2 {
-            score = score.saturating_add(overlap_count.saturating_mul(22));
-        }
-
-        score
+        crate::vault::ranking::score_single_skill_bm25f(self, prompt)
     }
 
-    /// Checks if this skill matches user prompt keywords via stem-aware scoring, triggers, or name.
+    /// Checks if this skill matches user prompt keywords via BM25F scoring.
     pub fn matches_prompt(&self, prompt: &str) -> bool {
         self.prompt_match_score(prompt) >= 45
     }
@@ -654,25 +787,25 @@ impl VaultSkill {
 }
 
 /// Automatically infers relevant trigger keywords from a skill's `name` and `description`
-/// when explicit `triggers` are omitted during skill creation or import.
+/// using character-entropy & stem-length ranking (zero hardcoded stopword arrays).
 pub fn infer_triggers_from_metadata(name: &str, description: &str) -> Vec<String> {
-    const STOP_WORDS: &[&str] = &[
-        "the", "and", "for", "with", "when", "use", "this", "skill", "that", "from", "into",
-        "your", "are", "can", "will", "should", "user", "asks", "guide", "patterns", "using",
-        "create", "creating", "build", "building", "modern", "how", "what", "any", "all",
-    ];
     let mut triggers = Vec::new();
+    let mut seen_stems = std::collections::HashSet::new();
     let clean_name = sanitize_skill_name(name);
     if !clean_name.is_empty() {
         triggers.push(clean_name.clone());
         for part in clean_name.split('-') {
-            if part.len() >= 3 && !STOP_WORDS.contains(&part) && !triggers.iter().any(|t| t == part)
-            {
-                triggers.push(part.to_string());
+            if part.len() >= 3 && !crate::vault::ranking::is_version_segment(part) {
+                let stem = VaultSkill::normalize_stem(part).to_string();
+                if seen_stems.insert(stem) && !triggers.iter().any(|t| t == part) {
+                    triggers.push(part.to_string());
+                }
             }
         }
     }
 
+    // Rank candidate description tokens by stem specificity (character diversity + stem length)
+    let mut candidates: Vec<(usize, String)> = Vec::new();
     for word in description
         .split(|c: char| !c.is_alphanumeric() && c != '-' && c != '.')
         .map(|w| {
@@ -680,10 +813,18 @@ pub fn infer_triggers_from_metadata(name: &str, description: &str) -> Vec<String
                 .to_lowercase()
         })
     {
-        if word.len() >= 4
-            && !STOP_WORDS.contains(&word.as_str())
-            && !triggers.iter().any(|t| t == &word)
-        {
+        let stem = VaultSkill::normalize_stem(&word);
+        if stem.len() >= 5 && !crate::vault::ranking::is_version_segment(&word) {
+            let unique_chars: std::collections::HashSet<char> = stem.chars().collect();
+            let info_weight = stem.len().saturating_mul(unique_chars.len());
+            candidates.push((info_weight, word));
+        }
+    }
+    candidates.sort_by(|a, b| b.0.cmp(&a.0));
+
+    for (_, word) in candidates {
+        let stem = VaultSkill::normalize_stem(&word).to_string();
+        if seen_stems.insert(stem) && !triggers.iter().any(|t| t == &word) {
             triggers.push(word);
             if triggers.len() >= 8 {
                 break;
@@ -826,6 +967,9 @@ fn parse_yaml_frontmatter_fields(frontmatter: &str, fm: &mut SkillFrontmatter) {
                     Some("allowed_tools") => fm.allowed_tools.push(clean_item),
                     Some("when_repo_state") => fm.when_repo_state.push(clean_item),
                     Some("after_tools") => fm.after_tools.push(clean_item),
+                    Some("requires_tools") => fm.requires_tools.push(clean_item),
+                    Some("fallback_for_tools") => fm.fallback_for_tools.push(clean_item),
+                    Some("enrichments") => fm.enrichments.push(clean_item),
                     _ => {}
                 }
             }
@@ -924,6 +1068,42 @@ fn parse_yaml_frontmatter_fields(frontmatter: &str, fm: &mut SkillFrontmatter) {
                         &mut current_list_key,
                     );
                 }
+                "requires_tools" | "requires-tools" | "requires_toolsets" => {
+                    parse_yaml_list_value(
+                        v,
+                        "requires_tools",
+                        &mut fm.requires_tools,
+                        &mut current_list_key,
+                    );
+                }
+                "fallback_for_tools" | "fallback-for-tools" | "fallback_for_toolsets" => {
+                    parse_yaml_list_value(
+                        v,
+                        "fallback_for_tools",
+                        &mut fm.fallback_for_tools,
+                        &mut current_list_key,
+                    );
+                }
+                "enrichments" => {
+                    parse_yaml_list_value(
+                        v,
+                        "enrichments",
+                        &mut fm.enrichments,
+                        &mut current_list_key,
+                    );
+                }
+                "context" | "execution_context" | "execution-context" => {
+                    current_list_key = None;
+                    if !clean.is_empty() {
+                        fm.context = Some(clean.to_lowercase());
+                    }
+                }
+                "agent" => {
+                    current_list_key = None;
+                    if !clean.is_empty() {
+                        fm.agent = Some(clean.to_lowercase());
+                    }
+                }
                 _ => {
                     current_list_key = None;
                 }
@@ -967,12 +1147,25 @@ pub fn format_skill_markdown(fm: &SkillFrontmatter, instructions: &str) -> Strin
     if fm.always_apply {
         out.push_str("always_apply: true\n");
     }
+    if let Some(context) = &fm.context {
+        if !context.trim().is_empty() {
+            out.push_str(&format!("context: {}\n", quote_yaml_scalar(context)));
+        }
+    }
+    if let Some(agent) = &fm.agent {
+        if !agent.trim().is_empty() {
+            out.push_str(&format!("agent: {}\n", quote_yaml_scalar(agent)));
+        }
+    }
     for (key, list) in [
         ("globs", &fm.globs),
         ("triggers", &fm.triggers),
         ("allowed_tools", &fm.allowed_tools),
         ("when_repo_state", &fm.when_repo_state),
         ("after_tools", &fm.after_tools),
+        ("requires_tools", &fm.requires_tools),
+        ("fallback_for_tools", &fm.fallback_for_tools),
+        ("enrichments", &fm.enrichments),
     ] {
         if !list.is_empty() {
             let list_json = serde_json::to_string(list).unwrap_or_else(|_| "[]".to_string());
@@ -1028,6 +1221,7 @@ Always use `@import "tailwindcss";`.
             allowed_tools: vec!["exec_cmd".to_string()],
             when_repo_state: vec!["fresh".to_string()],
             after_tools: vec!["kit_stack_add".to_string()],
+            ..Default::default()
         };
         let body = "Use useActionState and Server Actions.";
         let formatted = format_skill_markdown(&fm, body);

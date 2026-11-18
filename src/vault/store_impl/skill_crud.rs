@@ -8,52 +8,55 @@ use crate::vault::models::{
 use std::fs;
 use std::path::Path;
 
-impl VaultStore {
-    /// Creates a new skill in the target scope (`Project` or `Global`).
-    #[allow(clippy::too_many_arguments)]
-    pub fn create_skill(
-        &self,
-        scope: SkillScope,
-        name: &str,
-        description: &str,
-        category: Option<&str>,
-        kind: Option<&str>,
-        instructions: &str,
-        triggers: Vec<String>,
-        globs: Vec<String>,
-    ) -> Result<VaultSkill> {
-        self.create_skill_with_tools(
-            scope,
-            name,
-            description,
-            category,
-            kind,
-            instructions,
-            triggers,
-            globs,
-            Vec::new(),
-        )
-    }
+/// Structured specification for extended frontmatter and Level-3 bundled file updates.
+#[derive(Debug, Default, Clone)]
+pub struct SkillPatchSpec<'a> {
+    pub new_instructions: Option<&'a str>,
+    pub search_block: Option<&'a str>,
+    pub replace_block: Option<&'a str>,
+    pub description: Option<&'a str>,
+    pub category: Option<&'a str>,
+    pub kind: Option<&'a str>,
+    pub triggers: Option<Vec<String>>,
+    pub globs: Option<Vec<String>>,
+    pub always_apply: Option<bool>,
+    pub allowed_tools: Option<Vec<String>>,
+    pub after_tools: Option<Vec<String>>,
+    pub when_repo_state: Option<Vec<String>>,
+    pub requires_tools: Option<Vec<String>>,
+    pub fallback_for_tools: Option<Vec<String>>,
+    pub context: Option<&'a str>,
+    pub agent: Option<&'a str>,
+    pub resource_path: Option<&'a str>,
+    pub resource_content: Option<&'a str>,
+    pub delete_resource: bool,
+}
 
-    /// Creates a new skill in the target scope (`Project` or `Global`) with optional `allowed_tools`.
-    #[allow(clippy::too_many_arguments)]
-    pub fn create_skill_with_tools(
+impl VaultStore {
+    /// Creates a new skill in the target scope (`Project` or `Global`) preserving all `SkillFrontmatter` fields.
+    pub fn create_skill_from_frontmatter(
         &self,
         scope: SkillScope,
-        name: &str,
-        description: &str,
-        category: Option<&str>,
-        kind: Option<&str>,
+        mut fm: SkillFrontmatter,
         instructions: &str,
-        triggers: Vec<String>,
-        globs: Vec<String>,
-        allowed_tools: Vec<String>,
     ) -> Result<VaultSkill> {
-        let clean_name = sanitize_skill_name(name);
+        let clean_name = sanitize_skill_name(&fm.name);
         if clean_name.is_empty() {
             return Err(VaultError::InvalidSkill(
                 "Skill name cannot be empty".to_string(),
             ));
+        }
+        fm.name = clean_name.clone();
+        fm.description = fm.description.trim().to_string();
+        if fm.version.trim().is_empty() {
+            fm.version = "1.0.0".to_string();
+        }
+        if fm.author.is_none() {
+            fm.author = Some("minicode".to_string());
+        }
+        if fm.triggers.is_empty() {
+            fm.triggers =
+                crate::vault::models::infer_triggers_from_metadata(&clean_name, &fm.description);
         }
 
         let effective_scope = match scope {
@@ -61,7 +64,9 @@ impl VaultStore {
             other => other,
         };
         let target_dir = match effective_scope {
-            SkillScope::Project => self.project_skills_dir().join(&clean_name),
+            SkillScope::Project | SkillScope::Builtin => {
+                self.project_skills_dir().join(&clean_name)
+            }
             SkillScope::Global => {
                 let dir = self.global_skills_dir().ok_or_else(|| {
                     VaultError::InvalidSkill(
@@ -70,27 +75,6 @@ impl VaultStore {
                 })?;
                 dir.join(&clean_name)
             }
-            SkillScope::Builtin => self.project_skills_dir().join(&clean_name),
-        };
-
-        let effective_triggers = if triggers.is_empty() {
-            crate::vault::models::infer_triggers_from_metadata(&clean_name, description)
-        } else {
-            triggers
-        };
-
-        let fm = SkillFrontmatter {
-            name: clean_name.clone(),
-            description: description.trim().to_string(),
-            version: "1.0.0".to_string(),
-            author: Some("minicode".to_string()),
-            category: category.map(|c| c.trim().to_lowercase()),
-            kind: kind.map(|k| k.trim().to_lowercase()),
-            globs,
-            triggers: effective_triggers,
-            always_apply: false,
-            allowed_tools,
-            ..Default::default()
         };
 
         let content = format_skill_markdown(&fm, instructions);
@@ -138,6 +122,62 @@ impl VaultStore {
             path: Some(target_file),
             is_active_in_project: effective_scope == SkillScope::Project,
         })
+    }
+
+    /// Creates a new skill in the target scope (`Project` or `Global`).
+    #[allow(clippy::too_many_arguments)]
+    pub fn create_skill(
+        &self,
+        scope: SkillScope,
+        name: &str,
+        description: &str,
+        category: Option<&str>,
+        kind: Option<&str>,
+        instructions: &str,
+        triggers: Vec<String>,
+        globs: Vec<String>,
+    ) -> Result<VaultSkill> {
+        self.create_skill_with_tools(
+            scope,
+            name,
+            description,
+            category,
+            kind,
+            instructions,
+            triggers,
+            globs,
+            Vec::new(),
+        )
+    }
+
+    /// Creates a new skill in the target scope (`Project` or `Global`) with optional `allowed_tools`.
+    #[allow(clippy::too_many_arguments)]
+    pub fn create_skill_with_tools(
+        &self,
+        scope: SkillScope,
+        name: &str,
+        description: &str,
+        category: Option<&str>,
+        kind: Option<&str>,
+        instructions: &str,
+        triggers: Vec<String>,
+        globs: Vec<String>,
+        allowed_tools: Vec<String>,
+    ) -> Result<VaultSkill> {
+        let fm = SkillFrontmatter {
+            name: sanitize_skill_name(name),
+            description: description.trim().to_string(),
+            version: "1.0.0".to_string(),
+            author: Some("minicode".to_string()),
+            category: category.map(|c| c.trim().to_lowercase()),
+            kind: kind.map(|k| k.trim().to_lowercase()),
+            globs,
+            triggers,
+            always_apply: false,
+            allowed_tools,
+            ..Default::default()
+        };
+        self.create_skill_from_frontmatter(scope, fm, instructions)
     }
 
     /// Enforces the fail-closed SkillSpector pre-install security gate.
@@ -392,13 +432,40 @@ impl VaultStore {
         globs: Option<Vec<String>>,
         always_apply: Option<bool>,
     ) -> Result<VaultSkill> {
+        self.patch_skill_with_spec(
+            scope,
+            name,
+            SkillPatchSpec {
+                new_instructions,
+                search_block,
+                replace_block,
+                description,
+                category,
+                kind,
+                triggers,
+                globs,
+                always_apply,
+                ..Default::default()
+            },
+        )
+    }
+
+    /// Extended surgical skill patch supporting all frontmatter fields (`allowed_tools`, `after_tools`,
+    /// `when_repo_state`, `requires_tools`, `fallback_for_tools`, `context`, `agent`) and Level-3
+    /// bundled resource file writes/removals (`scripts/`, `references/`, `assets/`, `templates/`).
+    pub fn patch_skill_with_spec(
+        &self,
+        scope: SkillScope,
+        name: &str,
+        spec: SkillPatchSpec<'_>,
+    ) -> Result<VaultSkill> {
         let clean = sanitize_skill_name(name);
         self.clear_skill_tombstone(&clean);
         let existing = self.get_skill(&clean)?;
 
-        let updated_instructions = if let Some(full) = new_instructions {
+        let updated_instructions = if let Some(full) = spec.new_instructions {
             full.trim().to_string()
-        } else if let (Some(search), Some(replace)) = (search_block, replace_block) {
+        } else if let (Some(search), Some(replace)) = (spec.search_block, spec.replace_block) {
             if !existing.instructions.contains(search) {
                 return Err(VaultError::InvalidSkill(format!(
                     "Patch search_block not found in skill '{}'",
@@ -415,31 +482,54 @@ impl VaultStore {
         };
 
         let mut fm = existing.frontmatter.clone();
-        if let Some(desc) = description {
+        if let Some(desc) = spec.description {
             if !desc.trim().is_empty() {
                 fm.description = desc.trim().to_string();
             }
         }
-        if let Some(cat) = category {
+        if let Some(cat) = spec.category {
             if !cat.trim().is_empty() {
                 fm.category = Some(cat.trim().to_lowercase());
             }
         }
-        if let Some(k) = kind {
+        if let Some(k) = spec.kind {
             if !k.trim().is_empty() {
                 fm.kind = Some(k.trim().to_lowercase());
             }
         }
-        if let Some(trigs) = triggers {
+        if let Some(trigs) = spec.triggers {
             if !trigs.is_empty() {
                 fm.triggers = trigs;
             }
         }
-        if let Some(g) = globs {
+        if let Some(g) = spec.globs {
             fm.globs = g;
         }
-        if let Some(aa) = always_apply {
+        if let Some(aa) = spec.always_apply {
             fm.always_apply = aa;
+        }
+        if let Some(allowed) = spec.allowed_tools {
+            fm.allowed_tools = allowed;
+        }
+        if let Some(after) = spec.after_tools {
+            fm.after_tools = after;
+        }
+        if let Some(states) = spec.when_repo_state {
+            fm.when_repo_state = states;
+        }
+        if let Some(reqs) = spec.requires_tools {
+            fm.requires_tools = reqs;
+        }
+        if let Some(fallbacks) = spec.fallback_for_tools {
+            fm.fallback_for_tools = fallbacks;
+        }
+        if let Some(ctx) = spec.context {
+            let trimmed = ctx.trim().to_lowercase();
+            fm.context = (!trimmed.is_empty()).then_some(trimmed);
+        }
+        if let Some(ag) = spec.agent {
+            let trimmed = ag.trim().to_lowercase();
+            fm.agent = (!trimmed.is_empty()).then_some(trimmed);
         }
 
         let effective_scope = match scope {
@@ -485,6 +575,35 @@ impl VaultStore {
             source: e,
         })?;
 
+        let materialized = VaultSkill {
+            name: existing.name.clone(),
+            description: fm.description.clone(),
+            scope: effective_scope,
+            frontmatter: fm.clone(),
+            instructions: updated_instructions.clone(),
+            raw_content: new_content.clone(),
+            path: Some(target_path.clone()),
+            is_active_in_project: effective_scope == SkillScope::Project,
+        };
+
+        if let Some(rel_res) = spec.resource_path {
+            if spec.delete_resource {
+                materialized.remove_bundled_resource(rel_res)?;
+            } else if let Some(res_body) = spec.resource_content {
+                let written_path = materialized.write_bundled_resource(rel_res, res_body)?;
+                if let Some(skill_dir) = target_path.parent() {
+                    let full_report =
+                        crate::vault::skillspector::SkillSpectorEngine::scan_directory_or_file(
+                            skill_dir, None,
+                        );
+                    if let Err(gate_err) = self.enforce_security_gate(&full_report) {
+                        let _ = fs::remove_file(&written_path);
+                        return Err(gate_err);
+                    }
+                }
+            }
+        }
+
         self.upsert_mmap_vault_index_entry(
             effective_scope,
             &target_path,
@@ -497,16 +616,7 @@ impl VaultStore {
             let _ = self.add_to_manifest_active_skills(&existing.name);
         }
 
-        Ok(VaultSkill {
-            name: existing.name,
-            description: fm.description.clone(),
-            scope: effective_scope,
-            frontmatter: fm,
-            instructions: updated_instructions,
-            raw_content: new_content,
-            path: Some(target_path),
-            is_active_in_project: effective_scope == SkillScope::Project,
-        })
+        Ok(materialized)
     }
 
     /// Deletes a skill completely from the specified scope (including built-in/orchestrator skills via tombstones).
@@ -526,7 +636,12 @@ impl VaultStore {
                 Ok(())
             }
             SkillScope::Global => {
+                let mut global_dirs = Vec::new();
                 if let Some(dir) = self.global_skills_dir() {
+                    global_dirs.push(dir);
+                }
+                global_dirs.extend(self.legacy_global_skills_dirs());
+                for dir in global_dirs {
                     let target_dir = dir.join(&clean);
                     if target_dir.exists() {
                         fs::remove_dir_all(&target_dir).map_err(|e| VaultError::Io {
@@ -539,9 +654,7 @@ impl VaultStore {
                         let _ = fs::remove_file(&target_file);
                     }
                 }
-                if is_builtin {
-                    self.record_skill_tombstone(SkillScope::Global, &clean)?;
-                }
+                self.record_skill_tombstone(SkillScope::Global, &clean)?;
                 Ok(())
             }
             SkillScope::Builtin => {
@@ -740,28 +853,7 @@ impl VaultStore {
         );
         self.enforce_security_gate(&scan_report)?;
 
-        let mut created = self.create_skill(
-            target_scope,
-            &fm.name,
-            &fm.description,
-            fm.category.as_deref(),
-            fm.kind.as_deref(),
-            &instructions,
-            fm.triggers,
-            fm.globs,
-        )?;
-
-        if !fm.allowed_tools.is_empty() {
-            created.frontmatter.allowed_tools = fm.allowed_tools;
-            if let Some(ref target_file) = created.path {
-                let updated_content =
-                    format_skill_markdown(&created.frontmatter, &created.instructions);
-                let _ = fs::write(target_file, &updated_content);
-                created.raw_content = updated_content;
-            }
-        }
-
-        Ok(created)
+        self.create_skill_from_frontmatter(target_scope, fm, &instructions)
     }
 
     /// Resolves `active_skills` list from `minikit.json` or `onpkg.json`.

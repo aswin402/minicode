@@ -21,6 +21,8 @@ pub type CairoWriteFunc =
 
 pub const G_PRIORITY_DEFAULT_IDLE: c_int = 200;
 pub const GTK_WINDOW_TOPLEVEL: c_int = 0;
+pub const GTK_ALIGN_FILL: c_int = 0;
+pub const GTK_ALIGN_CENTER: c_int = 3;
 pub const CAIRO_FORMAT_ARGB32: c_int = 0;
 pub const CAIRO_STATUS_SUCCESS: c_int = 0;
 pub const WEBKIT_CACHE_MODEL_DOCUMENT_VIEWER: c_int = 0;
@@ -103,6 +105,8 @@ pub fn tune_allocator_env_with_webgl(headless: bool, webgl: bool) {
 
     if headless {
         for &(key, val) in &[
+            ("GDK_SCALE", "1"),
+            ("GDK_DPI_SCALE", "1"),
             ("JSC_forceRAMSize", "100663296"),
             ("JSC_useFTLJIT", "0"),
             ("JSC_useWasmFastMemory", "0"),
@@ -116,6 +120,7 @@ pub fn tune_allocator_env_with_webgl(headless: bool, webgl: bool) {
     } else {
         for &(key, val) in &[
             ("GDK_SCALE", "1"),
+            ("GDK_DPI_SCALE", "1"),
             ("JSC_forceRAMSize", "201326592"),
             ("LP_NUM_THREADS", "2"),
         ] {
@@ -211,6 +216,8 @@ pub struct WebKitGtkApi {
     pub gtk_container_add: unsafe extern "C" fn(*mut c_void, *mut c_void),
     pub gtk_container_remove: Option<unsafe extern "C" fn(*mut c_void, *mut c_void)>,
     pub gtk_widget_set_size_request: unsafe extern "C" fn(*mut c_void, c_int, c_int),
+    pub gtk_widget_set_halign: Option<unsafe extern "C" fn(*mut c_void, c_int)>,
+    pub gtk_widget_set_valign: Option<unsafe extern "C" fn(*mut c_void, c_int)>,
     pub gtk_widget_show_all: unsafe extern "C" fn(*mut c_void),
     pub gtk_widget_hide: unsafe extern "C" fn(*mut c_void),
     pub gtk_widget_destroy: unsafe extern "C" fn(*mut c_void),
@@ -453,6 +460,8 @@ impl WebKitGtkApi {
                 gtk_container_add: load_sym(&handles, "gtk_container_add")?,
                 gtk_container_remove: load_opt_sym(&handles, "gtk_container_remove"),
                 gtk_widget_set_size_request: load_sym(&handles, "gtk_widget_set_size_request")?,
+                gtk_widget_set_halign: load_opt_sym(&handles, "gtk_widget_set_halign"),
+                gtk_widget_set_valign: load_opt_sym(&handles, "gtk_widget_set_valign"),
                 gtk_widget_show_all: load_sym(&handles, "gtk_widget_show_all")?,
                 gtk_widget_hide: load_sym(&handles, "gtk_widget_hide")?,
                 gtk_widget_destroy: load_sym(&handles, "gtk_widget_destroy")?,

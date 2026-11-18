@@ -98,6 +98,7 @@ impl GraphSynchronizer {
         let latency = start.elapsed().as_millis();
         let total_nodes = graph.graph().node_count();
         let total_edges = graph.graph().edge_count();
+        CodeGraph::store_in_global_cache(workspace_root, std::sync::Arc::new(graph));
 
         Ok(GraphSyncStats {
             files_scanned,

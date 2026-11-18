@@ -12,11 +12,12 @@ use crate::ffi::{
     base64_encode, configure_runtime_webgl_env, trim_process_heap, tune_allocator_env_with_webgl,
     GError, WebKitGtkApi, CAIRO_FORMAT_ARGB32, CAIRO_STATUS_SUCCESS, GDK_BUTTON_PRESS_MASK,
     GDK_KEY_PRESS_MASK, GDK_POINTER_MOTION_MASK, GDK_SCROLL_MASK, GDK_WINDOW_STATE_ICONIFIED,
-    GDK_WINDOW_STATE_WITHDRAWN, GTK_WINDOW_TOPLEVEL, G_PRIORITY_DEFAULT_IDLE,
-    WEBKIT_CACHE_MODEL_DOCUMENT_VIEWER, WEBKIT_HARDWARE_ACCELERATION_POLICY_NEVER,
-    WEBKIT_HARDWARE_ACCELERATION_POLICY_ON_DEMAND, WEBKIT_LOAD_FINISHED,
-    WEBKIT_NETWORK_PROXY_MODE_CUSTOM, WEBKIT_SNAPSHOT_OPTIONS_NONE, WEBKIT_SNAPSHOT_REGION_VISIBLE,
-    WEBKIT_USER_CONTENT_INJECTED_ALL_FRAMES, WEBKIT_USER_SCRIPT_INJECT_AT_DOCUMENT_START,
+    GDK_WINDOW_STATE_WITHDRAWN, GTK_ALIGN_CENTER, GTK_ALIGN_FILL, GTK_WINDOW_TOPLEVEL,
+    G_PRIORITY_DEFAULT_IDLE, WEBKIT_CACHE_MODEL_DOCUMENT_VIEWER,
+    WEBKIT_HARDWARE_ACCELERATION_POLICY_NEVER, WEBKIT_HARDWARE_ACCELERATION_POLICY_ON_DEMAND,
+    WEBKIT_LOAD_FINISHED, WEBKIT_NETWORK_PROXY_MODE_CUSTOM, WEBKIT_SNAPSHOT_OPTIONS_NONE,
+    WEBKIT_SNAPSHOT_REGION_VISIBLE, WEBKIT_USER_CONTENT_INJECTED_ALL_FRAMES,
+    WEBKIT_USER_SCRIPT_INJECT_AT_DOCUMENT_START,
 };
 use crate::net_policy::{
     build_webkit_content_blocker_json, ResourceProfile, CLEAN_BROWSER_USER_AGENT,
@@ -74,6 +75,7 @@ pub enum BrowserBackendCmd {
     SetViewport {
         width: u32,
         height: u32,
+        overridden: bool,
         reply: oneshot::Sender<Result<(), String>>,
     },
     SetResourceProfile {
@@ -495,6 +497,7 @@ enum WebKitActorCmd {
     SetViewport {
         width: u32,
         height: u32,
+        overridden: bool,
         reply: oneshot::Sender<Result<(), String>>,
     },
     SetResourceProfile {
@@ -562,10 +565,12 @@ struct SupervisorState {
     contexts: BTreeSet<String>,
     context_proxies: HashMap<String, String>,
     active_target_id: String,
+    main_target_claimed: bool,
     next_tab_seq: u64,
     next_ctx_seq: u64,
     viewport_width: u32,
     viewport_height: u32,
+    viewport_overridden: bool,
     adblock: bool,
     resource_profile: ResourceProfile,
     mock_routes: Vec<MockRoute>,
@@ -663,6 +668,17 @@ impl SupervisorState {
                         reply: rtx,
                     });
                     let _ = rrx.await;
+
+                    if self.viewport_overridden {
+                        let (vtx, vrx) = oneshot::channel();
+                        let _ = wk.send(WebKitActorCmd::SetViewport {
+                            width: self.viewport_width,
+                            height: self.viewport_height,
+                            overridden: true,
+                            reply: vtx,
+                        });
+                        let _ = vrx.await;
+                    }
 
                     self.webkit = Some(wk);
                 }
@@ -1026,6 +1042,7 @@ async fn run_adaptive_supervisor(
     let mut sup = SupervisorState {
         viewport_width: opts.width.max(320),
         viewport_height: opts.height.max(240),
+        viewport_overridden: false,
         adblock: opts.adblock,
         opts: opts.clone(),
         can_use_webkit,
@@ -1036,6 +1053,7 @@ async fn run_adaptive_supervisor(
         contexts: BTreeSet::new(),
         context_proxies: HashMap::new(),
         active_target_id: "main".to_string(),
+        main_target_claimed: opts.initial_url.is_some(),
         next_tab_seq: 2,
         next_ctx_seq: 1,
         resource_profile: ResourceProfile::Full,
@@ -1450,10 +1468,12 @@ async fn handle_supervisor_cmd(sup: &mut SupervisorState, cmd: BrowserBackendCmd
         BrowserBackendCmd::SetViewport {
             width,
             height,
+            overridden,
             reply,
         } => {
             sup.viewport_width = width.max(320);
             sup.viewport_height = height.max(240);
+            sup.viewport_overridden = overridden;
             for tab in sup.tabs.values_mut() {
                 tab.page.viewport_width = sup.viewport_width;
                 tab.page.viewport_height = sup.viewport_height;
@@ -1462,6 +1482,7 @@ async fn handle_supervisor_cmd(sup: &mut SupervisorState, cmd: BrowserBackendCmd
                 let _ = wk.send(WebKitActorCmd::SetViewport {
                     width: sup.viewport_width,
                     height: sup.viewport_height,
+                    overridden,
                     reply,
                 });
             } else {
@@ -1992,6 +2013,30 @@ async fn handle_supervisor_cmd(sup: &mut SupervisorState, cmd: BrowserBackendCmd
             background,
             reply,
         } => {
+            let can_claim_virgin_main = !sup.main_target_claimed
+                && context_id.is_none()
+                && sup.tabs.len() == 1
+                && sup.tabs.get("main").is_some_and(|t| {
+                    t.context_id.is_none()
+                        && t.page.current_url == "about:blank"
+                        && t.webkit_synced_url.is_none()
+                });
+            if can_claim_virgin_main {
+                sup.main_target_claimed = true;
+                sup.active_target_id = "main".to_string();
+                if let Some(u) = url.filter(|s| !s.trim().is_empty() && s.trim() != "about:blank") {
+                    let (ntx, nrx) = oneshot::channel();
+                    Box::pin(handle_supervisor_cmd(
+                        sup,
+                        BrowserBackendCmd::Navigate { url: u, reply: ntx },
+                    ))
+                    .await;
+                    let _ = nrx.await;
+                }
+                let _ = reply.send(Ok("main".to_string()));
+                return;
+            }
+
             let prev_active = sup.active_target_id.clone();
             let tid = format!("tab-{}", sup.next_tab_seq);
             sup.next_tab_seq += 1;
@@ -2274,9 +2319,13 @@ async fn handle_supervisor_cmd(sup: &mut SupervisorState, cmd: BrowserBackendCmd
         BrowserBackendCmd::CloseTarget { target_id, reply } => {
             if sup.tabs.len() <= 1 && sup.tabs.contains_key(&target_id) {
                 // Keep at least one tab alive; reset it to about:blank
+                let is_main = target_id == "main";
                 let tab = sup.active_tab_mut();
                 let _ = tab.page.navigate("about:blank").await;
                 tab.webkit_synced_url = None;
+                if is_main {
+                    sup.main_target_claimed = false;
+                }
                 trim_process_heap();
                 let _ = reply.send(Ok(true));
                 return;
@@ -2624,6 +2673,7 @@ struct WebKitActorState {
     webgl: bool,
     width: u32,
     height: u32,
+    viewport_overridden: bool,
     adblock: bool,
     resource_profile: ResourceProfile,
     mock_routes: Vec<MockRoute>,
@@ -2781,6 +2831,7 @@ fn run_webkit_thread(
             webgl: opts.webgl,
             width: opts.width.max(320),
             height: opts.height.max(240),
+            viewport_overridden: false,
             adblock: opts.adblock,
             resource_profile: ResourceProfile::Full,
             mock_routes: Vec::new(),
@@ -4038,31 +4089,45 @@ unsafe fn handle_webkit_command(state: &mut WebKitActorState, cmd: WebKitActorCm
         WebKitActorCmd::SetViewport {
             width,
             height,
+            overridden,
             reply,
         } => {
             state.width = width.max(320);
             state.height = height.max(240);
+            state.viewport_overridden = overridden;
+            let w_i32 = state.width as c_int;
+            let h_i32 = state.height as c_int;
+            let gui_align = if overridden {
+                GTK_ALIGN_CENTER
+            } else {
+                GTK_ALIGN_FILL
+            };
             for slot in state.tabs.values() {
+                (state.api.gtk_window_set_default_size)(slot.window, w_i32, h_i32);
                 if !slot.webview.is_null() {
-                    (state.api.gtk_widget_set_size_request)(
-                        slot.webview,
-                        state.width as c_int,
-                        state.height as c_int,
-                    );
+                    if slot.is_gui_window {
+                        if let Some(set_halign) = state.api.gtk_widget_set_halign {
+                            set_halign(slot.webview, gui_align);
+                        }
+                        if let Some(set_valign) = state.api.gtk_widget_set_valign {
+                            set_valign(slot.webview, gui_align);
+                        }
+                    }
+                    (state.api.gtk_widget_set_size_request)(slot.webview, w_i32, h_i32);
                     (state.api.gtk_widget_queue_resize)(slot.webview);
                     (state.api.gtk_widget_queue_draw)(slot.webview);
                 } else if !slot.frozen_drawing_area.is_null() {
-                    (state.api.gtk_widget_set_size_request)(
-                        slot.frozen_drawing_area,
-                        state.width as c_int,
-                        state.height as c_int,
-                    );
+                    (state.api.gtk_widget_set_size_request)(slot.frozen_drawing_area, w_i32, h_i32);
                 }
-                (state.api.gtk_window_resize)(
-                    slot.window,
-                    state.width as c_int,
-                    state.height as c_int,
-                );
+                (state.api.gtk_window_resize)(slot.window, w_i32, h_i32);
+                (state.api.gtk_widget_queue_resize)(slot.window);
+            }
+            // Pump GTK layout allocation ticks synchronously so `window.innerWidth` / `innerHeight`
+            // reflect the new viewport dimensions before returning to the CDP caller.
+            for _ in 0..16 {
+                if (state.api.gtk_main_iteration_do)(0) == 0 {
+                    break;
+                }
             }
             let _ = reply.send(Ok(()));
         }
@@ -4359,6 +4424,16 @@ unsafe fn start_webkit_js_eval_inner(
 
     let wrapped = format!(
         r#"(function(__mb_tok) {{
+  var __fmtErr = function(e) {{
+    if (!e) return "Unknown JavaScript error";
+    if (typeof e === "string") return e;
+    var name = e.name ? String(e.name) : "Error";
+    var msg = e.message ? String(e.message) : "";
+    var head = msg ? (msg.indexOf(name) === 0 ? msg : (name + ": " + msg)) : String(e);
+    var st = e.stack ? String(e.stack).trim() : "";
+    if (!st || st === "@" || st === "eval code@" || st === head) return head;
+    return st.indexOf(head) === 0 ? st : (head + "\n" + st);
+  }};
   var __post = function(ok, rtype, val, isUndef, errText) {{
     if (window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers.minibrowseBridge) {{
       window.webkit.messageHandlers.minibrowseBridge.postMessage(JSON.stringify({{
@@ -4370,16 +4445,27 @@ unsafe fn start_webkit_js_eval_inner(
     }}
     return false;
   }};
+  var __src = {expr_json};
   try {{
-    var __raw = (0, eval)({expr_json});
+    var __raw;
+    try {{
+      __raw = (0, eval)(__src);
+    }} catch (__parseErr) {{
+      var __pm = String((__parseErr && __parseErr.message) || "");
+      if (__parseErr instanceof SyntaxError && (__pm.indexOf("Return statements") !== -1 || __pm.indexOf("'return'") !== -1 || __pm.indexOf("'await'") !== -1 || __pm.indexOf("await ") !== -1)) {{
+        __raw = (0, eval)("(async function() {{\n" + __src + "\n}})()");
+      }} else {{
+        throw __parseErr;
+      }}
+    }}
     Promise.resolve(__raw).then(function(__v) {{
       __post(true, typeof __v, __v === undefined ? null : __v, __v === undefined, "");
     }}, function(__e) {{
-      __post(false, "error", null, false, String((__e && (__e.stack || __e.message)) || __e));
+      __post(false, "error", null, false, __fmtErr(__e));
     }});
     return "__mb_async__";
   }} catch (__syncErr) {{
-    var __msg = String((__syncErr && (__syncErr.stack || __syncErr.message)) || __syncErr);
+    var __msg = __fmtErr(__syncErr);
     if (!__post(false, "error", null, false, __msg)) {{
       throw __syncErr;
     }}

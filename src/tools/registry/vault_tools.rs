@@ -54,6 +54,10 @@ pub fn get_schemas() -> Vec<ToolSchema> {
                     "file_path": {
                         "type": "string",
                         "description": "Optional relative path to a bundled Level-3 resource inside the skill directory (e.g. 'references/guide.md', 'scripts/check.py')"
+                    },
+                    "full": {
+                        "type": "boolean",
+                        "description": "Optional override to read full raw instructions inline even when the skill declares context='fork'"
                     }
                 },
                 "required": ["name"]
@@ -124,6 +128,30 @@ pub fn get_schemas() -> Vec<ToolSchema> {
                         "items": { "type": "string" },
                         "description": "File match globs (e.g. ['*.css', '*.tsx'])"
                     },
+                    "allowed_tools": {
+                        "type": "array",
+                        "items": { "type": "string" },
+                        "description": "Explicit tools auto-activated when this skill is used (e.g. ['read_file', 'power_verify'])"
+                    },
+                    "requires_tools": {
+                        "type": "array",
+                        "items": { "type": "string" },
+                        "description": "Prerequisite tools required for this skill to be eligible"
+                    },
+                    "fallback_for_tools": {
+                        "type": "array",
+                        "items": { "type": "string" },
+                        "description": "Primary tools that this skill serves as a fallback for when inactive"
+                    },
+                    "context": {
+                        "type": "string",
+                        "enum": ["inline", "fork"],
+                        "description": "Execution isolation: 'inline' (default) or 'fork' (run in isolated MiniPub subagent)"
+                    },
+                    "agent": {
+                        "type": "string",
+                        "description": "Target MiniPub role when context='fork' (e.g. 'reviewer', 'scout', 'security', 'coder')"
+                    },
                     "scope": {
                         "type": "string",
                         "enum": ["project", "global"],
@@ -181,6 +209,52 @@ pub fn get_schemas() -> Vec<ToolSchema> {
                     "always_apply": {
                         "type": "boolean",
                         "description": "Optional flag to always apply this skill in workspace prompts"
+                    },
+                    "allowed_tools": {
+                        "type": "array",
+                        "items": { "type": "string" },
+                        "description": "Optional updated allowed_tools list"
+                    },
+                    "after_tools": {
+                        "type": "array",
+                        "items": { "type": "string" },
+                        "description": "Optional post-tool transition hooks"
+                    },
+                    "when_repo_state": {
+                        "type": "array",
+                        "items": { "type": "string" },
+                        "description": "Optional repo-state filter ('fresh', 'docs_only', 'existing')"
+                    },
+                    "requires_tools": {
+                        "type": "array",
+                        "items": { "type": "string" },
+                        "description": "Optional prerequisite tools required for eligibility"
+                    },
+                    "fallback_for_tools": {
+                        "type": "array",
+                        "items": { "type": "string" },
+                        "description": "Optional primary tools this skill serves as a fallback for"
+                    },
+                    "context": {
+                        "type": "string",
+                        "enum": ["inline", "fork"],
+                        "description": "Optional execution context mode ('inline' or 'fork')"
+                    },
+                    "agent": {
+                        "type": "string",
+                        "description": "Optional specialist MiniPub role when context='fork'"
+                    },
+                    "resource_path": {
+                        "type": "string",
+                        "description": "Optional relative Level-3 bundled file path to write/remove (e.g. 'references/api.md', 'scripts/check.py')"
+                    },
+                    "resource_content": {
+                        "type": "string",
+                        "description": "Content to write to `resource_path` inside the skill folder"
+                    },
+                    "delete_resource": {
+                        "type": "boolean",
+                        "description": "Set true with `resource_path` to delete that bundled Level-3 resource"
                     },
                     "scope": {
                         "type": "string",
@@ -588,6 +662,13 @@ pub async fn dispatch(
                     skill.frontmatter.allowed_tools.join(", ")
                 ));
             }
+            if skill.frontmatter.context_mode() == crate::vault::models::SkillContextMode::Fork {
+                let role = skill.frontmatter.agent.as_deref().unwrap_or("scout");
+                out.push_str(&format!(
+                    "• **Execution Context**: `fork` (delegate via `delegate_task(role=\"{}\", load_skills=[\"{}\"], task=\"...\")`)\n",
+                    role, skill.name
+                ));
+            }
             if let Some(path) = &skill.path {
                 out.push_str(&format!("• **File Path**: `{}`\n", path.display()));
             }
@@ -599,9 +680,30 @@ pub async fn dispatch(
                 ));
             }
 
+            let full_override = args.get("full").and_then(|v| v.as_bool()).unwrap_or(false);
+            let is_fork =
+                skill.frontmatter.context_mode() == crate::vault::models::SkillContextMode::Fork;
+
+            let rendered = skill.render_instructions(workspace_root);
             out.push_str("\n---\n\n");
-            out.push_str(&skill.instructions);
-            out.push('\n');
+            if is_fork && !full_override {
+                let role = skill.frontmatter.agent.as_deref().unwrap_or("scout");
+                let preview = crate::utils::strings::truncate_chars(rendered.trim(), 320);
+                out.push_str(&format!(
+                    "🔒 **Forked Subagent Execution Enforced (`context: fork`)**\n\
+                     This skill is designed to execute inside an isolated `{role}` subagent so verbose checklists and intermediate outputs never pollute the coordinator context.\n\n\
+                     **Executive Preview:**\n{preview}\n\n\
+                     **Dispatch Contract (call now):**\n\
+                     `delegate_task(role=\"{role}\", load_skills=[\"{name}\"], task=\"<your concrete audit/implementation objective>\")`\n\
+                     *(Pass `full: true` to `vault_show` only if you explicitly need raw inline instructions.)*\n",
+                    role = role,
+                    preview = preview,
+                    name = skill.name,
+                ));
+            } else {
+                out.push_str(&rendered);
+                out.push('\n');
+            }
 
             Ok(out)
         })(),
@@ -632,8 +734,9 @@ pub async fn dispatch(
                     skill.name
                 ));
             }
+            let rendered = skill.render_instructions(workspace_root);
             out.push_str("\n---\n\n");
-            out.push_str(skill.instructions.trim());
+            out.push_str(rendered.trim());
             out.push('\n');
             Ok(out)
         })(),
@@ -655,21 +758,36 @@ pub async fn dispatch(
             let instructions = require_str(args, "instructions", "vault_create")?;
             let triggers = opt_string_array(args, "triggers").unwrap_or_default();
             let globs = opt_string_array(args, "globs").unwrap_or_default();
+            let allowed_tools = opt_string_array(args, "allowed_tools").unwrap_or_default();
+            let requires_tools = opt_string_array(args, "requires_tools").unwrap_or_default();
+            let fallback_for_tools =
+                opt_string_array(args, "fallback_for_tools").unwrap_or_default();
             let category = opt_str(args, "category");
             let kind = opt_str(args, "kind");
+            let context = opt_str(args, "context");
+            let agent = opt_str(args, "agent");
             let target_scope = parse_target_scope(args);
 
+            let fm = crate::vault::models::SkillFrontmatter {
+                name: crate::vault::models::sanitize_skill_name(name),
+                description: description.trim().to_string(),
+                version: "1.0.0".to_string(),
+                author: Some("minicode".to_string()),
+                category: category.map(|c| c.trim().to_lowercase()),
+                kind: kind.map(|k| k.trim().to_lowercase()),
+                globs,
+                triggers,
+                always_apply: false,
+                allowed_tools,
+                requires_tools,
+                fallback_for_tools,
+                context: context.map(|c| c.trim().to_lowercase()),
+                agent: agent.map(|a| a.trim().to_lowercase()),
+                ..Default::default()
+            };
+
             let skill = store
-                .create_skill(
-                    target_scope,
-                    name,
-                    description,
-                    category,
-                    kind,
-                    instructions,
-                    triggers,
-                    globs,
-                )
+                .create_skill_from_frontmatter(target_scope, fm, instructions)
                 .map_err(|e| {
                     ToolError::ExecutionFailed(format!("Failed to create skill: {}", e))
                 })?;
@@ -707,7 +825,23 @@ pub async fn dispatch(
             let triggers = opt_string_array(args, "triggers");
             let globs = opt_string_array(args, "globs");
             let always_apply = args.get("always_apply").and_then(|v| v.as_bool());
+            let allowed_tools = opt_string_array(args, "allowed_tools");
+            let after_tools = opt_string_array(args, "after_tools");
+            let when_repo_state = opt_string_array(args, "when_repo_state");
+            let requires_tools = opt_string_array(args, "requires_tools");
+            let fallback_for_tools = opt_string_array(args, "fallback_for_tools");
+            let context = opt_str(args, "context");
+            let agent = opt_str(args, "agent");
+            let resource_path = opt_str(args, "resource_path");
+            let resource_content = opt_str(args, "resource_content");
+            let delete_resource = args
+                .get("delete_resource")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false);
             let target_scope = parse_target_scope(args);
+
+            let has_resource_op =
+                resource_path.is_some() && (resource_content.is_some() || delete_resource);
 
             if instructions.is_none()
                 && (search_block.is_none() || replace_block.is_none())
@@ -717,27 +851,47 @@ pub async fn dispatch(
                 && triggers.is_none()
                 && globs.is_none()
                 && always_apply.is_none()
+                && allowed_tools.is_none()
+                && after_tools.is_none()
+                && when_repo_state.is_none()
+                && requires_tools.is_none()
+                && fallback_for_tools.is_none()
+                && context.is_none()
+                && agent.is_none()
+                && !has_resource_op
             {
                 return Err(ToolError::InvalidArguments {
                     name: "vault_update".to_string(),
-                    reason: "Provide `instructions`, or (`search_block` + `replace_block`), or metadata fields to update".to_string(),
+                    reason: "Provide `instructions`, (`search_block` + `replace_block`), Level-3 `resource_path` operation, or metadata fields to update".to_string(),
                 }
                 .into());
             }
 
             let skill = store
-                .patch_skill_full(
+                .patch_skill_with_spec(
                     target_scope,
                     name,
-                    instructions,
-                    search_block,
-                    replace_block,
-                    description,
-                    category,
-                    kind,
-                    triggers,
-                    globs,
-                    always_apply,
+                    crate::vault::store::SkillPatchSpec {
+                        new_instructions: instructions,
+                        search_block,
+                        replace_block,
+                        description,
+                        category,
+                        kind,
+                        triggers,
+                        globs,
+                        always_apply,
+                        allowed_tools,
+                        after_tools,
+                        when_repo_state,
+                        requires_tools,
+                        fallback_for_tools,
+                        context,
+                        agent,
+                        resource_path,
+                        resource_content,
+                        delete_resource,
+                    },
                 )
                 .map_err(|e| {
                     ToolError::ExecutionFailed(format!("Failed to update skill: {}", e))

@@ -1,9 +1,10 @@
-//! End-to-end integration tests for JIT repository onboarding, deferred provider setup,
-//! and workspace drift arbitration gates (Phase 136).
+//! End-to-end integration tests for deferred provider setup (Gate 1),
+//! zero-modal Orchestrator-driven CodeGraph autonomy, and silent background AST shard healing.
 
+use minicode::agent::orchestrator::{RepoState, WorkflowRouter};
 use minicode::app::{AgentCommand, App, CommandAction};
 use minicode::config::Config;
-use minicode::context::graph::CodeGraph;
+use minicode::context::graph::{CodeGraph, CodeGraphTelemetry};
 use minicode::ui::modal::ModalState;
 use std::fs;
 use tempfile::tempdir;
@@ -15,15 +16,12 @@ async fn test_unindexed_repo_silent_startup() {
     let config = Config::default();
     let app = App::new(dir.path(), config);
 
-    // Silent startup: unindexed repo must boot with ModalState::None
     assert!(
         matches!(app.modal, ModalState::None),
         "App must initialize with ModalState::None, got {:?}",
         app.modal
     );
     assert!(app.pending_submission.is_none());
-    assert!(!app.session_skipped_indexing);
-    assert!(!app.session_skipped_drift);
 }
 
 #[tokio::test]
@@ -45,7 +43,6 @@ async fn test_unconfigured_provider_triggers_setup_modal() {
 
     assert_eq!(action, CommandAction::Continue);
 
-    // Gate 1 must intercept and present ProviderSetupRequired
     match &app.modal {
         ModalState::ProviderSetupRequired {
             provider_name,
@@ -59,64 +56,32 @@ async fn test_unconfigured_provider_triggers_setup_modal() {
         other => panic!("Expected ProviderSetupRequired modal, got {:?}", other),
     }
 
-    // Pending submission must be captured
     assert_eq!(
         app.pending_submission.as_ref().map(|s| s.prompt.as_str()),
         Some("add login to auth.rs")
     );
-
-    // No prompt dispatched to LLM agent actor yet
     assert!(control_rx.try_recv().is_err());
 }
 
 #[tokio::test]
-async fn test_general_query_bypasses_analysis() {
+async fn test_unindexed_existing_repo_dispatches_to_orchestrator_without_modal() {
     let dir = tempdir().expect("tempdir");
-    let mut config = Config::default();
-    // Local provider requires no API key
-    config.provider.default = "ollama".to_string();
+    let src_dir = dir.path().join("src");
+    fs::create_dir_all(&src_dir).expect("create src dir");
+    fs::write(src_dir.join("auth.rs"), "pub fn verify_session() {}\n").expect("write auth.rs");
+    fs::write(src_dir.join("main.rs"), "fn main() {}\n").expect("write main.rs");
 
-    let mut app = App::new(dir.path(), config);
-    let (control_tx, mut control_rx) = mpsc::unbounded_channel::<AgentCommand>();
-
-    let prompt = "what is a mutex in computer science?";
-    let action = app
-        .handle_command_or_prompt(prompt, None, &control_tx)
-        .await
-        .expect("handle_command_or_prompt");
-
-    assert_eq!(action, CommandAction::Continue);
-
-    // General query must bypass indexing modal and execute immediately
-    assert!(
-        matches!(app.modal, ModalState::None),
-        "Expected ModalState::None for general query, got {:?}",
-        app.modal
-    );
-    assert!(app.pending_submission.is_none());
-
-    // Prompt must be dispatched directly to agent control channel
-    match control_rx.try_recv() {
-        Ok(AgentCommand::Prompt(dispatched, _)) => {
-            assert_eq!(dispatched, prompt);
-        }
-        _ => panic!("Expected AgentCommand::Prompt dispatched"),
-    }
-}
-
-#[tokio::test]
-async fn test_crud_prompt_intercepted_on_unindexed_repo() {
-    let dir = tempdir().expect("tempdir");
     let mut config = Config::default();
     config.provider.default = "ollama".to_string();
 
     let mut app = App::new(dir.path(), config);
     let (control_tx, mut control_rx) = mpsc::unbounded_channel::<AgentCommand>();
 
-    // Unindexed repo: .minicode/graph.json does not exist
     let graph_file = dir.path().join(".minicode").join("graph.json");
     assert!(!graph_file.exists());
 
+    // Any engineering prompt on an unindexed multi-file project dispatches straight to the Orchestrator
+    // without popping a blocking WorkspaceAnalysis modal.
     let prompt = "add login in auth.rs";
     let action = app
         .handle_command_or_prompt(prompt, None, &control_tx)
@@ -124,101 +89,39 @@ async fn test_crud_prompt_intercepted_on_unindexed_repo() {
         .expect("handle_command_or_prompt");
 
     assert_eq!(action, CommandAction::Continue);
+    assert!(
+        matches!(app.modal, ModalState::None),
+        "Expected zero blocking modal on unindexed repo, got {:?}",
+        app.modal
+    );
+    assert!(app.pending_submission.is_none());
 
-    // Gate 2 must intercept and present WorkspaceAnalysis
-    match &app.modal {
-        ModalState::WorkspaceAnalysis { is_indexed, .. } => {
-            assert!(!*is_indexed, "Repo should be marked unindexed");
+    match control_rx.try_recv() {
+        Ok(AgentCommand::Prompt(dispatched, _)) => {
+            assert_eq!(dispatched, prompt);
         }
-        other => panic!("Expected WorkspaceAnalysis modal, got {:?}", other),
+        _ => panic!("Expected AgentCommand::Prompt dispatched directly to Orchestrator"),
     }
 
-    // Pending prompt must be saved
-    assert_eq!(
-        app.pending_submission.as_ref().map(|s| s.prompt.as_str()),
-        Some("add login in auth.rs")
-    );
+    // Orchestrator receives truthful unindexed telemetry so the LLM decides when to invoke CodeGraph tools
+    let (repo_state, code_files, doc_files) = WorkflowRouter::scan_repository_state(dir.path());
+    assert_eq!(repo_state, RepoState::ExistingCodebase);
+    let telemetry = CodeGraph::inspect_workspace_telemetry(dir.path(), &code_files);
+    assert_eq!(telemetry, CodeGraphTelemetry::Unindexed { source_files: 2 });
 
-    // Prompt must not be sent to agent actor yet
-    assert!(control_rx.try_recv().is_err());
+    let state_block =
+        WorkflowRouter::enrich_repository_state(dir.path(), repo_state, &code_files, &doc_files);
+    assert!(state_block.contains("AST CodeGraph: unindexed (0/2 source files indexed"));
 }
 
 #[tokio::test]
-async fn test_existing_repo_drift_detection() {
+async fn test_natural_language_analyze_prompt_routes_to_orchestrator_not_modal() {
     let dir = tempdir().expect("tempdir");
-    let src_dir = dir.path().join("src");
-    fs::create_dir_all(&src_dir).expect("create src dir");
-
-    // Create 2 initial files
-    fs::write(src_dir.join("main.rs"), "fn main() {}\n").expect("write main.rs");
-    fs::write(src_dir.join("lib.rs"), "pub fn add() {}\n").expect("write lib.rs");
-
-    // Index and save graph
-    let mut graph = CodeGraph::new();
-    graph.build_graph(dir.path()).expect("build graph");
-    graph.save_to_disk(dir.path()).expect("save to disk");
-
-    let graph_file = dir.path().join(".minicode").join("graph.json");
-    assert!(graph_file.exists());
-
-    // Introduce significant drift (>10 added files)
-    for i in 1..=12 {
-        fs::write(
-            src_dir.join(format!("feature_{}.rs", i)),
-            format!("pub fn f{}() {{}}\n", i),
-        )
-        .expect("write feature file");
-    }
-
     let mut config = Config::default();
     config.provider.default = "ollama".to_string();
 
     let mut app = App::new(dir.path(), config);
     let (control_tx, mut control_rx) = mpsc::unbounded_channel::<AgentCommand>();
-
-    let prompt = "refactor the sql queries in our codebase";
-    let action = app
-        .handle_command_or_prompt(prompt, None, &control_tx)
-        .await
-        .expect("handle_command_or_prompt");
-
-    assert_eq!(action, CommandAction::Continue);
-
-    // Drift Gate must intercept and present WorkspaceDrift
-    match &app.modal {
-        ModalState::WorkspaceDrift {
-            added_count,
-            selected_index,
-            ..
-        } => {
-            assert!(
-                *added_count >= 12,
-                "Expected >=12 added files, got {}",
-                added_count
-            );
-            assert_eq!(*selected_index, 0);
-        }
-        other => panic!("Expected WorkspaceDrift modal, got {:?}", other),
-    }
-
-    // Pending submission must be saved
-    assert_eq!(
-        app.pending_submission.as_ref().map(|s| s.prompt.as_str()),
-        Some("refactor the sql queries in our codebase")
-    );
-
-    // Prompt must not be sent to agent actor yet
-    assert!(control_rx.try_recv().is_err());
-}
-
-#[tokio::test]
-async fn test_explicit_analysis_keyword_triggers_analysis() {
-    let dir = tempdir().expect("tempdir");
-    let mut config = Config::default();
-    config.provider.default = "ollama".to_string();
-
-    let mut app = App::new(dir.path(), config);
-    let (control_tx, _) = mpsc::unbounded_channel::<AgentCommand>();
 
     let prompt = "analyze the full project";
     let action = app
@@ -227,17 +130,82 @@ async fn test_explicit_analysis_keyword_triggers_analysis() {
         .expect("handle_command_or_prompt");
 
     assert_eq!(action, CommandAction::Continue);
-
-    // Explicit request must immediately open WorkspaceAnalysis modal
     assert!(
-        matches!(app.modal, ModalState::WorkspaceAnalysis { .. }),
-        "Expected WorkspaceAnalysis modal, got {:?}",
+        matches!(app.modal, ModalState::None),
+        "Natural language prompt must go to Orchestrator LLM, not hijack UI with a modal"
+    );
+    assert!(matches!(
+        control_rx.try_recv(),
+        Ok(AgentCommand::Prompt(ref p, _)) if p == prompt
+    ));
+}
+
+#[tokio::test]
+async fn test_major_workspace_drift_never_blocks_and_heals_silently_in_background() {
+    let dir = tempdir().expect("tempdir");
+    let src_dir = dir.path().join("src");
+    fs::create_dir_all(&src_dir).expect("create src dir");
+
+    fs::write(src_dir.join("main.rs"), "fn main() {}\n").expect("write main.rs");
+    fs::write(src_dir.join("lib.rs"), "pub fn add() {}\n").expect("write lib.rs");
+
+    let mut graph = CodeGraph::new();
+    graph.build_graph(dir.path()).expect("build graph");
+    graph.save_to_disk(dir.path()).expect("save to disk");
+
+    // Simulate 20 newly created files (e.g., website build or git branch switch)
+    for i in 1..=20 {
+        fs::write(
+            src_dir.join(format!("page_{}.tsx", i)),
+            format!("export function Page{}() {{ return <div/>; }}\n", i),
+        )
+        .expect("write page file");
+    }
+
+    let mut config = Config::default();
+    config.provider.default = "ollama".to_string();
+
+    let mut app = App::new(dir.path(), config);
+    let (control_tx, mut control_rx) = mpsc::unbounded_channel::<AgentCommand>();
+
+    let prompt = "update the navbar styling";
+    let action = app
+        .handle_command_or_prompt(prompt, None, &control_tx)
+        .await
+        .expect("handle_command_or_prompt");
+
+    assert_eq!(action, CommandAction::Continue);
+    assert!(
+        matches!(app.modal, ModalState::None),
+        "Must never block prompt with WorkspaceDrift modal, got {:?}",
         app.modal
+    );
+    assert!(app.pending_submission.is_none());
+    assert!(matches!(
+        control_rx.try_recv(),
+        Ok(AgentCommand::Prompt(ref p, _)) if p == prompt
+    ));
+
+    // Wait briefly for the spawned background shard sync to finish and verify disk persistence
+    for _ in 0..40 {
+        let mut check = CodeGraph::new();
+        if check.load_cached(dir.path()) && check.file_count() >= 22 {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+    }
+
+    let mut updated_graph = CodeGraph::new();
+    assert!(updated_graph.load_cached(dir.path()));
+    assert_eq!(updated_graph.file_count(), 22);
+    assert_eq!(
+        updated_graph.check_drift(dir.path()).unwrap().total_drift(),
+        0
     );
 }
 
 #[tokio::test]
-async fn test_chained_provider_setup_then_crud_intercepts_analysis() {
+async fn test_chained_provider_setup_dispatches_prompt_immediately() {
     let dir = tempdir().expect("tempdir");
     let mut config = Config::default();
     config.provider.default = "anthropic".to_string();
@@ -247,7 +215,6 @@ async fn test_chained_provider_setup_then_crud_intercepts_analysis() {
     let mut app = App::new(dir.path(), config);
     let (control_tx, mut control_rx) = mpsc::unbounded_channel::<AgentCommand>();
 
-    // Step 1: User enters CRUD prompt on unconfigured provider and unindexed repo
     let prompt = "add login to auth.rs";
     let action = app
         .handle_command_or_prompt(prompt, None, &control_tx)
@@ -255,18 +222,11 @@ async fn test_chained_provider_setup_then_crud_intercepts_analysis() {
         .expect("handle_command_or_prompt");
 
     assert_eq!(action, CommandAction::Continue);
-
-    // Gate 1 must intercept first
     assert!(matches!(
         app.modal,
         ModalState::ProviderSetupRequired { .. }
     ));
-    assert_eq!(
-        app.pending_submission.as_ref().map(|s| s.prompt.as_str()),
-        Some("add login to auth.rs")
-    );
 
-    // Step 2: User presses '1' (Configure provider key)
     app.handle_modal_key(
         crossterm::event::KeyEvent::new(
             crossterm::event::KeyCode::Char('1'),
@@ -276,10 +236,8 @@ async fn test_chained_provider_setup_then_crud_intercepts_analysis() {
     )
     .await;
 
-    // Modal must now be ApiKeyInput
     assert!(matches!(app.modal, ModalState::ApiKeyInput { .. }));
 
-    // User types key "sk-ant-test-key"
     for c in "sk-ant-test-key".chars() {
         app.handle_modal_key(
             crossterm::event::KeyEvent::new(
@@ -291,7 +249,6 @@ async fn test_chained_provider_setup_then_crud_intercepts_analysis() {
         .await;
     }
 
-    // Step 3: User presses Enter to submit key
     app.handle_modal_key(
         crossterm::event::KeyEvent::new(
             crossterm::event::KeyCode::Enter,
@@ -301,7 +258,6 @@ async fn test_chained_provider_setup_then_crud_intercepts_analysis() {
     )
     .await;
 
-    // Step 4: ModelSelect is presented with curated models; user presses Enter to confirm model
     assert!(matches!(app.modal, ModalState::ModelSelect { .. }));
     app.handle_modal_key(
         crossterm::event::KeyEvent::new(
@@ -312,22 +268,14 @@ async fn test_chained_provider_setup_then_crud_intercepts_analysis() {
     )
     .await;
 
-    // Gate 1 completed! Now Gate 2 MUST be evaluated automatically.
-    // Because repo is unindexed, app.modal MUST now be WorkspaceAnalysis!
-    match &app.modal {
-        ModalState::WorkspaceAnalysis { is_indexed, .. } => {
-            assert!(!*is_indexed, "Repo should be marked unindexed");
-        }
-        other => panic!("Expected chained WorkspaceAnalysis modal, got {:?}", other),
-    }
-
-    // Pending submission must still be preserved for Gate 2 arbitration
-    assert_eq!(
-        app.pending_submission.as_ref().map(|s| s.prompt.as_str()),
-        Some("add login to auth.rs")
+    // After completing API key & model setup, no secondary modal blocks the prompt — it dispatches immediately!
+    assert!(
+        matches!(app.modal, ModalState::None),
+        "Expected ModalState::None after setup completion, got {:?}",
+        app.modal
     );
+    assert!(app.pending_submission.is_none());
 
-    // UpdateConfig command was sent when provider switch finished, but NOT a Prompt command
     match control_rx.try_recv() {
         Ok(AgentCommand::UpdateConfig { provider, .. }) => {
             assert_eq!(provider.name(), "anthropic");
@@ -335,42 +283,23 @@ async fn test_chained_provider_setup_then_crud_intercepts_analysis() {
         _ => panic!("Expected AgentCommand::UpdateConfig"),
     }
 
-    // No Prompt command dispatched to LLM agent actor yet because Gate 2 intercepted with WorkspaceAnalysis!
-    assert!(control_rx.try_recv().is_err());
+    match control_rx.try_recv() {
+        Ok(AgentCommand::Prompt(dispatched, _)) => {
+            assert_eq!(dispatched, prompt);
+        }
+        _ => panic!("Expected pending prompt to dispatch immediately after provider setup"),
+    }
 
-    // Clean up environment variable
     std::env::remove_var("ANTHROPIC_API_KEY");
 }
 
 #[tokio::test]
-async fn test_acronym_slashes_bypass_analysis() {
+async fn test_corrupted_graph_self_heals_without_modal() {
     let dir = tempdir().expect("tempdir");
-    let mut config = Config::default();
-    config.provider.default = "ollama".to_string();
+    let src_dir = dir.path().join("src");
+    fs::create_dir_all(&src_dir).expect("create src dir");
+    fs::write(src_dir.join("router.rs"), "pub fn route() {}\n").expect("write router.rs");
 
-    let mut app = App::new(dir.path(), config);
-    let (control_tx, mut control_rx) = mpsc::unbounded_channel::<AgentCommand>();
-
-    let prompt = "what is the difference between TCP/IP and UDP?";
-    let action = app
-        .handle_command_or_prompt(prompt, None, &control_tx)
-        .await
-        .expect("handle_command_or_prompt");
-
-    assert_eq!(action, CommandAction::Continue);
-
-    // Slashes in acronyms (TCP/IP) must not trigger CRUD file path gate
-    assert!(
-        matches!(app.modal, ModalState::None),
-        "Expected ModalState::None for TCP/IP question, got {:?}",
-        app.modal
-    );
-    assert!(control_rx.try_recv().is_ok());
-}
-
-#[tokio::test]
-async fn test_corrupted_graph_triggers_analysis() {
-    let dir = tempdir().expect("tempdir");
     let minicode_dir = dir.path().join(".minicode");
     fs::create_dir_all(&minicode_dir).expect("create .minicode dir");
     fs::write(minicode_dir.join("graph.json"), "{ invalid json garbage }")
@@ -380,7 +309,7 @@ async fn test_corrupted_graph_triggers_analysis() {
     config.provider.default = "ollama".to_string();
 
     let mut app = App::new(dir.path(), config);
-    let (control_tx, _) = mpsc::unbounded_channel::<AgentCommand>();
+    let (control_tx, mut control_rx) = mpsc::unbounded_channel::<AgentCommand>();
 
     let prompt = "modify the router logic in src/router.rs";
     let action = app
@@ -389,58 +318,24 @@ async fn test_corrupted_graph_triggers_analysis() {
         .expect("handle_command_or_prompt");
 
     assert_eq!(action, CommandAction::Continue);
-
-    // Corrupted graph.json must safely fall back to WorkspaceAnalysis
-    assert!(
-        matches!(app.modal, ModalState::WorkspaceAnalysis { .. }),
-        "Expected WorkspaceAnalysis modal on corrupted graph.json, got {:?}",
-        app.modal
-    );
-}
-
-#[tokio::test]
-async fn test_minor_drift_seamless_sync() {
-    let dir = tempdir().expect("tempdir");
-    let src_dir = dir.path().join("src");
-    fs::create_dir_all(&src_dir).expect("create src dir");
-
-    fs::write(src_dir.join("main.rs"), "fn main() {}\n").expect("write main.rs");
-    fs::write(src_dir.join("lib.rs"), "pub fn add() {}\n").expect("write lib.rs");
-
-    let mut graph = CodeGraph::new();
-    graph.build_graph(dir.path()).expect("build graph");
-    graph.save_to_disk(dir.path()).expect("save to disk");
-
-    // Add only 1 file (minor drift: 1 file < 10)
-    fs::write(src_dir.join("helper.rs"), "pub fn helper() {}\n").expect("write helper.rs");
-
-    let mut config = Config::default();
-    config.provider.default = "ollama".to_string();
-
-    let mut app = App::new(dir.path(), config);
-    let (control_tx, mut control_rx) = mpsc::unbounded_channel::<AgentCommand>();
-
-    let prompt = "refactor src/main.rs";
-    let action = app
-        .handle_command_or_prompt(prompt, None, &control_tx)
-        .await
-        .expect("handle_command_or_prompt");
-
-    assert_eq!(action, CommandAction::Continue);
-
-    // Minor drift does NOT block user with modal
     assert!(
         matches!(app.modal, ModalState::None),
-        "Expected ModalState::None for minor drift, got {:?}",
-        app.modal
+        "Corrupted graph.json must self-heal silently without blocking user prompt"
     );
-    assert!(control_rx.try_recv().is_ok());
+    assert!(matches!(
+        control_rx.try_recv(),
+        Ok(AgentCommand::Prompt(ref p, _)) if p == prompt
+    ));
 
-    // Verify background incremental update synced helper.rs into graph.json
-    let mut updated_graph = CodeGraph::new();
-    assert!(updated_graph.load_cached(dir.path()));
-    assert!(
-        updated_graph.file_count() >= 3,
-        "Expected helper.rs to be indexed into cached graph"
-    );
+    for _ in 0..40 {
+        let mut check = CodeGraph::new();
+        if check.load_cached(dir.path()) && check.file_count() == 1 {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+    }
+
+    let mut healed = CodeGraph::new();
+    assert!(healed.load_cached(dir.path()));
+    assert_eq!(healed.file_count(), 1);
 }

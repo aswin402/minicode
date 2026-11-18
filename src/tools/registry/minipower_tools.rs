@@ -1057,9 +1057,16 @@ pub async fn dispatch(
                     })
                     .collect();
 
-                formatted.push_str("\n---\n");
-                if stage_arg == "re-review" || stage_arg == "rereview" || !prior_findings.is_empty()
-                {
+                let actionable_count = report
+                    .findings
+                    .iter()
+                    .filter(|f| f.severity == "HIGH" || f.severity == "MEDIUM")
+                    .count();
+
+                let mut reviewer_rubric = String::new();
+                let is_rereview =
+                    stage_arg == "re-review" || stage_arg == "rereview" || !prior_findings.is_empty();
+                if is_rereview {
                     let findings_to_check = if prior_findings.is_empty() {
                         report
                             .findings
@@ -1080,30 +1087,32 @@ pub async fn dispatch(
                     } else {
                         prior_findings
                     };
-                    formatted.push_str(&MiniPowerEngine::format_scoped_rereview_prompt(
+                    reviewer_rubric.push_str(&MiniPowerEngine::format_scoped_rereview_prompt(
                         &mp_task,
                         &findings_to_check,
                         &diff_summary,
                         fix_round,
                     ));
-                    if !findings_to_check.is_empty() && fix_round < MiniPowerEngine::MAX_FIX_LOOP_ROUNDS {
-                        formatted.push('\n');
-                        formatted.push_str(&MiniPowerEngine::format_fix_prompt(
+                    if !findings_to_check.is_empty()
+                        && fix_round < MiniPowerEngine::MAX_FIX_LOOP_ROUNDS
+                    {
+                        reviewer_rubric.push('\n');
+                        reviewer_rubric.push_str(&MiniPowerEngine::format_fix_prompt(
                             &mp_task,
                             &findings_to_check,
                         ));
                     }
                 } else {
                     if stage_arg == "spec" || stage_arg == "both" || stage_arg == "stage1" {
-                        formatted.push_str(&MiniPowerEngine::format_reviewer_prompt(
+                        reviewer_rubric.push_str(&MiniPowerEngine::format_reviewer_prompt(
                             &mp_task,
                             &diff_summary,
                             ReviewStage::SpecCompliance,
                         ));
-                        formatted.push('\n');
+                        reviewer_rubric.push('\n');
                     }
                     if stage_arg == "quality" || stage_arg == "both" || stage_arg == "stage2" {
-                        formatted.push_str(&MiniPowerEngine::format_reviewer_prompt(
+                        reviewer_rubric.push_str(&MiniPowerEngine::format_reviewer_prompt(
                             &mp_task,
                             &diff_summary,
                             ReviewStage::CodeQuality,
@@ -1111,11 +1120,17 @@ pub async fn dispatch(
                     }
                 }
 
-                let actionable_count = report
-                    .findings
-                    .iter()
-                    .filter(|f| f.severity == "HIGH" || f.severity == "MEDIUM")
-                    .count();
+                let explicit_single_stage = opt_str(args, "stage")
+                    .is_some_and(|s| !s.eq_ignore_ascii_case("both"));
+                formatted.push_str("\n---\n");
+                if is_rereview || actionable_count > 0 || explicit_single_stage {
+                    formatted.push_str(&reviewer_rubric);
+                } else {
+                    formatted.push_str(
+                        "✔ **Two-Stage Review Gate (`SpecCompliance` + `CodeQuality`)**: 0 blocking findings across audited files.\n",
+                    );
+                }
+
                 let minor_findings: Vec<String> = report
                     .findings
                     .iter()
@@ -1162,18 +1177,18 @@ pub async fn dispatch(
                     serde_json::to_string_pretty(&review_state).unwrap_or_default(),
                 );
 
-                let wm = crate::context::working_memory::WorkingMemory::new(workspace_root);
-                let plan_hint = wm.format_remaining_tasks_hint();
-                if !plan_hint.is_empty() {
-                    formatted.push_str(&format!("\n{}\n", plan_hint));
-                }
                 if opt_bool(args, "subagent_review", false) {
+                    let subagent_payload = if formatted.contains(&reviewer_rubric) {
+                        formatted.clone()
+                    } else {
+                        format!("{formatted}\n---\n{reviewer_rubric}")
+                    };
                     formatted.push_str(
                         &run_reviewer_subagent(
                             workspace_root,
                             &stage_arg,
                             staged_only,
-                            &formatted,
+                            &subagent_payload,
                             &mp_task.target_files,
                         )
                         .await,
@@ -1183,12 +1198,22 @@ pub async fn dispatch(
                     && crate::agent::subagent::try_get_global_subagent_pool()
                         .is_some_and(|p| p.active_worker_count() > 0);
                 if actionable_count > 0 {
+                    let wm = crate::context::working_memory::WorkingMemory::new(workspace_root);
+                    let plan_hint = wm.format_remaining_tasks_hint();
+                    if !plan_hint.is_empty() {
+                        formatted.push_str(&format!("\n{}\n", plan_hint));
+                    }
                     formatted.push_str(&format!(
                         "\n► Next Step: Resolve the {} HIGH/MEDIUM review finding(s) above (max {} fix rounds), then re-run `power_review(stage=\"re-review\")` and `power_verify`.\n",
                         actionable_count,
                         MiniPowerEngine::MAX_FIX_LOOP_ROUNDS
                     ));
                 } else if reviewer_still_running {
+                    let wm = crate::context::working_memory::WorkingMemory::new(workspace_root);
+                    let plan_hint = wm.format_remaining_tasks_hint();
+                    if !plan_hint.is_empty() {
+                        formatted.push_str(&format!("\n{}\n", plan_hint));
+                    }
                     formatted.push_str(
                         "\n► Next Step (Async Reviewer Running): Static review passed with 0 HIGH/MEDIUM findings, and the Reviewer MiniPub subagent is running asynchronously in `minitask`. Do **NOT** call `archive_plan` yet and do **NOT** block in `await` — conclude your turn concisely so the TUI stays non-blocking; `minicode` will automatically wake you via Boomerang notification as soon as the Reviewer completes.\n",
                     );
@@ -1704,5 +1729,38 @@ mod tests {
         .unwrap()
         .unwrap();
         assert!(assess_out.contains("Decision: **`GO`**"));
+    }
+
+    #[tokio::test]
+    async fn test_power_review_emits_single_plan_status_and_compact_gate_when_clean() {
+        let temp = tempfile::tempdir().unwrap();
+        let _ = dispatch(
+            "power_plan",
+            &json!({
+                "topic": "Clean Review Check",
+                "steps": ["1. Implement clean handler"]
+            }),
+            temp.path(),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+
+        let review_out = dispatch(
+            "power_review",
+            &json!({"task_name": "Clean Review Check"}),
+            temp.path(),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+
+        assert_eq!(
+            review_out.matches("📋 Plan Status:").count(),
+            1,
+            "power_review must emit `📋 Plan Status:` once, got:\n{}",
+            review_out
+        );
+        assert!(review_out.contains("Two-Stage Review Gate"));
     }
 }

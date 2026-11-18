@@ -5,6 +5,28 @@ All notable changes to **minicode** will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.54] — 2026-11-18
+
+### BM25F + Set-Algebraic `active_skills` Engine & Forked Skill Isolation, Zero-Modal Per-File AST CodeGraph Shards (`.minicode/graph_shards.bin`), `MiniBrowse` Viewport/JSC/Multi-Engine Hardening, & `minitest71` Orchestrator Reliability Fixes
+
+#### 🧠 BM25F Skill Ranking, Candidate-Slate Single-Pin Discipline, Forked Subagent Isolation & Differential `active_skills` Algebra (`src/vault/{ranking,models,store,builtin}.rs`, `src/vault/store_impl/{context_and_bundles,skill_crud}.rs`, `src/agent/{loop,orchestrator,continual_learning}.rs`, `src/tools/minikit/skills.rs`)
+- **Multi-Field Robertson BM25F + Set-Theoretic Stack & Glob Grounding (`ranking.rs`, `workspace_profile.rs`)**:
+  - Replaced substring/bag-of-words skill heuristics with weighted 4-field BM25F (`name` / `triggers` / `description` / `instructions`), contiguous phrase & morphological stem triggers, adjacent bigram coherence, exact dependency token set-inclusion ($S_{\text{id}}(d) \subseteq T_{\text{pkg}}$), and Syntect grammar-based repository profiling.
+  - Enforced **Candidate-Slate-First + Single-Pin** dynamic turn injection (at most `1` unseen decisive skill inlined per turn + up to `6` candidates in `<orchestrator_skill_candidates>`), stateful `session_active_skills` multi-turn deduplication, portable `{baseDir}` substitution, `requires_tools` / `fallback_for_tools` capability algebra, runtime-enforced `context: fork` subagent isolation in `vault_show`, `SkillOutcomeStats` empirical utility + 90-day staleness decay, and Jaccard deduplication in `ContinualSkillHarvester`.
+- **Differential Set-Algebraic `sync_project_active_skills` & Lean Tool-Schema Promotion**:
+  - Upgraded `sync_project_active_skills` with `.minicode/vault/auto_skills.json` differential tracking so user-pinned skills are preserved while stale dependencies are auto-pruned, restricted persistent auto-pins to `always_apply` invariants, stack set-inclusion, and code-grounded `Reference`/`Runtime` manuals (keeping episodic `Workflow` skills per-turn via BM25F), narrowed `brand-guidelines` and `theme-factory` globs off generic `**/*.css` / `**/*.html`, and isolated post-archive Turn 2 objectives so finished Turn 1 specs no longer re-trigger `brainstorming`.
+
+#### 🕸️ Zero-Modal Per-File AST CodeGraph Shards & Autonomous Background Healing (`src/context/graph/{graph,graph_store,graph_sync}.rs`, `src/app/{mod,modals,commands}.rs`, `src/ui/modals/{mod,workspace_analysis}.rs`, `src/tools/registry/context_tools/graph.rs`)
+- **Non-Blocking `.minicode/graph_shards.bin` Shard Cache & Modal Removal**:
+  - Eliminated blocking `WorkspaceAnalysis` and `WorkspaceDrift` TUI modals on startup and mid-session turns; `CodeGraph` now persists per-file Tree-sitter AST shards (`FileAstShard` keyed by `(mtime_secs, mtime_nanos, size)`) via `memmap2` + `bincode` with atomic `.tmp` rename, heals modified/added/deleted files incrementally in milliseconds, runs single-flight background sync after mutating turns, and guards cold first-time builds on large unindexed repos with a 6s timeout fallback.
+
+#### 🌐 `MiniBrowse` Viewport Emulation, JSC Error Formatting, Multi-Engine Continuity & `minitest71` Runtime Fixes (`crates/minibrowse/src/{ffi,server,webview}.rs`, `src/tools/browser/{manager,mod}.rs`, `src/tools/registry/{web_tools,minipower_tools}.rs`, `src/context/{search/intent_filter,budget/auto_compact}.rs`, `src/agent/loop_impl/tool_finalize.rs`)
+- **`MiniBrowse` Accurate CSS Viewport Emulation, JSC `__fmtErr` & Clean Initial Tab Claiming**:
+  - Pinned `GDK_SCALE=1` and `GDK_DPI_SCALE=1` (when unset in user env) to prevent host fractional DPI scaling (`1.1x` skewing `1440x900` to `1309x818`), updated `SetViewport` to call `gtk_window_set_default_size` on `GtkOffscreenWindow`, center emulated viewports on tiled GUI windows (`GTK_ALIGN_CENTER`), and drain `gtk_main_iteration_do(0)` before replying, plus live `window.innerWidth x window.innerHeight` verification in `browser_emulate`.
+  - Fixed JavaScriptCore `browser_eval` bare `"@"` stack short-circuiting by formatting `e.name: e.message` ahead of stack frames and supporting top-level `return`/`await`, claimed the initial `about:blank` `"main"` slot on default `Target.createTarget`, added `peek_live_engine()` so read-only `browser_tabs(action="list")` never cold-spawns a daemon, reused active `Chrome` sessions in CDP-compatible `browser_qa_audit` / `browser_debug_bundle` / `browser_inspect_dom`, and cleaned stale `"Obscura"` schema/README references.
+- **Plan-Sync Verification Preservation, Practical 1M-Window Compaction, `exec_cmd` Compiler Checks & Epistemic Query Protection**:
+  - Prevented `update_progress` / `archive_plan` manifest/doc sync edits (`package.json`) from deleting `last_verify.json` / `last_review.json` or reopening `10/10` completed plans, deduplicated `📋 Plan Status:` and omitted raw subagent rubrics on clean `power_review` runs, ran `ScopedCompiler::run_scoped_check` automatically when `exec_cmd` mutates `.rs`/`.py`/`.ts`/`.tsx` files, added `140K` / `220K` practical compaction ceilings for 1M/2M context models, and extended set-algebraic retrospective meta-query & epistemic question detection so read-only questions never overwrite `.minicode/intent_anchor.json` or open empty transactions.
+
 ## [0.5.53] — 2026-11-17
 
 ### Configurable `Ponytail` Mode (`lite` / `full` / `ultra` / `off`), Settings `Autonomy` Controls, Live TUI Status Band, `repo_map(mode="reuse")` Short-Circuit, & `power_diagnose` Quality Telemetry

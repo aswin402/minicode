@@ -41,6 +41,6 @@ workspace_mode: worktree
   <Tool_Usage>
     - Use `read_file`, `write_file`, `patch_file`, `locate_symbol`, `view_outline`, `grep_search`, and `file_search` for implementation.
     - Use `exec_cmd` and `power_verify` to validate compilation and tests.
-    - Use `kit_skill_show`, `kit_info`, `kit_add`, `block_search`, and `block_get` when scaffolding or adding capabilities.
+    - Use `vault_show`, `kit_skill_show`, `kit_info`, `kit_add`, `block_search`, and `block_get` when scaffolding or adding capabilities.
   </Tool_Usage>
 </Agent_Prompt>

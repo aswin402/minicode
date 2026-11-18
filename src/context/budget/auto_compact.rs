@@ -39,12 +39,68 @@ impl Default for CompactionConfig {
     }
 }
 
+/// Declarative lookup table of skill-loading/inspecting tools (`skill://<name>` URI tracking).
+const SKILL_READ_OR_LOAD_TOOLS: &[&str] = &[
+    "vault_show",
+    "vault_skill_show",
+    "skill_show",
+    "skill_view",
+    "kit_skill_show",
+    "onpkg_skill_show",
+    "inspect_skill",
+    "vault_load",
+    "vault_skill_load",
+    "skill_load",
+    "kit_skill_install",
+    "onpkg_skill_install",
+];
+
+const SKILL_UNLOAD_TOOLS: &[&str] = &[
+    "vault_unload",
+    "vault_delete",
+    "kit_skill_remove",
+    "onpkg_skill_remove",
+];
+
+#[inline]
+fn is_skill_payload_tool(tool_name: Option<&str>) -> bool {
+    tool_name.is_some_and(|n| {
+        SKILL_READ_OR_LOAD_TOOLS
+            .iter()
+            .any(|t| t.eq_ignore_ascii_case(n))
+    })
+}
+
+fn extract_skill_uri_from_args(args: &serde_json::Value) -> Option<String> {
+    let raw_name = ["name", "skill_name"]
+        .into_iter()
+        .find_map(|k| args.get(k).and_then(|v| v.as_str()))
+        .map(str::trim)
+        .filter(|s| !s.is_empty())?;
+    let clean_name = crate::vault::models::sanitize_skill_name(raw_name);
+    if clean_name.is_empty() {
+        return None;
+    }
+    if let Some(fp) = args
+        .get("file_path")
+        .and_then(|v| v.as_str())
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
+        Some(format!("skill://{}#{}", clean_name, fp))
+    } else {
+        Some(format!("skill://{}", clean_name))
+    }
+}
+
 /// Structured representation of compressed turn history.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
 pub struct TurnSummary {
     pub turn_range: (usize, usize),
     pub files_read: Vec<String>,
     pub files_modified: Vec<String>,
+    #[serde(default)]
+    pub skills_used: Vec<String>,
     pub decisions: Vec<String>,
     pub errors_resolved: Vec<String>,
     pub tools_used: HashMap<String, usize>,
@@ -71,6 +127,13 @@ impl TurnSummary {
             md.push_str(&format!(
                 "• **Files Modified**: {}\n",
                 self.files_modified.join(", ")
+            ));
+        }
+
+        if !self.skills_used.is_empty() {
+            md.push_str(&format!(
+                "• **Active Skills Loaded**: {} (call `vault_show(name=\"...\")` to reload full guidelines if needed)\n",
+                self.skills_used.join(", ")
             ));
         }
 
@@ -122,6 +185,9 @@ pub struct MemoryAnchor {
     /// Deterministic ledger of all workspace files modified/written during the session (survives compaction).
     #[serde(default)]
     pub files_modified: std::collections::BTreeSet<String>,
+    /// Deterministic ledger of `skill://<name>` URIs loaded/inspected during the session (survives compaction).
+    #[serde(default)]
+    pub skills_loaded: std::collections::BTreeSet<String>,
 }
 
 impl MemoryAnchor {
@@ -174,6 +240,26 @@ impl MemoryAnchor {
         }
     }
 
+    /// Records a `skill://<name>` URI as active in the deterministic session anchor.
+    pub fn record_skill_loaded(&mut self, skill_uri: &str) {
+        let clean = skill_uri.trim();
+        if !clean.is_empty() && self.skills_loaded.len() < 64 {
+            self.skills_loaded.insert(clean.to_string());
+        }
+    }
+
+    /// Removes a `skill://<name>` URI (and any `#file_path` sub-resources) when unloaded/deleted.
+    pub fn remove_skill_loaded(&mut self, skill_name: &str) {
+        let clean = crate::vault::models::sanitize_skill_name(skill_name);
+        if clean.is_empty() {
+            return;
+        }
+        let base_uri = format!("skill://{}", clean);
+        let prefix = format!("skill://{}#", clean);
+        self.skills_loaded
+            .retain(|u| u != &base_uri && !u.starts_with(&prefix));
+    }
+
     /// Renders the anchor into a system prompt section if non-empty.
     pub fn to_prompt_block(&self) -> String {
         if self.working_context.is_none()
@@ -182,6 +268,7 @@ impl MemoryAnchor {
             && self.unresolved_errors.is_empty()
             && self.files_read.is_empty()
             && self.files_modified.is_empty()
+            && self.skills_loaded.is_empty()
         {
             return String::new();
         }
@@ -239,6 +326,20 @@ impl MemoryAnchor {
             block.push_str("</file-operations>\n");
         }
 
+        if !self.skills_loaded.is_empty() {
+            let list: Vec<&str> = self
+                .skills_loaded
+                .iter()
+                .map(String::as_str)
+                .take(24)
+                .collect();
+            block.push_str(&format!(
+                "<active-skills>\nLoaded ({}): {} — reload full rules anytime via `vault_show(name=\"<skill>\")`\n</active-skills>\n",
+                self.skills_loaded.len(),
+                list.join(", ")
+            ));
+        }
+
         if !self.unresolved_errors.is_empty() {
             block.push_str("- **Unresolved Issues**:\n");
             for e in &self.unresolved_errors {
@@ -282,6 +383,20 @@ impl MemoryAnchor {
             md.push_str(&format!("Modified: {}\n", list.join(", ")));
         }
         md.push_str("</file-operations>\n");
+
+        if !self.skills_loaded.is_empty() {
+            let list: Vec<&str> = self
+                .skills_loaded
+                .iter()
+                .map(String::as_str)
+                .take(24)
+                .collect();
+            md.push_str(&format!(
+                "\n## Active Skills\n<active-skills>\nLoaded ({}): {}\n</active-skills>\n",
+                self.skills_loaded.len(),
+                list.join(", ")
+            ));
+        }
 
         if !self.unresolved_errors.is_empty() {
             md.push_str("\n## Unresolved Issues\n");
@@ -486,6 +601,25 @@ impl AutoCompactor {
             _ => {}
         }
 
+        if is_skill_payload_tool(Some(tool_name)) {
+            if let Some(uri) = extract_skill_uri_from_args(args) {
+                self.anchor.record_skill_loaded(&uri);
+            }
+            return;
+        }
+        if SKILL_UNLOAD_TOOLS
+            .iter()
+            .any(|t| t.eq_ignore_ascii_case(tool_name))
+        {
+            if let Some(raw_name) = ["name", "skill_name"]
+                .into_iter()
+                .find_map(|k| args.get(k).and_then(|v| v.as_str()))
+            {
+                self.anchor.remove_skill_loaded(raw_name);
+            }
+            return;
+        }
+
         if let Some(p) =
             crate::context::budget::micro_compact::MicroCompactor::extract_target_path_from_args(
                 args,
@@ -550,6 +684,7 @@ impl AutoCompactor {
 
         let mut read_set: HashSet<String> = HashSet::new();
         let mut mod_set: HashSet<String> = HashSet::new();
+        let mut skill_set: HashSet<String> = HashSet::new();
         let mut raw_decision_candidates: Vec<(bool, String)> = Vec::new();
         let mut errors_vec: Vec<String> = Vec::new();
         let mut error_hashes: Vec<u64> = Vec::new();
@@ -564,7 +699,11 @@ impl AutoCompactor {
                 for c in calls {
                     *summary.tools_used.entry(c.name.clone()).or_insert(0) += 1;
 
-                    if c.name == "batch_read" {
+                    if is_skill_payload_tool(Some(&c.name)) {
+                        if let Some(uri) = extract_skill_uri_from_args(&c.arguments) {
+                            skill_set.insert(uri);
+                        }
+                    } else if c.name == "batch_read" {
                         if let Some(paths) = c.arguments.get("paths").and_then(|v| v.as_array()) {
                             for p in paths.iter().filter_map(|v| v.as_str()) {
                                 read_set.insert(p.to_string());
@@ -654,6 +793,9 @@ impl AutoCompactor {
 
         summary.files_modified = mod_set.into_iter().collect();
         summary.files_modified.sort();
+
+        summary.skills_used = skill_set.into_iter().collect();
+        summary.skills_used.sort();
 
         // Build turn-corpus document frequency table for IDF-weighted decision scoring
         let total_candidates = raw_decision_candidates.len().max(1) as f64;
@@ -810,6 +952,9 @@ impl AutoCompactor {
         // Track file states (IndexMap preserves insertion order -> shift_remove_index(0) evicts oldest FIFO)
         for f in &summary.files_modified {
             self.anchor.record_file_modified(f);
+        }
+        for s in &summary.skills_used {
+            self.anchor.record_skill_loaded(s);
         }
 
         // Track key decisions
@@ -979,8 +1124,16 @@ impl AutoCompactor {
 
         let initial_tokens = self.compressor.count_messages_tokens(messages);
         let limit = self.model_token_limit();
-        let tier1_threshold = (limit as f64 * self.compaction_config.tier1_ratio) as usize;
-        let tier2_threshold = (limit as f64 * self.compaction_config.tier2_ratio) as usize;
+        let raw_tier1 = (limit as f64 * self.compaction_config.tier1_ratio) as usize;
+        let raw_tier2 = (limit as f64 * self.compaction_config.tier2_ratio) as usize;
+        let (tier1_threshold, tier2_threshold) = if self.custom_limit.is_none() {
+            (
+                raw_tier1.min(crate::constants::COMPACT_PRACTICAL_TIER1_CEILING_TOKENS),
+                raw_tier2.min(crate::constants::COMPACT_PRACTICAL_TIER2_CEILING_TOKENS),
+            )
+        } else {
+            (raw_tier1, raw_tier2)
+        };
 
         if initial_tokens <= tier1_threshold || messages.len() <= 2 {
             return None;
@@ -1005,7 +1158,10 @@ impl AutoCompactor {
                 messages, 2, wm,
             );
             for msg in &mut messages[wm..cutoff] {
-                if msg.role == Role::Tool {
+                if msg.role == Role::Tool
+                    && !(is_skill_payload_tool(msg.tool_name.as_deref())
+                        && msg.content.len() <= 8_000)
+                {
                     msg.content = ContextCompressor::mask_observation(
                         &msg.content,
                         crate::constants::COMPRESSOR_MASK_LINES,
@@ -1090,8 +1246,16 @@ impl AutoCompactor {
         let initial_tokens = self.compressor.count_messages_tokens(messages);
         let limit = self.model_token_limit();
 
-        let tier1_threshold = (limit as f64 * self.compaction_config.tier1_ratio) as usize;
-        let tier2_threshold = (limit as f64 * self.compaction_config.tier2_ratio) as usize;
+        let raw_tier1 = (limit as f64 * self.compaction_config.tier1_ratio) as usize;
+        let raw_tier2 = (limit as f64 * self.compaction_config.tier2_ratio) as usize;
+        let (tier1_threshold, tier2_threshold) = if self.custom_limit.is_none() {
+            (
+                raw_tier1.min(crate::constants::COMPACT_PRACTICAL_TIER1_CEILING_TOKENS),
+                raw_tier2.min(crate::constants::COMPACT_PRACTICAL_TIER2_CEILING_TOKENS),
+            )
+        } else {
+            (raw_tier1, raw_tier2)
+        };
         let tier3_threshold = (limit as f64 * self.compaction_config.tier3_ratio) as usize;
 
         // Invariant: Never compact if token count is safely below Tier 1 or message count cannot be partitioned
@@ -1133,7 +1297,9 @@ impl AutoCompactor {
         let _ =
             crate::context::budget::micro_compact::MicroCompactor::compact_messages(messages, 2);
         for msg in messages.iter_mut().take(cutoff) {
-            if msg.role == Role::Tool {
+            if msg.role == Role::Tool
+                && !(is_skill_payload_tool(msg.tool_name.as_deref()) && msg.content.len() <= 8_000)
+            {
                 msg.content = ContextCompressor::mask_observation(
                     &msg.content,
                     crate::constants::COMPRESSOR_MASK_LINES,
@@ -1448,5 +1614,49 @@ mod tests {
         // to save ~30 tokens has negative expected KV value and total tokens < tier2_threshold.
         assert_eq!(watermark, 6);
         assert_eq!(msgs[2].content, original_tool_content);
+    }
+
+    #[test]
+    fn test_1m_context_model_applies_practical_tier1_ceiling() {
+        // Without custom_limit, a 1M-window model (e.g. gemini-2.0-flash / MiniMax-M3.1-Flash)
+        // must trigger Tier-1 observation masking above COMPACT_PRACTICAL_TIER1_CEILING_TOKENS (140K)
+        // rather than waiting until 600K tokens.
+        let mut compactor = AutoCompactor::new("gemini-2.0-flash")
+            .unwrap_or_else(|_| AutoCompactor::default_safe());
+        assert!(compactor.model_token_limit() >= crate::constants::CONTEXT_WINDOW_1M);
+
+        let huge_tool_output =
+            "log line with diagnostic details for compaction test\n".repeat(13_500);
+        let mut msgs = vec![
+            Message::user("build the full application"),
+            Message::assistant_with_tools(
+                "",
+                vec![crate::agent::types::ToolCall {
+                    id: "c1".into(),
+                    name: "exec_cmd".into(),
+                    arguments: serde_json::json!({"command": "bun run build"}),
+                }],
+            ),
+            Message::tool_result("c1", "exec_cmd", huge_tool_output),
+            Message::user("next step"),
+            Message::assistant("working"),
+            Message::user("verify"),
+            Message::assistant("verified"),
+            Message::user("status"),
+            Message::assistant("done"),
+        ];
+
+        let before = compactor.count_tokens(&msgs);
+        assert!(
+            before > crate::constants::COMPACT_PRACTICAL_TIER1_CEILING_TOKENS && before < 600_000,
+            "Expected initial tokens in (140K, 600K), got {before}"
+        );
+
+        let metrics = compactor.compact(&mut msgs, 3);
+        assert!(
+            metrics.is_some(),
+            "Expected practical Tier-1 ceiling to compact >140K history on 1M-window model"
+        );
+        assert!(compactor.count_tokens(&msgs) < before);
     }
 }

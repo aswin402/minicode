@@ -954,6 +954,7 @@ async fn dispatch_cdp_method(
                 BrowserBackendCmd::SetViewport {
                     width,
                     height,
+                    overridden: true,
                     reply: tx,
                 },
             )?;
@@ -968,6 +969,7 @@ async fn dispatch_cdp_method(
                 BrowserBackendCmd::SetViewport {
                     width: default_width,
                     height: default_height,
+                    overridden: false,
                     reply: tx,
                 },
             )?;

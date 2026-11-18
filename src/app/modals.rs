@@ -1334,7 +1334,6 @@ impl<'a> App<'a> {
             ModalState::Approval(_)
             | ModalState::Inquiry(_)
             | ModalState::WorkspaceAnalysis { .. }
-            | ModalState::WorkspaceDrift { .. }
             | ModalState::ProviderSetupRequired { .. }
             | ModalState::ArchitectureAudit { .. }
             | ModalState::ContextDiagnostics { .. } => {

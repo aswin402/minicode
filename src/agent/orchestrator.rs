@@ -222,6 +222,26 @@ impl WorkflowRouter {
         prompt: &str,
         baseline_inlined_skills: Option<&[String]>,
     ) -> Option<String> {
+        Self::enrich_state_driven_context_full(
+            workspace_root,
+            prompt,
+            baseline_inlined_skills,
+            None,
+            None,
+        )
+        .await
+        .0
+    }
+
+    /// Full stateful enrichment entry point accepting excluded session skills (`baseline ∪ session_active_skills`)
+    /// and live tool capability sets (`available_tools`, `active_tools`), returning `(enrichment_block, newly_inlined_skills)`.
+    pub async fn enrich_state_driven_context_full(
+        workspace_root: &Path,
+        prompt: &str,
+        exclude_inlined_skills: Option<&[String]>,
+        available_tools: Option<std::collections::HashSet<String>>,
+        active_tools: Option<std::collections::HashSet<String>>,
+    ) -> (Option<String>, Vec<String>) {
         let wm = crate::context::working_memory::WorkingMemory::new(workspace_root);
         let active_plan_summary = wm.read_active_plan_summary();
         let active_plan_text = active_plan_summary.as_ref().map(|s| {
@@ -253,7 +273,7 @@ impl WorkflowRouter {
                 }
             }
             if live_sections.is_empty() {
-                return None;
+                return (None, Vec::new());
             }
             live_sections.push(
                 "<async_background_directive>\n\
@@ -264,10 +284,13 @@ impl WorkflowRouter {
                  </async_background_directive>"
                     .to_string(),
             );
-            return Some(format!(
-                "<execution_context>\n{}\n</execution_context>",
-                live_sections.join("\n\n")
-            ));
+            return (
+                Some(format!(
+                    "<execution_context>\n{}\n</execution_context>",
+                    live_sections.join("\n\n")
+                )),
+                Vec::new(),
+            );
         }
 
         let mut sections: Vec<String> = Vec::new();
@@ -320,17 +343,24 @@ impl WorkflowRouter {
         }
 
         // 6. Hermes Progressive Skills & Learned Gotchas from VaultStore
-        let store = crate::vault::store::VaultStore::new(workspace_root);
+        let mut store = crate::vault::store::VaultStore::new(workspace_root);
+        if let (Some(avail), Some(act)) = (available_tools, active_tools) {
+            store = store.with_tool_capabilities(avail, act);
+        }
+        let _ = store.sync_project_active_skills(&code_files);
         let mut workspace_files = code_files.clone();
         workspace_files.extend(doc_files.iter().cloned());
-        let _ = store.sync_project_active_skills(&workspace_files);
-        if let Some(skills_block) = Self::enrich_hermes_skills_with_baseline(
-            workspace_root,
-            &store,
-            prompt,
-            &workspace_files,
-            baseline_inlined_skills,
-        ) {
+        let mut newly_inlined = Vec::new();
+        if let Some((skills_block, inlined_names)) =
+            Self::enrich_hermes_skills_with_baseline_and_names(
+                workspace_root,
+                &store,
+                prompt,
+                &workspace_files,
+                exclude_inlined_skills,
+            )
+        {
+            newly_inlined = inlined_names;
             sections.push(skills_block);
         }
 
@@ -355,9 +385,9 @@ impl WorkflowRouter {
         }
 
         if sections.is_empty() {
-            None
+            (None, newly_inlined)
         } else {
-            Some(sections.join("\n\n"))
+            (Some(sections.join("\n\n")), newly_inlined)
         }
     }
 
@@ -397,6 +427,40 @@ impl WorkflowRouter {
                     "  Status: Existing Software Codebase ({} source files detected)\n",
                     code_files.len()
                 ));
+                let telemetry = crate::context::graph::CodeGraph::inspect_workspace_telemetry(
+                    workspace_root,
+                    code_files,
+                );
+                match telemetry {
+                    crate::context::graph::CodeGraphTelemetry::Unindexed { source_files } => {
+                        out.push_str(&format!(
+                            "  AST CodeGraph: unindexed (0/{} source files indexed; per-file AST shard engine ready on demand)\n",
+                            source_files
+                        ));
+                    }
+                    crate::context::graph::CodeGraphTelemetry::DeltaPending {
+                        indexed_files,
+                        symbol_count,
+                        modified,
+                        added,
+                        removed,
+                    } => {
+                        out.push_str(&format!(
+                            "  AST CodeGraph: background delta sync running ({} files, {} symbols cached; +{} ~{} -{} delta)\n",
+                            indexed_files, symbol_count, added, modified, removed
+                        ));
+                    }
+                    crate::context::graph::CodeGraphTelemetry::Synced {
+                        indexed_files,
+                        symbol_count,
+                    } => {
+                        out.push_str(&format!(
+                            "  AST CodeGraph: synced ({} source files, {} symbols indexed; PageRank reuse map active)\n",
+                            indexed_files, symbol_count
+                        ));
+                    }
+                    crate::context::graph::CodeGraphTelemetry::Empty => {}
+                }
                 out.push_str("  Key Source Files:\n");
                 for c in code_files.iter().take(6) {
                     let rel = c.strip_prefix(workspace_root).unwrap_or(c);
@@ -409,7 +473,7 @@ impl WorkflowRouter {
                         out.push_str(&format!("    • `{}`\n", rel.display()));
                     }
                 }
-                out.push_str("  Directive: Ground changes in existing architecture and symbols (`locate_symbol`, `grep_search`). Maintain existing conventions.\n");
+                out.push_str("  Directive: Decide when structural graph intelligence helps — on unfamiliar multi-file repos or cross-module refactors, invoke `repo_map`, `locate_symbol`, `impact_analysis`, or `sync_code_graph` (which build/delta-sync per-file AST shards automatically); for localized edits, read/edit directly.\n");
             }
         }
         out.push_str("</workspace_repository_state>");
@@ -889,6 +953,23 @@ impl WorkflowRouter {
         code_files: &[PathBuf],
         baseline_inlined_skills: Option<&[String]>,
     ) -> Option<String> {
+        Self::enrich_hermes_skills_with_baseline_and_names(
+            workspace_root,
+            store,
+            prompt,
+            code_files,
+            baseline_inlined_skills,
+        )
+        .map(|(block, _)| block)
+    }
+
+    fn enrich_hermes_skills_with_baseline_and_names(
+        workspace_root: &Path,
+        store: &crate::vault::store::VaultStore,
+        prompt: &str,
+        code_files: &[PathBuf],
+        baseline_inlined_skills: Option<&[String]>,
+    ) -> Option<(String, Vec<String>)> {
         let exclude: Vec<String> =
             baseline_inlined_skills
                 .map(|b| b.to_vec())
@@ -946,7 +1027,7 @@ impl WorkflowRouter {
                 &[]
             };
 
-        store.format_dynamic_turn_skills(
+        store.format_dynamic_turn_skills_with_names(
             Some(prompt),
             effective_objective,
             effective_files,
@@ -968,8 +1049,8 @@ impl WorkflowRouter {
         Self::enrich_hermes_skills(workspace_root, &store, prompt, &workspace_files)
     }
 
-    /// Declarative post-tool state transition router driven by `SKILL.md` `after_tools` hooks
-    /// and live workspace state (replaces hardcoded tool-name `if/else` blocks in `tool_finalize`).
+    /// Declarative post-tool state transition router driven by `SKILL.md` `after_tools` and
+    /// `enrichments` frontmatter tables (zero hardcoded skill or category names).
     pub fn enrich_post_tool_transition(
         workspace_root: &Path,
         tool_name: &str,
@@ -979,31 +1060,39 @@ impl WorkflowRouter {
         let (hook_block, matched_skills) = store.format_post_tool_skills(tool_name)?;
 
         let mut blocks = vec![hook_block];
-
-        let triggers_ui_warehouse = matched_skills
-            .iter()
-            .any(|s| s.category().eq_ignore_ascii_case("ui-styling"));
-        if triggers_ui_warehouse {
-            let (_, code_files, _) = Self::scan_repository_state(workspace_root);
-            let has_ui = Self::has_ui_surface(workspace_root, &code_files)
-                || crate::blocks::seed::ProjectStackInfo::detect(workspace_root)
-                    .framework
-                    .is_some();
-            if has_ui {
-                if let Some(ui_enrichment) = Self::enrich_ui_design(workspace_root, prompt) {
-                    blocks.push(ui_enrichment);
+        let mut requested_enrichments = std::collections::BTreeSet::new();
+        for skill in &matched_skills {
+            for tag in &skill.frontmatter.enrichments {
+                let clean = tag.trim().to_ascii_lowercase();
+                if !clean.is_empty() {
+                    requested_enrichments.insert(clean);
                 }
             }
         }
 
-        let triggers_plan_execution = matched_skills
-            .iter()
-            .any(|s| s.name.eq_ignore_ascii_case("executing-plans"));
-        if triggers_plan_execution {
-            if let Some(post_plan_skills) =
-                Self::enrich_post_plan_execution_context(workspace_root, prompt)
-            {
-                blocks.push(post_plan_skills);
+        for enrichment in requested_enrichments {
+            match enrichment.as_str() {
+                "ui_design" => {
+                    let (_, code_files, _) = Self::scan_repository_state(workspace_root);
+                    let has_ui = Self::has_ui_surface(workspace_root, &code_files)
+                        || crate::blocks::seed::ProjectStackInfo::detect(workspace_root)
+                            .framework
+                            .is_some();
+                    if has_ui {
+                        if let Some(ui_enrichment) = Self::enrich_ui_design(workspace_root, prompt)
+                        {
+                            blocks.push(ui_enrichment);
+                        }
+                    }
+                }
+                "post_plan_skills" => {
+                    if let Some(post_plan_skills) =
+                        Self::enrich_post_plan_execution_context(workspace_root, prompt)
+                    {
+                        blocks.push(post_plan_skills);
+                    }
+                }
+                _ => {}
             }
         }
 

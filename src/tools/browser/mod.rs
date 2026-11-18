@@ -706,67 +706,83 @@ impl BrowserController {
         if matches!(action, "attach_local_browser" | "attach") {
             return BrowserManager::attach_local_running_browser().await;
         }
+        if matches!(action, "list" | "spaces" | "list_spaces" | "close_space") {
+            let Some(engine) = BrowserManager::peek_live_engine().await else {
+                return Ok("ℹ No active browser session is currently running.".to_string());
+            };
+            let (cdp, _, space_opt) = engine.active_session().await?;
+            Self::record_engine_telemetry(&engine, &space_opt, action).await;
+            return match action {
+                "list" => {
+                    let targets = cdp.list_targets().await?;
+                    let mut out = format!(
+                        "### Active Browser Tabs ({} • `{}`)\n\n",
+                        targets.len(),
+                        engine.process.config.engine
+                    );
+                    for (idx, t) in targets.iter().enumerate() {
+                        let id = t
+                            .get("targetId")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("unknown");
+                        let title = t
+                            .get("title")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("(untitled)");
+                        let target_url = t.get("url").and_then(|v| v.as_str()).unwrap_or("");
+                        let target_type = t.get("type").and_then(|v| v.as_str()).unwrap_or("page");
+                        let ctx_note = t
+                            .get("browserContextId")
+                            .and_then(|v| v.as_str())
+                            .filter(|s| !s.is_empty())
+                            .map(|s| format!(" [ctx: `{s}`]"))
+                            .unwrap_or_default();
+                        out.push_str(&format!(
+                            "{}. [{}] \"{}\" (`{}`) - ID: `{}`{}\n",
+                            idx + 1,
+                            target_type,
+                            title,
+                            target_url,
+                            id,
+                            ctx_note
+                        ));
+                    }
+                    Ok(out)
+                }
+                "spaces" | "list_spaces" => {
+                    let spaces = engine.list_spaces_summary().await;
+                    let pretty =
+                        serde_json::to_string_pretty(&spaces).unwrap_or_else(|_| "[]".to_string());
+                    Ok(format!(
+                        "### 🪐 Active Browser Spaces ({})\n```json\n{}\n```",
+                        spaces.len(),
+                        pretty
+                    ))
+                }
+                _ => {
+                    let name = target_id
+                        .or_else(|| space_opt.as_ref().map(|s| s.name.as_str()))
+                        .ok_or_else(|| ToolError::InvalidArguments {
+                            name: "browser_tabs".to_string(),
+                            reason:
+                                "Action 'close_space' requires 'space' or 'target_id' (Space name)"
+                                    .to_string(),
+                        })?;
+                    let closed = engine.close_space(name).await;
+                    Ok(if closed {
+                        format!(
+                            "Disposed isolated browser Space `{name}` and purged its ephemeral storage."
+                        )
+                    } else {
+                        format!("No active isolated Space named `{name}` found.")
+                    })
+                }
+            };
+        }
         let engine = BrowserManager::get_or_launch(mode, workspace_root).await?;
         let (cdp, _, space_opt) = engine.active_session().await?;
         Self::record_engine_telemetry(&engine, &space_opt, action).await;
         match action {
-            "list" => {
-                let targets = cdp.list_targets().await?;
-                let mut out = format!("### Active Browser Tabs ({})\n\n", targets.len());
-                for (idx, t) in targets.iter().enumerate() {
-                    let id = t
-                        .get("targetId")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("unknown");
-                    let title = t
-                        .get("title")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("(untitled)");
-                    let target_url = t.get("url").and_then(|v| v.as_str()).unwrap_or("");
-                    let target_type = t.get("type").and_then(|v| v.as_str()).unwrap_or("page");
-                    let ctx_note = t
-                        .get("browserContextId")
-                        .and_then(|v| v.as_str())
-                        .filter(|s| !s.is_empty())
-                        .map(|s| format!(" [ctx: `{s}`]"))
-                        .unwrap_or_default();
-                    out.push_str(&format!(
-                        "{}. [{}] \"{}\" (`{}`) - ID: `{}`{}\n",
-                        idx + 1,
-                        target_type,
-                        title,
-                        target_url,
-                        id,
-                        ctx_note
-                    ));
-                }
-                Ok(out)
-            }
-            "spaces" | "list_spaces" => {
-                let spaces = engine.list_spaces_summary().await;
-                let pretty =
-                    serde_json::to_string_pretty(&spaces).unwrap_or_else(|_| "[]".to_string());
-                Ok(format!(
-                    "### 🪐 Active Browser Spaces ({})\n```json\n{}\n```",
-                    spaces.len(),
-                    pretty
-                ))
-            }
-            "close_space" => {
-                let name = target_id
-                    .or_else(|| space_opt.as_ref().map(|s| s.name.as_str()))
-                    .ok_or_else(|| ToolError::InvalidArguments {
-                        name: "browser_tabs".to_string(),
-                        reason: "Action 'close_space' requires 'space' or 'target_id' (Space name)"
-                            .to_string(),
-                    })?;
-                let closed = engine.close_space(name).await;
-                Ok(if closed {
-                    format!("Disposed isolated browser Space `{name}` and purged its ephemeral storage.")
-                } else {
-                    format!("No active isolated Space named `{name}` found.")
-                })
-            }
             "open_or_reuse" | "reuse" => {
                 let target_url = url.unwrap_or("about:blank");
                 if target_url != "about:blank" {
@@ -831,10 +847,34 @@ impl BrowserController {
         }
     }
 
-    /// Launches or retrieves the dedicated `MiniBrowse` debug engine (without disturbing any open
-    /// `Chrome` / `Firefox` / `Safari` general browser window), optionally syncing to `url_opt`
-    /// or the companion general browser's active URL.
+    /// Resolves the active session engine for CDP-agnostic QA/debug tools (`browser_qa_audit`,
+    /// `browser_debug_bundle`, `browser_inspect_dom`, `browser_debug_logs`): reuses an already-live
+    /// general engine (e.g. `Chrome` after `engine="chrome"`) or explicit `engine` override instead
+    /// of spawning a duplicate `MiniBrowse` instance, falling back to `get_or_launch_debug` when idle.
     async fn prepare_debug_engine(
+        url_opt: Option<&str>,
+        explicit_mode: Option<BrowserMode>,
+        workspace_root: &Path,
+    ) -> Result<(
+        std::sync::Arc<manager::SharedEngine>,
+        Option<(BrowserEngine, String)>,
+    )> {
+        if let Some(live) = BrowserManager::peek_live_engine().await {
+            if let Some(url) = url_opt.map(str::trim).filter(|s| !s.is_empty()) {
+                validate_browser_url(url)?;
+                let (reconciled, _) = reconcile_loopback_url(url).await;
+                let (cdp, _, _) = live.active_session().await?;
+                cdp.navigate(&reconciled).await?;
+            }
+            return Ok((live, None));
+        }
+        Self::prepare_minibrowse_debug_engine(url_opt, explicit_mode, workspace_root).await
+    }
+
+    /// Launches or retrieves the dedicated `MiniBrowse` debug engine for `MiniBrowse.*`-native RPCs
+    /// (`diagnose_web_app`, `flutter_debug`, `visual_diff`, `memory_status`, etc.) without closing
+    /// any open `Chrome` / `Firefox` / `Safari` general browser window.
+    async fn prepare_minibrowse_debug_engine(
         url_opt: Option<&str>,
         explicit_mode: Option<BrowserMode>,
         workspace_root: &Path,
@@ -1862,11 +1902,16 @@ impl BrowserController {
     pub async fn get_debug_bundle(_mode: BrowserMode, workspace_root: &Path) -> Result<String> {
         let (engine, companion_logs) =
             Self::prepare_debug_engine(None, None, workspace_root).await?;
-        let debug_report = engine.cdp.debug_collector().format_report();
-        let web_diag_opt = engine.cdp.minibrowse_web_diagnose().await.ok();
-        let mut acc_mgr = engine.accessibility.lock().await;
+        let (cdp, acc_arc, _) = engine.active_session().await?;
+        let debug_report = cdp.debug_collector().format_report();
+        let web_diag_opt = if engine.process.config.engine == BrowserEngine::MiniBrowse {
+            cdp.minibrowse_web_diagnose().await.ok()
+        } else {
+            None
+        };
+        let mut acc_mgr = acc_arc.lock().await;
         let (_, elements, _) =
-            BrowserInteractor::refresh_accessibility_tree(&engine.cdp, &mut acc_mgr).await;
+            BrowserInteractor::refresh_accessibility_tree(&cdp, &mut acc_mgr).await;
 
         let mut report = format!(
             "### Browser Diagnostic Bundle (`{}` • `{}`)\n\n",
@@ -2012,7 +2057,8 @@ impl BrowserController {
         _mode: BrowserMode,
         workspace_root: &Path,
     ) -> Result<String> {
-        let (engine, _) = Self::prepare_debug_engine(url_opt, None, workspace_root).await?;
+        let (engine, _) =
+            Self::prepare_minibrowse_debug_engine(url_opt, None, workspace_root).await?;
         let diag = engine.cdp.minibrowse_web_diagnose().await?;
         let pretty = serde_json::to_string_pretty(&diag).unwrap_or_else(|_| diag.to_string());
         Ok(format!(
@@ -2032,7 +2078,8 @@ impl BrowserController {
         _mode: BrowserMode,
         workspace_root: &Path,
     ) -> Result<String> {
-        let (engine, _) = Self::prepare_debug_engine(url_opt, None, workspace_root).await?;
+        let (engine, _) =
+            Self::prepare_minibrowse_debug_engine(url_opt, None, workspace_root).await?;
         let params = serde_json::json!({
             "action": action,
             "vmUrl": vm_url_opt.unwrap_or(""),
@@ -2070,7 +2117,8 @@ impl BrowserController {
                 | "suspend_idle_tabs"
         );
         let (engine, cdp, acc_arc, space_opt) = if is_minibrowse_native_action {
-            let (eng, _) = Self::prepare_debug_engine(None, None, workspace_root).await?;
+            let (eng, _) =
+                Self::prepare_minibrowse_debug_engine(None, None, workspace_root).await?;
             let (cdp, acc_arc, space_opt) = eng.active_session().await?;
             (eng, cdp, acc_arc, space_opt)
         } else {
@@ -2943,27 +2991,28 @@ render(0);
         )
     }
 
-    /// Runs a comprehensive in-page QA audit on the given URL or active page via `MiniBrowse`
+    /// Runs a comprehensive in-page QA audit on the given URL or active page
     pub async fn run_qa_audit(
         url_opt: Option<&str>,
         _mode: BrowserMode,
         workspace_root: &Path,
     ) -> Result<String> {
         let (engine, _) = Self::prepare_debug_engine(url_opt, None, workspace_root).await?;
-        let current_url = engine
-            .cdp
+        let (cdp, _, _) = engine.active_session().await?;
+        let current_url = cdp
             .evaluate_js("window.location.href")
             .await
             .unwrap_or_else(|_| url_opt.unwrap_or("http://localhost").to_string());
 
-        let report = PageAgent::run_qa_audit(&engine.cdp, &current_url).await?;
+        let report = PageAgent::run_qa_audit(&cdp, &current_url).await?;
         Ok(PageAgent::format_qa_report(&report))
     }
 
-    /// Inspects in-page DOM elements including Shadow DOM and computed geometry via `MiniBrowse`
+    /// Inspects in-page DOM elements including Shadow DOM and computed geometry
     pub async fn inspect_visual_dom(_mode: BrowserMode, workspace_root: &Path) -> Result<String> {
         let (engine, _) = Self::prepare_debug_engine(None, None, workspace_root).await?;
-        let elements = PageAgent::scan_visual_tree(&engine.cdp).await?;
+        let (cdp, _, _) = engine.active_session().await?;
+        let elements = PageAgent::scan_visual_tree(&cdp).await?;
         Ok(PageAgent::format_visual_tree_report(&elements))
     }
 
@@ -2977,6 +3026,7 @@ render(0);
         workspace_root: &Path,
     ) -> Result<String> {
         let engine = BrowserManager::get_or_launch(mode, workspace_root).await?;
+        let (cdp, _, _) = engine.active_session().await?;
         let mut results = Vec::new();
 
         // 1. Viewport / Device Emulation
@@ -2984,12 +3034,22 @@ render(0);
             Self::resolve_viewport_emulation(viewport, custom_width, custom_height)?
         {
             if clear_first {
-                engine.cdp.clear_device_metrics().await?;
+                cdp.clear_device_metrics().await?;
             }
             if let Some((w, h, mobile, scale)) = device_override {
-                engine.cdp.emulate_device(w, h, mobile, scale).await?;
+                cdp.emulate_device(w, h, mobile, scale).await?;
             }
-            results.push(msg);
+            let verified_vp = cdp
+                .evaluate_js("window.innerWidth + 'x' + window.innerHeight")
+                .await
+                .ok()
+                .map(|s| s.trim().trim_matches('"').to_string())
+                .filter(|s| !s.is_empty());
+            if let Some(vp) = verified_vp {
+                results.push(format!("{msg} [Verified live viewport: {vp}px]"));
+            } else {
+                results.push(msg);
+            }
         }
 
         // 2. Network Throttling Emulation
@@ -3042,9 +3102,7 @@ render(0);
                 .iter()
                 .find(|(aliases, ..)| aliases.contains(&lower.as_str()))
             {
-                engine
-                    .cdp
-                    .emulate_network_conditions(*offline, *latency, *down, *up)
+                cdp.emulate_network_conditions(*offline, *latency, *down, *up)
                     .await?;
                 results.push((*msg).to_string());
             } else {

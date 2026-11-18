@@ -18,8 +18,8 @@ fn mode_prop() -> serde_json::Value {
 fn engine_prop() -> serde_json::Value {
     json!({
         "type": "string",
-        "enum": ["minibrowse", "chrome", "firefox", "safari", "obscura"],
-        "description": "Optional browser engine selector. Omit to use MiniBrowse (primary default) or the user's configured default browser; pass 'chrome', 'firefox', 'safari', or 'minibrowse' when the user asks to open or test in a specific browser. Note: debug tools always use MiniBrowse."
+        "enum": ["minibrowse", "chrome", "firefox", "safari"],
+        "description": "Optional browser engine selector. Omit to use the active browser session or MiniBrowse (primary default); pass 'minibrowse', 'chrome', 'firefox', or 'safari' when testing in a specific browser."
     })
 }
 
@@ -522,7 +522,11 @@ pub fn get_schemas() -> Vec<ToolSchema> {
             description: "Aggregate live browser diagnostics into a unified report: uncaught JavaScript exceptions, console logs, failed HTTP network requests (4xx/5xx / blocked requests), and current active page ARIA tree.".to_string(),
             parameters: json!({
                 "type": "object",
-                "properties": { "mode": mode }
+                "properties": {
+                    "engine": engine,
+                    "space": space,
+                    "mode": mode
+                }
             }),
         },
         ToolSchema {
@@ -535,6 +539,8 @@ pub fn get_schemas() -> Vec<ToolSchema> {
                         "type": "string",
                         "description": "Optional URL to navigate to and audit (defaults to the currently open browser page)"
                     },
+                    "engine": engine,
+                    "space": space,
                     "mode": mode
                 }
             }),
@@ -544,7 +550,11 @@ pub fn get_schemas() -> Vec<ToolSchema> {
             description: "Perform deep in-page DOM grounding inspection. Pierces Shadow DOM to discover custom Web Components, computes live bounding box geometry (X, Y, W, H), checks element visibility, and extracts precise CSS selectors.".to_string(),
             parameters: json!({
                 "type": "object",
-                "properties": { "mode": mode }
+                "properties": {
+                    "engine": engine,
+                    "space": space,
+                    "mode": mode
+                }
             }),
         },
         ToolSchema {
@@ -633,6 +643,8 @@ pub fn get_schemas() -> Vec<ToolSchema> {
                         "type": "integer",
                         "description": "Custom viewport height in pixels"
                     },
+                    "engine": engine,
+                    "space": space,
                     "mode": mode
                 }
             }),

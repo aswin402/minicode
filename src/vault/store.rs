@@ -9,6 +9,7 @@
 mod context_and_bundles;
 #[path = "store_impl/skill_crud.rs"]
 mod skill_crud;
+pub use skill_crud::SkillPatchSpec;
 #[cfg(test)]
 #[path = "store_impl/tests.rs"]
 mod tests;
@@ -23,8 +24,16 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 const VAULT_INDEX_MAGIC: [u8; 8] = *b"MCVLTSIX";
-const VAULT_INDEX_VERSION: u32 = 1;
+const VAULT_INDEX_VERSION: u32 = 2;
 const VAULT_INDEX_FILE_NAME: &str = ".vault_index.bin";
+
+type VaultIndexCacheMap = std::collections::HashMap<PathBuf, ((u64, u64, u32), VaultBinaryIndex)>;
+
+fn vault_index_memory_cache() -> &'static std::sync::RwLock<VaultIndexCacheMap> {
+    static CACHE: std::sync::OnceLock<std::sync::RwLock<VaultIndexCacheMap>> =
+        std::sync::OnceLock::new();
+    CACHE.get_or_init(|| std::sync::RwLock::new(std::collections::HashMap::new()))
+}
 
 /// Binary index record cached in `.minicode/vault/.vault_index.bin` and
 /// `~/.config/minicode/vault/.vault_index.bin` via `bincode` + `memmap2`.
@@ -56,6 +65,27 @@ impl Default for VaultBinaryIndex {
     }
 }
 
+fn inherit_omitted_frontmatter(fm: &mut SkillFrontmatter, shadowed: Option<&VaultSkill>) {
+    let Some(base) = shadowed else {
+        return;
+    };
+    if fm.globs.is_empty() && !base.frontmatter.globs.is_empty() {
+        fm.globs.clone_from(&base.frontmatter.globs);
+    }
+    if fm.triggers.is_empty() && !base.frontmatter.triggers.is_empty() {
+        fm.triggers.clone_from(&base.frontmatter.triggers);
+    }
+    if fm.allowed_tools.is_empty() && !base.frontmatter.allowed_tools.is_empty() {
+        fm.allowed_tools.clone_from(&base.frontmatter.allowed_tools);
+    }
+    if fm.category.is_none() && base.frontmatter.category.is_some() {
+        fm.category.clone_from(&base.frontmatter.category);
+    }
+    if fm.kind.is_none() && base.frontmatter.kind.is_some() {
+        fm.kind.clone_from(&base.frontmatter.kind);
+    }
+}
+
 fn vault_file_fingerprint(meta: &fs::Metadata) -> (u64, u64, u32) {
     let size = meta.len();
     let (secs, nanos) = meta
@@ -68,6 +98,18 @@ fn vault_file_fingerprint(meta: &fs::Metadata) -> (u64, u64, u32) {
 }
 
 fn load_mmap_vault_index(index_path: &Path) -> VaultBinaryIndex {
+    let Ok(meta) = fs::metadata(index_path) else {
+        return VaultBinaryIndex::default();
+    };
+    let fp = vault_file_fingerprint(&meta);
+    if let Ok(guard) = vault_index_memory_cache().read() {
+        if let Some((cached_fp, cached_idx)) = guard.get(index_path) {
+            if *cached_fp == fp {
+                return cached_idx.clone();
+            }
+        }
+    }
+
     let Ok(file) = fs::File::open(index_path) else {
         return VaultBinaryIndex::default();
     };
@@ -81,7 +123,12 @@ fn load_mmap_vault_index(index_path: &Path) -> VaultBinaryIndex {
         };
 
     match parsed {
-        Some(idx) if idx.magic == VAULT_INDEX_MAGIC && idx.version == VAULT_INDEX_VERSION => idx,
+        Some(idx) if idx.magic == VAULT_INDEX_MAGIC && idx.version == VAULT_INDEX_VERSION => {
+            if let Ok(mut guard) = vault_index_memory_cache().write() {
+                guard.insert(index_path.to_path_buf(), (fp, idx.clone()));
+            }
+            idx
+        }
         _ => VaultBinaryIndex::default(),
     }
 }
@@ -102,8 +149,17 @@ fn save_mmap_vault_index(index_path: &Path, index: &VaultBinaryIndex) {
         std::process::id(),
         uuid::Uuid::new_v4().simple()
     ));
-    if fs::write(&tmp_path, &encoded).is_ok() && fs::rename(&tmp_path, index_path).is_err() {
-        let _ = fs::remove_file(&tmp_path);
+    if fs::write(&tmp_path, &encoded).is_ok() {
+        if fs::rename(&tmp_path, index_path).is_ok() {
+            if let Ok(meta) = fs::metadata(index_path) {
+                let fp = vault_file_fingerprint(&meta);
+                if let Ok(mut guard) = vault_index_memory_cache().write() {
+                    guard.insert(index_path.to_path_buf(), (fp, index.clone()));
+                }
+            }
+        } else {
+            let _ = fs::remove_file(&tmp_path);
+        }
     }
 }
 
@@ -112,6 +168,8 @@ fn save_mmap_vault_index(index_path: &Path, index: &VaultBinaryIndex) {
 pub struct VaultStore {
     workspace_root: PathBuf,
     custom_global_vault_dir: Option<PathBuf>,
+    available_tools: Option<std::collections::HashSet<String>>,
+    active_tools: Option<std::collections::HashSet<String>>,
 }
 
 impl VaultStore {
@@ -120,7 +178,23 @@ impl VaultStore {
         Self {
             workspace_root: workspace_root.to_path_buf(),
             custom_global_vault_dir: None,
+            available_tools: None,
+            active_tools: None,
         }
+    }
+
+    /// Attaches live session tool capability sets (`available_tools` across registry + connected MCPs,
+    /// and currently `active_tools` in the turn schema) so `requires_tools` and `fallback_for_tools`
+    /// evaluate dynamically at runtime.
+    #[must_use]
+    pub fn with_tool_capabilities(
+        mut self,
+        available_tools: std::collections::HashSet<String>,
+        active_tools: std::collections::HashSet<String>,
+    ) -> Self {
+        self.available_tools = Some(available_tools);
+        self.active_tools = Some(active_tools);
+        self
     }
 
     /// Sets an explicit custom directory for the global vault (used for testing or sandboxing).
@@ -163,16 +237,26 @@ impl VaultStore {
         self.global_vault_dir().map(|v| v.join("skills"))
     }
 
-    /// Legacy global skills directory: `~/.config/minicode/skills`
-    pub fn legacy_global_skills_dir(&self) -> Option<PathBuf> {
+    /// Legacy global skills directories (`~/.config/minicode/skills`, `~/.minikit/skills`, `~/.onpkg/skills`).
+    pub fn legacy_global_skills_dirs(&self) -> Vec<PathBuf> {
         if self.custom_global_vault_dir.is_some() {
-            return None;
+            return Vec::new();
         }
-        dirs::home_dir().map(|home| {
+        let Some(home) = dirs::home_dir() else {
+            return Vec::new();
+        };
+        vec![
             home.join(".config")
                 .join(crate::constants::CONFIG_DIR_NAME)
-                .join("skills")
-        })
+                .join("skills"),
+            home.join(".minikit").join("skills"),
+            home.join(".onpkg").join("skills"),
+        ]
+    }
+
+    /// Legacy global skills directory: `~/.config/minicode/skills`
+    pub fn legacy_global_skills_dir(&self) -> Option<PathBuf> {
+        self.legacy_global_skills_dirs().into_iter().next()
     }
 
     /// Primary project bundles directory: `.minicode/bundles`
@@ -188,6 +272,14 @@ impl VaultStore {
     /// Global learned sources file: `~/.config/minicode/vault/sources.json`
     pub fn global_sources_file(&self) -> Option<PathBuf> {
         self.global_vault_dir().map(|d| d.join("sources.json"))
+    }
+
+    /// Project-local learned sources fallback file: `.minicode/vault/sources.json`
+    pub fn project_sources_file(&self) -> PathBuf {
+        self.workspace_root
+            .join(".minicode")
+            .join("vault")
+            .join("sources.json")
     }
 
     /// Global learned gotchas file: `~/.config/minicode/vault/gotchas.json`
@@ -209,6 +301,114 @@ impl VaultStore {
             .join(".minicode")
             .join("vault")
             .join("deleted_skills.json")
+    }
+
+    /// Project-local ledger of auto-synced manifest skills: `.minicode/vault/auto_skills.json`
+    /// Used by set-theoretic `sync_project_active_skills` ($U = (M_{\text{prev}} \setminus A_{\text{prev}}) \cup D$)
+    /// so user-pinned skills are preserved while obsolete stack/glob skills are cleanly pruned.
+    pub fn project_auto_skills_file(&self) -> PathBuf {
+        self.workspace_root
+            .join(".minicode")
+            .join("vault")
+            .join("auto_skills.json")
+    }
+
+    /// Project-local empirical skill usage & verification telemetry ledger: `.minicode/vault/skill_telemetry.json`.
+    pub fn project_skill_telemetry_file(&self) -> PathBuf {
+        self.workspace_root
+            .join(".minicode")
+            .join("vault")
+            .join("skill_telemetry.json")
+    }
+
+    /// Loads empirical skill usage & verification telemetry map keyed by lowercase skill name.
+    pub fn load_skill_telemetry(
+        &self,
+    ) -> std::collections::HashMap<String, crate::vault::models::SkillOutcomeStats> {
+        let path = self.project_skill_telemetry_file();
+        let Ok(raw) = fs::read_to_string(&path) else {
+            return std::collections::HashMap::new();
+        };
+        serde_json::from_str(&raw).unwrap_or_default()
+    }
+
+    fn save_skill_telemetry(
+        &self,
+        map: &std::collections::HashMap<String, crate::vault::models::SkillOutcomeStats>,
+    ) {
+        let path = self.project_skill_telemetry_file();
+        let Some(parent) = path.parent() else {
+            return;
+        };
+        if fs::create_dir_all(parent).is_ok() {
+            if let Ok(encoded) = serde_json::to_string_pretty(map) {
+                let _ = fs::write(&path, encoded);
+            }
+        }
+    }
+
+    /// Records activation timestamps and usage counts for skills activated or inspected in a turn.
+    pub fn record_skill_activations<I, S>(&self, skill_names: I)
+    where
+        I: IntoIterator<Item = S>,
+        S: AsRef<str>,
+    {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        let mut map = self.load_skill_telemetry();
+        let mut changed = false;
+        for name in skill_names {
+            let clean = sanitize_skill_name(name.as_ref());
+            if !clean.is_empty() {
+                let entry = map.entry(clean).or_default();
+                entry.activations = entry.activations.saturating_add(1);
+                entry.last_used_unix_secs = now;
+                changed = true;
+            }
+        }
+        if changed {
+            self.save_skill_telemetry(&map);
+        }
+    }
+
+    /// Records empirical verification outcome (`passed`, `heal_attempts`) for active turn skills.
+    pub fn record_skill_verification_outcome<I, S>(
+        &self,
+        skill_names: I,
+        passed: bool,
+        heal_attempts: usize,
+    ) where
+        I: IntoIterator<Item = S>,
+        S: AsRef<str>,
+    {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        let mut map = self.load_skill_telemetry();
+        let mut changed = false;
+        for name in skill_names {
+            let clean = sanitize_skill_name(name.as_ref());
+            if !clean.is_empty() {
+                let entry = map.entry(clean).or_default();
+                entry.last_used_unix_secs = now;
+                match (passed, heal_attempts) {
+                    (true, 0) => {
+                        entry.verify_first_pass = entry.verify_first_pass.saturating_add(1)
+                    }
+                    (true, _) => {
+                        entry.verify_after_heal = entry.verify_after_heal.saturating_add(1)
+                    }
+                    (false, _) => entry.verify_failures = entry.verify_failures.saturating_add(1),
+                }
+                changed = true;
+            }
+        }
+        if changed {
+            self.save_skill_telemetry(&map);
+        }
     }
 
     /// Global deleted skills tombstone file: `~/.config/minicode/vault/deleted_skills.json`
@@ -339,37 +539,56 @@ impl VaultStore {
         }
     }
 
-    /// Loads all bookmarked learned sources from `sources.json`.
+    /// Loads all bookmarked learned sources from `sources.json` (plus workspace-local `.minicode/vault/sources.json` fallback).
     pub fn load_sources(&self) -> Vec<LearnedSource> {
-        let Some(path) = self.global_sources_file() else {
-            return Vec::new();
-        };
-        if !path.exists() {
-            return Vec::new();
+        let mut combined: Vec<LearnedSource> = Vec::new();
+        if let Some(path) = self.global_sources_file() {
+            if path.exists() {
+                if let Ok(data) = fs::read_to_string(&path) {
+                    if let Ok(list) = serde_json::from_str::<Vec<LearnedSource>>(&data) {
+                        combined.extend(list);
+                    }
+                }
+            }
         }
-        let Ok(data) = fs::read_to_string(&path) else {
-            return Vec::new();
-        };
-        serde_json::from_str(&data).unwrap_or_default()
+        let proj_path = self.project_sources_file();
+        if proj_path.exists() {
+            if let Ok(data) = fs::read_to_string(&proj_path) {
+                if let Ok(list) = serde_json::from_str::<Vec<LearnedSource>>(&data) {
+                    for s in list {
+                        if !combined.iter().any(|c| c.uri.eq_ignore_ascii_case(&s.uri)) {
+                            combined.push(s);
+                        }
+                    }
+                }
+            }
+        }
+        combined
     }
 
-    /// Saves the learned sources array to `sources.json`.
+    /// Saves the learned sources array to global `sources.json`, falling back to `.minicode/vault/sources.json`
+    /// when the global config directory is read-only (e.g. sandboxed environments).
     pub fn save_sources(&self, sources: &[LearnedSource]) -> Result<()> {
-        let Some(path) = self.global_sources_file() else {
-            return Err(VaultError::InvalidSkill(
-                "Cannot resolve global vault directory".to_string(),
-            ));
-        };
-        if let Some(parent) = path.parent() {
+        let content = serde_json::to_string_pretty(sources)
+            .map_err(|e| VaultError::InvalidSkill(e.to_string()))?;
+        if let Some(path) = self.global_sources_file() {
+            let global_ok = path
+                .parent()
+                .map_or(Ok(()), fs::create_dir_all)
+                .and_then(|()| fs::write(&path, &content));
+            if global_ok.is_ok() {
+                return Ok(());
+            }
+        }
+        let proj_path = self.project_sources_file();
+        if let Some(parent) = proj_path.parent() {
             fs::create_dir_all(parent).map_err(|e| VaultError::Io {
                 path: parent.display().to_string(),
                 source: e,
             })?;
         }
-        let content = serde_json::to_string_pretty(sources)
-            .map_err(|e| VaultError::InvalidSkill(e.to_string()))?;
-        fs::write(&path, content).map_err(|e| VaultError::Io {
-            path: path.display().to_string(),
+        fs::write(&proj_path, content).map_err(|e| VaultError::Io {
+            path: proj_path.display().to_string(),
             source: e,
         })?;
         Ok(())
@@ -820,18 +1039,20 @@ impl VaultStore {
                 SkillScope::Global,
                 Some(SkillKind::Workflow),
                 false,
+                &deleted,
                 &mut skill_map,
                 &mut global_index,
                 &mut global_dirty,
                 &mut global_live_keys,
             );
         }
-        if let Some(legacy_dir) = self.legacy_global_skills_dir() {
+        for legacy_dir in self.legacy_global_skills_dirs() {
             self.scan_directory_into_map(
                 &legacy_dir,
                 SkillScope::Global,
                 Some(SkillKind::Workflow),
                 false,
+                &deleted,
                 &mut skill_map,
                 &mut global_index,
                 &mut global_dirty,
@@ -860,13 +1081,26 @@ impl VaultStore {
         let mut proj_dirty = false;
         let mut proj_live_keys = std::collections::HashSet::new();
 
-        // 3a. Primary project skills (.minicode/skills/)
+        // 3a. Primary project skills (.minicode/skills/ and legacy .skills/)
         let project_dir = self.project_skills_dir();
         self.scan_directory_into_map(
             &project_dir,
             SkillScope::Project,
             Some(SkillKind::Workflow),
             true,
+            &deleted,
+            &mut skill_map,
+            &mut proj_index,
+            &mut proj_dirty,
+            &mut proj_live_keys,
+        );
+        let dot_skills_dir = self.workspace_root.join(crate::constants::SKILLS_DIR_NAME);
+        self.scan_directory_into_map(
+            &dot_skills_dir,
+            SkillScope::Project,
+            Some(SkillKind::Workflow),
+            true,
+            &deleted,
             &mut skill_map,
             &mut proj_index,
             &mut proj_dirty,
@@ -876,6 +1110,19 @@ impl VaultStore {
         // 3b. Structured project documentation directory (minikit_docs/ or onpkg_docs/)
         let docs_dir = crate::tools::minikit::resolve_docs_dir(&self.workspace_root);
         if docs_dir.exists() {
+            let docs_skills_dir = docs_dir.join("skills");
+            self.scan_directory_into_map(
+                &docs_skills_dir,
+                SkillScope::Project,
+                Some(SkillKind::Workflow),
+                true,
+                &deleted,
+                &mut skill_map,
+                &mut proj_index,
+                &mut proj_dirty,
+                &mut proj_live_keys,
+            );
+
             // Tier 3a: packages/ -> Package Reference Docs & Continuous Learning Base
             let packages_dir = docs_dir.join("packages");
             self.scan_directory_into_map(
@@ -883,6 +1130,7 @@ impl VaultStore {
                 SkillScope::Project,
                 Some(SkillKind::Reference),
                 false,
+                &deleted,
                 &mut skill_map,
                 &mut proj_index,
                 &mut proj_dirty,
@@ -896,6 +1144,7 @@ impl VaultStore {
                 SkillScope::Project,
                 Some(SkillKind::Runtime),
                 false,
+                &deleted,
                 &mut skill_map,
                 &mut proj_index,
                 &mut proj_dirty,
@@ -918,6 +1167,7 @@ impl VaultStore {
                                 SkillScope::Project,
                                 Some(SkillKind::Runtime),
                                 false,
+                                &deleted,
                                 &mut skill_map,
                                 &mut proj_index,
                                 &mut proj_dirty,
@@ -935,11 +1185,43 @@ impl VaultStore {
                 SkillScope::Project,
                 Some(SkillKind::Core),
                 false,
+                &deleted,
                 &mut skill_map,
                 &mut proj_index,
                 &mut proj_dirty,
                 &mut proj_live_keys,
             );
+        }
+
+        // Tier 3f: Root SKILL.md if workspace itself defines a root skill contract
+        let root_skill_md = self.workspace_root.join(crate::constants::SKILL_MD_FILE);
+        if root_skill_md.is_file() {
+            if let Ok(content) = fs::read_to_string(&root_skill_md) {
+                if !content.trim().is_empty() {
+                    let fallback = self
+                        .workspace_root
+                        .file_name()
+                        .map(|n| n.to_string_lossy().to_string())
+                        .unwrap_or_else(|| "root-skill".to_string());
+                    let (fm, instructions) = parse_skill_markdown(&content, &fallback);
+                    let lower = fm.name.to_lowercase();
+                    if !deleted.contains(&lower) && !skill_map.contains_key(&lower) {
+                        skill_map.insert(
+                            lower,
+                            VaultSkill {
+                                name: fm.name.clone(),
+                                description: fm.description.clone(),
+                                scope: SkillScope::Project,
+                                frontmatter: fm,
+                                instructions,
+                                raw_content: content,
+                                path: Some(root_skill_md),
+                                is_active_in_project: true,
+                            },
+                        );
+                    }
+                }
+            }
         }
 
         // Tier 3e: Root DESIGN.md (Google Stitch / VoltAgent awesome-design-md standard)
@@ -990,16 +1272,18 @@ impl VaultStore {
             save_mmap_vault_index(&proj_idx_path, &proj_index);
         }
 
-        // Mark active status based on manifest (minikit.json / onpkg.json) or presence in .minicode/skills/
-        let manifest_active = self.get_manifest_active_skills();
+        // Mark active status based on manifest (minikit.json / onpkg.json), auto_skills.json, or presence in .minicode/skills/
+        let mut active_set: std::collections::HashSet<String> = self
+            .get_manifest_active_skills()
+            .into_iter()
+            .map(|s| s.to_lowercase())
+            .collect();
+        active_set.extend(Self::read_tombstone_set(&self.project_auto_skills_file()));
 
         let mut skills: Vec<VaultSkill> = skill_map
             .into_values()
             .map(|mut s| {
-                if manifest_active
-                    .iter()
-                    .any(|m| m.eq_ignore_ascii_case(&s.name))
-                {
+                if active_set.contains(&s.name.to_lowercase()) {
                     s.is_active_in_project = true;
                 }
                 s
@@ -1019,6 +1303,7 @@ impl VaultStore {
         scope: SkillScope,
         default_kind: Option<SkillKind>,
         is_active: bool,
+        deleted: &std::collections::HashSet<String>,
         map: &mut std::collections::BTreeMap<String, VaultSkill>,
         index: &mut VaultBinaryIndex,
         index_dirty: &mut bool,
@@ -1050,6 +1335,11 @@ impl VaultStore {
                         && e.mtime_nanos == mtime_nanos
                 }) {
                     let mut fm = cached.frontmatter.clone();
+                    let lower_name = fm.name.to_lowercase();
+                    if deleted.contains(&lower_name) {
+                        return;
+                    }
+                    inherit_omitted_frontmatter(&mut fm, map.get(&lower_name));
                     if default_kind == Some(SkillKind::Core) {
                         fm.name = sanitize_skill_name(fallback_name);
                         fm.kind = Some(SkillKind::Core.as_str().to_string());
@@ -1073,7 +1363,7 @@ impl VaultStore {
                         path: Some(file_path),
                         is_active_in_project: is_active,
                     };
-                    map.insert(skill.name.to_lowercase(), skill);
+                    map.insert(lower_name, skill);
                     return;
                 }
 
@@ -1082,11 +1372,15 @@ impl VaultStore {
                     if default_kind == Some(SkillKind::Core) {
                         fm.name = sanitize_skill_name(fallback_name);
                         fm.kind = Some(SkillKind::Core.as_str().to_string());
-                    } else if fm
-                        .kind
-                        .as_deref()
-                        .and_then(|k| k.parse::<SkillKind>().ok())
-                        .is_none()
+                    }
+                    let lower_name = fm.name.to_lowercase();
+                    inherit_omitted_frontmatter(&mut fm, map.get(&lower_name));
+                    if default_kind != Some(SkillKind::Core)
+                        && fm
+                            .kind
+                            .as_deref()
+                            .and_then(|k| k.parse::<SkillKind>().ok())
+                            .is_none()
                     {
                         if let Some(dk) = default_kind {
                             fm.kind = Some(dk.as_str().to_string());
@@ -1106,6 +1400,10 @@ impl VaultStore {
                     );
                     *index_dirty = true;
 
+                    if deleted.contains(&lower_name) {
+                        return;
+                    }
+
                     let skill = VaultSkill {
                         name: fm.name.clone(),
                         description: fm.description.clone(),
@@ -1116,7 +1414,7 @@ impl VaultStore {
                         path: Some(file_path),
                         is_active_in_project: is_active,
                     };
-                    map.insert(skill.name.to_lowercase(), skill);
+                    map.insert(lower_name, skill);
                 }
             };
 
@@ -1193,56 +1491,14 @@ impl VaultStore {
         self.search_skills_categorized(query, None)
     }
 
-    /// Searches skills with optional category filtering and keyword matching.
+    /// Searches skills with optional category filtering and BM25F multi-field ranking.
     pub fn search_skills_categorized(
         &self,
         query: &str,
         category: Option<&str>,
     ) -> Vec<VaultSkill> {
-        let q = query.trim().to_lowercase();
-        let cat_filter = category.map(|c| c.trim().to_lowercase());
-
-        let mut all = self.list_all_skills();
-
-        if let Some(ref cat) = cat_filter {
-            if !cat.is_empty() {
-                all.retain(|s| s.category().eq_ignore_ascii_case(cat));
-            }
-        }
-
-        if q.is_empty() {
-            return all;
-        }
-
-        all.retain(|s| {
-            s.name.to_lowercase().contains(&q)
-                || s.description.to_lowercase().contains(&q)
-                || s.category().to_lowercase().contains(&q)
-                || s.frontmatter
-                    .triggers
-                    .iter()
-                    .any(|t| t.to_lowercase().contains(&q))
-                || s.frontmatter
-                    .globs
-                    .iter()
-                    .any(|g| g.to_lowercase().contains(&q))
-        });
-
-        // Sort by exact name match first, then trigger match, then description
-        all.sort_by(|a, b| {
-            let a_exact = a.name.to_lowercase() == q;
-            let b_exact = b.name.to_lowercase() == q;
-            if a_exact != b_exact {
-                return b_exact.cmp(&a_exact);
-            }
-            let a_name_starts = a.name.to_lowercase().starts_with(&q);
-            let b_name_starts = b.name.to_lowercase().starts_with(&q);
-            if a_name_starts != b_name_starts {
-                return b_name_starts.cmp(&a_name_starts);
-            }
-            a.name.cmp(&b.name)
-        });
-
-        all
+        let all = self.list_all_skills();
+        let corpus = crate::vault::ranking::SkillCorpusIndex::build(&all);
+        corpus.search_ranked(query, category)
     }
 }

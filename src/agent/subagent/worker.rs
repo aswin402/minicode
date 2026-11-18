@@ -495,7 +495,8 @@ impl SubagentWorker {
         const MAX_SKILL_CHARS: usize = 3_200;
 
         for skill in selected_skills {
-            let body = skill.instructions.trim();
+            let rendered = skill.render_instructions(&main_root);
+            let body = rendered.trim();
             if body.is_empty() {
                 continue;
             }

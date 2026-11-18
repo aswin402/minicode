@@ -150,8 +150,9 @@ impl TaskComplexityScorer {
             }
         }
 
-        // 2. Query AST CodeGraph for symbol matches, PageRank centrality, and transitive blast radius
-        let graph_opt = crate::context::graph::CodeGraph::get_or_build_cached(workspace_root).ok();
+        // 2. Query AST CodeGraph non-blockingly for symbol matches, PageRank centrality, and transitive blast radius
+        // (Never cold-builds or writes empty 0-file graph.json on unindexed workspaces)
+        let graph_opt = crate::context::graph::CodeGraph::try_get_or_load_fast(workspace_root);
         let mut matched_symbol_count = 0usize;
         let mut max_centrality_ratio = 0.0_f64;
         let mut impacted_modules: std::collections::HashSet<String> =

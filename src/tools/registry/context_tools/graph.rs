@@ -22,7 +22,7 @@ pub fn get_schemas() -> Vec<ToolSchema> {
         },
         ToolSchema {
             name: "repo_map".to_string(),
-            description: "Generate a compact AST repository skeleton map of symbols ranked by PageRank importance (pass mode='reuse' for a lean 1-line-per-directory reusable symbol map).".to_string(),
+            description: "Generate a compact AST repository skeleton map of symbols ranked by PageRank importance, automatically indexing or incrementally syncing per-file AST shards on unindexed or multi-file projects (pass mode='reuse' for a lean 1-line-per-directory reusable symbol map).".to_string(),
             parameters: json!({
                 "type": "object",
                 "properties": {

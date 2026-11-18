@@ -1118,13 +1118,17 @@ impl SubagentConfig {
         self
     }
 
-    /// Attaches explicit `VaultStore` domain skill names to inject into this `MiniPub`.
+    /// Attaches explicit `VaultStore` domain skill names to inject into this `MiniPub`
+    /// and ensures `vault_show` is available for Level-3 bundled resource drill-down.
     pub fn with_load_skills(mut self, load_skills: Vec<String>) -> Self {
         self.load_skills = load_skills
             .into_iter()
             .map(|s| s.trim().to_string())
             .filter(|s| !s.is_empty())
             .collect();
+        if !self.load_skills.is_empty() {
+            self.tool_whitelist.insert("vault_show".to_string());
+        }
         self
     }
 

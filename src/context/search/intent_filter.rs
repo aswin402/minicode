@@ -338,8 +338,20 @@ impl MetadataBm25Index {
             })
             .collect();
 
-        // Index built-in SKILL.md metadata onto owning ToolCategories via inverse tool-ubiquity weighting
-        let builtin_skills = crate::vault::builtin::get_all_builtin_skills();
+        // Index built-in + global MiniVault SKILL.md metadata onto owning ToolCategories via inverse tool-ubiquity weighting
+        let mut indexed_skills = crate::vault::builtin::get_all_builtin_skills();
+        let global_store = crate::vault::store::VaultStore::new(std::path::Path::new("."));
+        for gskill in global_store.list_by_scope(Some(crate::vault::models::SkillScope::Global)) {
+            if let Some(pos) = indexed_skills
+                .iter()
+                .position(|b| b.name.eq_ignore_ascii_case(&gskill.name))
+            {
+                indexed_skills[pos] = gskill;
+            } else {
+                indexed_skills.push(gskill);
+            }
+        }
+        let builtin_skills = indexed_skills;
         let total_skills = builtin_skills.len().max(1) as f64;
         let mut tool_skill_df: HashMap<String, usize> = HashMap::new();
         for skill in &builtin_skills {
@@ -626,6 +638,7 @@ pub struct PromptSignalVector {
     pub code_morphology_score: usize,
     pub plan_continuation_score: usize,
     pub is_meta_query: bool,
+    pub is_epistemic_question: bool,
 }
 
 impl PromptSignalVector {
@@ -658,6 +671,14 @@ impl PromptSignalVector {
                 .saturating_add(self.action_score)
                 .saturating_add(self.code_morphology_score)
                 > 0
+    }
+
+    /// Returns `true` when the prompt introduces a new workspace-mutating build/edit goal
+    /// rather than a read-only epistemic question (`"where is X defined?"`) or continuation cue.
+    #[inline]
+    #[must_use]
+    pub const fn has_goal_mutation_intent(&self) -> bool {
+        self.has_substantive_goal_intent() && !self.is_epistemic_question
     }
 
     /// Returns `true` when the prompt exhibits lexical or semantic affinity with an active plan/todo.
@@ -766,17 +787,28 @@ impl IntentClassifier {
         let has_action_verb = crate::constants::META_TASK_ACTION_VERBS
             .iter()
             .any(|v| words.contains(v));
+        let has_mutating_verb = crate::constants::MUTATING_TASK_VERBS
+            .iter()
+            .any(|v| words.contains(v));
         let has_agent_state_predication = crate::constants::META_AGENT_PRONOUN_TOKENS
             .iter()
             .any(|p| words.contains(p))
             && crate::constants::META_STATE_PREDICATE_TOKENS
                 .iter()
                 .any(|s| words.contains(s));
+        let has_wh_interrogative = crate::constants::INTERROGATIVE_WH_TOKENS
+            .iter()
+            .any(|q| words.contains(q));
         let has_cardinality_interrogative = words.contains("how") && words.contains("many");
+        let has_retrospective_agent_query = has_wh_interrogative
+            && has_agent_state_predication
+            && !has_mutating_verb
+            && count_code_morphology_tokens(prompt) == 0;
 
-        has_subject
+        (has_subject
             && has_cue
-            && (!has_action_verb || has_agent_state_predication || has_cardinality_interrogative)
+            && (!has_action_verb || has_agent_state_predication || has_cardinality_interrogative))
+            || has_retrospective_agent_query
     }
 
     /// Projects a user prompt (and optional active plan/todo text) into a `PromptSignalVector`
@@ -785,9 +817,29 @@ impl IntentClassifier {
     pub fn analyze_signal(prompt: &str, active_plan_context: Option<&str>) -> PromptSignalVector {
         let is_meta_query = Self::is_meta_introspection_query(prompt);
         let lower = prompt.to_ascii_lowercase();
-        let words = tokenize_words(&lower);
+        let seq_words: Vec<&str> = lower
+            .split(|c: char| !c.is_ascii_alphanumeric() && c != '_')
+            .filter(|w| !w.is_empty())
+            .collect();
+        let words: HashSet<&str> = seq_words.iter().copied().collect();
         let word_count = words.len();
         let active_mask = usize::from(!is_meta_query);
+
+        let first_substantive = seq_words.iter().copied().find(|w| {
+            !matches!(
+                *w,
+                "please" | "now" | "ok" | "okay" | "so" | "hey" | "hi" | "hii" | "minicode"
+            )
+        });
+        let has_mutating_verb = crate::constants::MUTATING_TASK_VERBS
+            .iter()
+            .any(|v| words.contains(v));
+        let opens_with_interrogative = first_substantive
+            .is_some_and(|w| crate::constants::INTERROGATIVE_WH_TOKENS.contains(&w));
+        let is_epistemic_question = !is_meta_query
+            && !has_mutating_verb
+            && prompt.lines().filter(|l| !l.trim().is_empty()).count() <= 2
+            && (opens_with_interrogative || prompt.trim_end().ends_with('?'));
 
         let scored = MetadataBm25Index::global().score_categories(prompt);
         let raw_bm25_sum: f64 = scored.iter().map(|(s, _)| *s).sum();
@@ -851,6 +903,7 @@ impl IntentClassifier {
             code_morphology_score,
             plan_continuation_score,
             is_meta_query,
+            is_epistemic_question,
         }
     }
 
@@ -1225,5 +1278,41 @@ Core capabilities to highlight:
             !detected.is_empty(),
             "Product spec must auto-activate relevant engineering/UI categories"
         );
+    }
+
+    #[test]
+    fn test_retrospective_agent_queries_and_epistemic_goal_protection() {
+        for retro in [
+            "so for debug what browser u used",
+            "which model did you use",
+            "how did u verify that",
+            "what engine have you used",
+        ] {
+            assert!(
+                IntentClassifier::is_meta_introspection_query(retro),
+                "Expected retrospective agent query '{}' to be meta-introspection",
+                retro
+            );
+            assert!(IntentClassifier::detect(retro).is_empty());
+            let sig = IntentClassifier::analyze_signal(retro, None);
+            assert!(!sig.has_actionable_task_intent());
+            assert!(!sig.has_goal_mutation_intent());
+        }
+
+        // Codebase epistemic question stays actionable (uses search/codegraph) without mutating goal ledger
+        let code_q = IntentClassifier::analyze_signal(
+            "where is process_payment defined and who calls it?",
+            None,
+        );
+        assert!(code_q.has_actionable_task_intent());
+        assert!(code_q.is_epistemic_question);
+        assert!(!code_q.has_goal_mutation_intent());
+
+        // Polite imperative mutation request with `?` MUST carry goal mutation intent
+        let polite_fix =
+            IntentClassifier::analyze_signal("can you fix the bug in src/App.tsx?", None);
+        assert!(polite_fix.has_actionable_task_intent());
+        assert!(!polite_fix.is_epistemic_question);
+        assert!(polite_fix.has_goal_mutation_intent());
     }
 }

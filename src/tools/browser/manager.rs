@@ -551,6 +551,19 @@ impl BrowserManager {
         }
     }
 
+    /// Returns an already-running pooled browser engine without spawning any new process.
+    /// Honors task-local `engine` override when present, otherwise returns `primary_live_engine()`.
+    pub async fn peek_live_engine() -> Option<Arc<SharedEngine>> {
+        let scope_engine = current_space_scope().engine;
+        let guard = LIVE_POOL.lock().await;
+        let pool = guard.as_ref()?;
+        if let Some(eng) = scope_engine {
+            pool.engines.get(&eng).cloned()
+        } else {
+            pool.primary_live_engine().cloned()
+        }
+    }
+
     /// When a non-MiniBrowse general browser (`Chrome`, `Firefox`, `Safari`) is currently active,
     /// returns `(engine_type, current_url_opt, formatted_runtime_logs)` so `MiniBrowse` debug tools
     /// can automatically inspect the same active URL and fuse live runtime logs from that browser!

@@ -41,7 +41,7 @@ workspace_mode: worktree
 
   <Tool_Usage>
     - Use `block_palettes`, `block_search`, `block_get`, and `block_scaffold` to pull curated palettes and UI components.
-    - Use `kit_skill_show` (e.g. `frontend-design`, `design-system`, `tailwind-patterns`) for design rules.
+    - Use `vault_show` / `kit_skill_show` (e.g. `frontend-design`, `design-md`, `tailwind-v4`) for design rules and Level-3 references.
     - Use `read_file`, `write_file`, and `patch_file` to author CSS, theme configs, and visual components.
     - Publish chosen hex tokens and CSS variable names to `scratchpad_write` or `send_worker_message` so `frontend` workers stay visually aligned.
   </Tool_Usage>

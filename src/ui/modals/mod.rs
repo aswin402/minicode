@@ -220,13 +220,6 @@ pub enum ModalState {
         cached_files_count: usize,
         selected_index: usize,
     },
-    WorkspaceDrift {
-        workspace_path: String,
-        modified_count: usize,
-        added_count: usize,
-        removed_count: usize,
-        selected_index: usize,
-    },
     ProviderSetupRequired {
         provider_name: String,
         pending_prompt_preview: String,
@@ -880,30 +873,6 @@ impl ModalState {
         }
     }
 
-    pub fn new_workspace_drift(
-        workspace_root: &std::path::Path,
-        report: &crate::context::graph::GraphDriftReport,
-    ) -> Self {
-        let workspace_path = if let Ok(home) = std::env::var("HOME") {
-            let p_str = workspace_root.display().to_string();
-            if let Some(rest) = p_str.strip_prefix(&home) {
-                format!("~{}", rest)
-            } else {
-                p_str
-            }
-        } else {
-            workspace_root.display().to_string()
-        };
-
-        ModalState::WorkspaceDrift {
-            workspace_path,
-            modified_count: report.modified_count,
-            added_count: report.added_count,
-            removed_count: report.removed_count,
-            selected_index: 0,
-        }
-    }
-
     pub fn new_provider_setup_required(provider_name: &str, prompt: &str) -> Self {
         let preview = if prompt.lines().count() > 1 {
             let first_line = prompt.lines().next().unwrap_or("");
@@ -1161,24 +1130,6 @@ impl ModalState {
                     *is_indexed,
                     *cached_symbols_count,
                     *cached_files_count,
-                    *selected_index,
-                );
-            }
-            ModalState::WorkspaceDrift {
-                workspace_path,
-                modified_count,
-                added_count,
-                removed_count,
-                selected_index,
-            } => {
-                workspace_analysis::render_workspace_drift(
-                    frame,
-                    area,
-                    theme,
-                    workspace_path,
-                    *modified_count,
-                    *added_count,
-                    *removed_count,
                     *selected_index,
                 );
             }
@@ -1483,45 +1434,6 @@ mod tests {
             selected_index: 0,
             current_streaming: true,
         };
-        terminal
-            .draw(|f| {
-                let area = f.area();
-                modal.render(f, area, &theme);
-            })
-            .unwrap();
-    }
-
-    #[test]
-    fn test_workspace_drift_initial_state_and_render() {
-        let temp_dir = TempDir::new().unwrap();
-        let report = crate::context::graph::GraphDriftReport {
-            is_stale: true,
-            modified_count: 5,
-            added_count: 3,
-            removed_count: 2,
-            total_current_files: 20,
-            cached_files_count: 15,
-        };
-        let modal = ModalState::new_workspace_drift(temp_dir.path(), &report);
-        match modal {
-            ModalState::WorkspaceDrift {
-                modified_count,
-                added_count,
-                removed_count,
-                selected_index,
-                ..
-            } => {
-                assert_eq!(modified_count, 5);
-                assert_eq!(added_count, 3);
-                assert_eq!(removed_count, 2);
-                assert_eq!(selected_index, 0);
-            }
-            _ => panic!("Expected WorkspaceDrift variant"),
-        }
-
-        let theme = Theme::default();
-        let backend = TestBackend::new(100, 30);
-        let mut terminal = Terminal::new(backend).unwrap();
         terminal
             .draw(|f| {
                 let area = f.area();

@@ -220,6 +220,39 @@ impl AgentLoop {
                     .session_store
                     .append_event(&self.session_id, &skill_event);
                 let _ = event_sender.send(skill_event);
+
+                // Update sticky `session_active_skills`, telemetry, and `allowed_tools`
+                if matches!(*action, "using" | "loaded") {
+                    let vstore = crate::vault::store::VaultStore::new(&self.workspace_root);
+                    if let Ok(skill) = vstore.get_skill(target) {
+                        self.session_active_skills.insert(skill.name.to_lowercase());
+                        vstore.record_skill_activations(std::iter::once(skill.name.as_str()));
+                        let mut added_any = false;
+                        for declared in &skill.frontmatter.allowed_tools {
+                            let clean_tool = declared.trim();
+                            if !clean_tool.is_empty()
+                                && clean_tool != "*"
+                                && !clean_tool.eq_ignore_ascii_case("all")
+                                && active_tool_names.insert(clean_tool.to_string())
+                            {
+                                added_any = true;
+                            }
+                        }
+                        if added_any {
+                            let rebuilt = self.rebuild_active_tools(
+                                user_prompt,
+                                active_categories,
+                                mcp_tools_by_server,
+                                active_mcp_servers,
+                                active_tool_names,
+                            );
+                            Self::apply_rebuilt_tools(&mut self.kv_watermark_idx, tools, rebuilt);
+                        }
+                    }
+                } else if *action == "unloaded" {
+                    let clean = crate::vault::models::sanitize_skill_name(target);
+                    self.session_active_skills.shift_remove(&clean);
+                }
             }
         }
 
@@ -539,22 +572,31 @@ impl AgentLoop {
                     tool_call.name.as_str(),
                     "kit_stack_add" | "block_scaffold" | "block_insert"
                 );
+            let is_plan_sync_tool = tool_result.success
+                && matches!(
+                    tool_call.name.as_str(),
+                    "update_progress" | "archive_plan" | "create_plan" | "power_plan"
+                );
             if !newly_changed.is_empty() || is_scaffold_tool {
-                had_mutation = true;
-                let _ = std::fs::remove_file(
-                    self.workspace_root.join(".minicode/plan/last_verify.json"),
-                );
-                let _ = std::fs::remove_file(
-                    self.workspace_root.join(".minicode/plan/last_review.json"),
-                );
+                had_mutation = !is_plan_sync_tool;
+                if !is_plan_sync_tool {
+                    let _ = std::fs::remove_file(
+                        self.workspace_root.join(".minicode/plan/last_verify.json"),
+                    );
+                    let _ = std::fs::remove_file(
+                        self.workspace_root.join(".minicode/plan/last_review.json"),
+                    );
+                }
                 if !newly_changed.is_empty() {
                     self.compactor
                         .record_external_files_modified(&newly_changed);
                     crate::context::graph::CodeGraph::invalidate_cache();
-                    crate::agent::verification_barrier::SessionQualityTelemetry::record_external_workspace_mutations(
-                        &self.workspace_root,
-                        &newly_changed,
-                    );
+                    if !is_plan_sync_tool {
+                        crate::agent::verification_barrier::SessionQualityTelemetry::record_external_workspace_mutations(
+                            &self.workspace_root,
+                            &newly_changed,
+                        );
+                    }
                     for rel_p in &newly_changed {
                         self.record_file_access(rel_p);
                         let mod_ev = AgentEvent::FileModified {
@@ -566,39 +608,83 @@ impl AgentLoop {
                         let _ = self.session_store.append_event(&self.session_id, &mod_ev);
                         let _ = event_sender.send(mod_ev);
                     }
-                }
-                let wm = crate::context::memory::working_memory::WorkingMemory::new(
-                    &self.workspace_root,
-                );
-                let mut reopened_extra = false;
-                if !is_scaffold_tool && !newly_changed.is_empty() {
-                    wm.invalidate_verification_evidence_on_code_mutation(&newly_changed);
-                    reopened_extra = wm.reopen_completed_plan_on_code_mutation(&newly_changed);
-                }
-                let auto_reconciled_extra = if reopened_extra {
-                    0
-                } else {
-                    wm.reconcile_preceding_tasks_on_step_transition(&newly_changed)
-                };
-                if reopened_extra || auto_reconciled_extra > 0 {
-                    total_reconciled += auto_reconciled_extra;
-                    self.emit_current_plan(Some(turn_id), event_sender);
-                    plan_emitted = true;
-                }
-                if !newly_changed.is_empty() {
-                    if let Some(ref mut ledger) = self.intent_ledger {
-                        let mut updated =
-                            ledger.update_from_file_activity(&[], &newly_changed, turn_id);
-                        if reopened_extra || auto_reconciled_extra > 0 {
-                            updated += ledger.sync_with_working_memory(&wm, turn_id);
+                    if tool_result.success
+                        && matches!(tool_call.name.as_str(), "exec_cmd" | "sandbox_exec")
+                        && !tool_result.output.contains("[Compiler ")
+                    {
+                        let mut checked_rs = false;
+                        let mut checked_ts = false;
+                        let mut checked_py = 0usize;
+                        let mut compiler_notes = Vec::new();
+                        for rel_p in &newly_changed {
+                            let should_check = if rel_p.ends_with(".rs") && !checked_rs {
+                                checked_rs = true;
+                                true
+                            } else if (rel_p.ends_with(".ts") || rel_p.ends_with(".tsx"))
+                                && !checked_ts
+                            {
+                                checked_ts = true;
+                                true
+                            } else if rel_p.ends_with(".py") && checked_py < 2 {
+                                checked_py += 1;
+                                true
+                            } else {
+                                false
+                            };
+                            if should_check {
+                                if let Some(diag) =
+                                    crate::tools::compiler::ScopedCompiler::run_scoped_check(
+                                        &self.workspace_root,
+                                        rel_p,
+                                    )
+                                {
+                                    compiler_notes.push(diag);
+                                }
+                            }
                         }
-                        if updated > 0 {
-                            *items_progressed_this_turn = true;
+                        if !compiler_notes.is_empty() {
+                            tool_result.output.push('\n');
+                            tool_result.output.push_str(&compiler_notes.join("\n"));
+                            tool_result.output.push_str(
+                                "\n[Tip: Prefer `patch_file` or `write_file` over shell heredoc scripts for source-code edits so AST symbol telemetry and transactions track line-level diffs.]",
+                            );
                         }
-                        let persistence_path = self
-                            .workspace_root
-                            .join(&self.config.agent.intent.persistence_file);
-                        let _ = ledger.save_to_disk(&persistence_path);
+                    }
+                }
+                if !is_plan_sync_tool {
+                    let wm = crate::context::memory::working_memory::WorkingMemory::new(
+                        &self.workspace_root,
+                    );
+                    let mut reopened_extra = false;
+                    if !is_scaffold_tool && !newly_changed.is_empty() {
+                        wm.invalidate_verification_evidence_on_code_mutation(&newly_changed);
+                        reopened_extra = wm.reopen_completed_plan_on_code_mutation(&newly_changed);
+                    }
+                    let auto_reconciled_extra = if reopened_extra {
+                        0
+                    } else {
+                        wm.reconcile_preceding_tasks_on_step_transition(&newly_changed)
+                    };
+                    if reopened_extra || auto_reconciled_extra > 0 {
+                        total_reconciled += auto_reconciled_extra;
+                        self.emit_current_plan(Some(turn_id), event_sender);
+                        plan_emitted = true;
+                    }
+                    if !newly_changed.is_empty() {
+                        if let Some(ref mut ledger) = self.intent_ledger {
+                            let mut updated =
+                                ledger.update_from_file_activity(&[], &newly_changed, turn_id);
+                            if reopened_extra || auto_reconciled_extra > 0 {
+                                updated += ledger.sync_with_working_memory(&wm, turn_id);
+                            }
+                            if updated > 0 {
+                                *items_progressed_this_turn = true;
+                            }
+                            let persistence_path = self
+                                .workspace_root
+                                .join(&self.config.agent.intent.persistence_file);
+                            let _ = ledger.save_to_disk(&persistence_path);
+                        }
                     }
                 }
             }
@@ -689,8 +775,17 @@ impl AgentLoop {
         if tool_result.success
             && !crate::tools::concurrency::classify_tool(&tool_call.name).is_read_only()
         {
-            let vault_store = crate::vault::store::VaultStore::new(&self.workspace_root);
-            let _ = vault_store.sync_project_active_skills(turn_files_modified);
+            if !turn_files_modified.is_empty()
+                || tool_call.name.starts_with("kit_")
+                || tool_call.name.starts_with("vault_")
+            {
+                let vault_store = crate::vault::store::VaultStore::new(&self.workspace_root);
+                let (_, workspace_files, _) =
+                    crate::agent::orchestrator::WorkflowRouter::scan_repository_state(
+                        &self.workspace_root,
+                    );
+                let _ = vault_store.sync_project_active_skills(&workspace_files);
+            }
             if tool_call.name == "kit_stack_add" {
                 let mut auto_cats = Vec::new();
                 if crate::blocks::seed::ProjectStackInfo::detect(&self.workspace_root)

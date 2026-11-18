@@ -445,11 +445,7 @@ fn test_sync_project_active_skills_and_level3_resource_reading() {
 
     for expected in [
         "ask-user-inquiry",
-        "brainstorming",
-        "executing-plans",
         "frontend-design",
-        "miniblocks-ui",
-        "minikit-scaffolding",
         "react",
         "tailwind-v4",
         "todo-planning",
@@ -457,7 +453,6 @@ fn test_sync_project_active_skills_and_level3_resource_reading() {
         "using-minipower",
         "verification-before-completion",
         "vite",
-        "writing-plans",
     ] {
         assert!(
             synced.contains(&expected.to_string()),
@@ -467,10 +462,12 @@ fn test_sync_project_active_skills_and_level3_resource_reading() {
         );
     }
 
-    // Unrelated or efficiency skills must not be auto-activated
+    // Unrelated, efficiency, or episodic workflow skills must not bloat persistent active_skills
     assert!(!synced.contains(&"caveman".to_string()));
     assert!(!synced.contains(&"canvas-design".to_string()));
     assert!(!synced.contains(&"rust-tokio".to_string()));
+    assert!(!synced.contains(&"brainstorming".to_string()));
+    assert!(!synced.contains(&"minikit-scaffolding".to_string()));
 
     // Verify minikit.json on disk was updated
     let manifest_active = store.get_manifest_active_skills();
@@ -1014,4 +1011,504 @@ fn test_resolve_turn_active_skills_ignores_passive_minikit_package_stubs_on_cont
         "Expected real stack skills on `continue`, got: {:?}",
         active
     );
+}
+
+#[test]
+fn test_set_algebraic_active_skills_preserves_user_pins_and_prunes_stale_deps() {
+    let dir = tempdir().unwrap();
+    let ws = dir.path();
+
+    // User pins `caveman` and `ponytail` in minikit.json alongside `react` and `vite` deps
+    fs::write(
+        ws.join("minikit.json"),
+        r#"{
+            "name": "set-algebra-app",
+            "stack": "react",
+            "packages": ["react", "postcss"],
+            "dev_packages": ["vite"],
+            "active_skills": ["caveman", "ponytail"]
+        }"#,
+    )
+    .unwrap();
+
+    let store = VaultStore::new(ws).with_custom_global_vault(ws.join("global"));
+
+    // Create a multi-word skill `react-native` and a `"post"` skill to verify zero false-positive stack matching
+    store
+        .create_skill(
+            SkillScope::Global,
+            "react-native",
+            "React Native mobile components",
+            Some("mobile"),
+            Some("reference"),
+            "Use View and Text.",
+            vec!["react-native".to_string()],
+            vec![],
+        )
+        .unwrap();
+    store
+        .create_skill(
+            SkillScope::Global,
+            "post-worker",
+            "Post worker utility",
+            Some("backend"),
+            Some("reference"),
+            "Worker queue.",
+            vec!["post-worker".to_string()],
+            vec![],
+        )
+        .unwrap();
+
+    let synced_v1 = store.sync_project_active_skills::<&str>(&[]);
+    // 1. User-pinned `caveman` and `ponytail` MUST be preserved (no silent deletion!)
+    assert!(synced_v1.contains(&"caveman".to_string()));
+    assert!(synced_v1.contains(&"ponytail".to_string()));
+    // 2. Stack-matched `react` and `vite` MUST be activated
+    assert!(synced_v1.contains(&"react".to_string()));
+    assert!(synced_v1.contains(&"vite".to_string()));
+    // 3. `react-native` and `post-worker` MUST NOT false-match plain `react` + `postcss`
+    assert!(!synced_v1.contains(&"react-native".to_string()));
+    assert!(!synced_v1.contains(&"post-worker".to_string()));
+
+    // Now remove `vite` from minikit.json `dev_packages` while keeping user-pinned skills intact
+    let current_manifest = fs::read_to_string(ws.join("minikit.json")).unwrap();
+    let mut manifest_val: serde_json::Value = serde_json::from_str(&current_manifest).unwrap();
+    manifest_val["dev_packages"] = serde_json::json!([]);
+    fs::write(
+        ws.join("minikit.json"),
+        serde_json::to_string_pretty(&manifest_val).unwrap(),
+    )
+    .unwrap();
+
+    let synced_v2 = store.sync_project_active_skills::<&str>(&[]);
+    // Stale auto-synced `vite` MUST be pruned automatically, while user-pinned `caveman` & `ponytail` remain!
+    assert!(
+        !synced_v2.contains(&"vite".to_string()),
+        "Stale dependency `vite` should be auto-pruned: {:?}",
+        synced_v2
+    );
+    assert!(synced_v2.contains(&"caveman".to_string()));
+    assert!(synced_v2.contains(&"ponytail".to_string()));
+    assert!(synced_v2.contains(&"react".to_string()));
+}
+
+#[test]
+fn test_bm25f_search_orchestrator_slate_cap_fork_and_capability_algebra() {
+    use crate::vault::models::SkillFrontmatter;
+    use crate::vault::ranking::is_capability_eligible;
+    use std::collections::HashSet;
+
+    let dir = tempdir().unwrap();
+    let ws = dir.path();
+    let global_vault = ws.join("global");
+    let store = VaultStore::new(ws).with_custom_global_vault(global_vault);
+
+    // 1. Multi-term natural-language BM25F search (where substring `.contains()` previously returned 0 results)
+    let nl_results = store.search_skills("async rust tokio channel cancellation");
+    assert!(
+        !nl_results.is_empty() && nl_results[0].name == "rust-tokio",
+        "Expected BM25F natural-language search to rank `rust-tokio` #1, got: {:?}",
+        nl_results.iter().map(|s| &s.name).collect::<Vec<_>>()
+    );
+
+    // 2. Create a forked skill with `{baseDir}`, `requires_tools`, and `fallback_for_tools`, plus Level-3 CRUD
+    let fork_fm = SkillFrontmatter {
+        name: "deep-arch-audit".to_string(),
+        description: "Deep architectural security and dependency boundary audit".to_string(),
+        category: Some("security".to_string()),
+        kind: Some("workflow".to_string()),
+        triggers: vec![
+            "architectural audit".to_string(),
+            "boundary audit".to_string(),
+        ],
+        requires_tools: vec!["read_file".to_string()],
+        fallback_for_tools: vec!["specialized_cloud_scanner".to_string()],
+        context: Some("fork".to_string()),
+        agent: Some("security".to_string()),
+        ..Default::default()
+    };
+    let created = store
+        .create_skill_from_frontmatter(
+            SkillScope::Global,
+            fork_fm,
+            "Run `{baseDir}/scripts/audit.sh` and inspect `{baseDir}/references/checklist.md`.",
+        )
+        .unwrap();
+
+    // `{baseDir}` renders portably to the skill's directory
+    let rendered = created.render_instructions(ws);
+    assert!(!rendered.contains("{baseDir}"));
+    assert!(rendered.contains("deep-arch-audit/scripts/audit.sh"));
+
+    // Capability algebra: eligible when `read_file` available & `specialized_cloud_scanner` inactive
+    let avail: HashSet<String> = ["read_file".to_string(), "grep_search".to_string()]
+        .into_iter()
+        .collect();
+    let active_without_primary: HashSet<String> = ["read_file".to_string()].into_iter().collect();
+    let active_with_primary: HashSet<String> = [
+        "read_file".to_string(),
+        "specialized_cloud_scanner".to_string(),
+    ]
+    .into_iter()
+    .collect();
+    assert!(is_capability_eligible(
+        &created,
+        Some(&avail),
+        Some(&active_without_primary)
+    ));
+    assert!(!is_capability_eligible(
+        &created,
+        Some(&avail),
+        Some(&active_with_primary)
+    ));
+
+    // Level-3 bundled resource CRUD via `patch_skill_with_spec`
+    let patched = store
+        .patch_skill_with_spec(
+            SkillScope::Global,
+            "deep-arch-audit",
+            crate::vault::store::SkillPatchSpec {
+                resource_path: Some("references/checklist.md"),
+                resource_content: Some("# Boundary Audit Checklist\n- Verify authz."),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    assert_eq!(
+        patched.discover_bundled_resources(),
+        vec!["references/checklist.md".to_string()]
+    );
+
+    // 3. Dynamic turn block keeps 35KB `ui-ux-pro-max` & `context: fork` skills in the Orchestrator Candidate Slate
+    //    instead of dumping 35KB raw text into `<auto_activated_skills>`!
+    let dyn_block = store
+        .format_dynamic_turn_skills::<&str>(
+            Some("Run an architectural audit and design a modern SaaS UI landing page"),
+            None,
+            &[],
+            &[],
+        )
+        .unwrap();
+    assert!(
+        dyn_block.len() < 16_000,
+        "Dynamic turn block must stay bounded, got {} bytes",
+        dyn_block.len()
+    );
+    assert!(
+        dyn_block.contains("delegate_task(role=\"security\", load_skills=[\"deep-arch-audit\"]")
+    );
+
+    // 4. Deleting a global skill suppresses it via global tombstone
+    store
+        .delete_skill(SkillScope::Global, "deep-arch-audit")
+        .unwrap();
+    assert!(store.get_skill("deep-arch-audit").is_err());
+}
+
+#[test]
+fn test_compaction_skill_uri_protection_and_harvester_jaccard_dedup() {
+    use crate::agent::types::{Message, ToolCall};
+    use crate::context::budget::auto_compact::AutoCompactor;
+
+    let mut compactor = AutoCompactor::default_safe().with_custom_limit(800);
+    compactor.record_tool_file_ops(
+        "vault_show",
+        &serde_json::json!({ "name": "rust-tokio", "file_path": "references/channels.md" }),
+    );
+    let prompt_anchor = compactor.anchor().to_prompt_block();
+    assert!(prompt_anchor.contains("skill://rust-tokio#references/channels.md"));
+
+    // Tier-1 observation masking must preserve <=8KB `vault_show` payloads while masking bulky `exec_cmd` logs
+    let skill_payload = format!("📖 **Skill `rust-tokio`**\n{}", "Rule line\n".repeat(40));
+    let noisy_log = "build log line\n".repeat(250);
+    let mut msgs = vec![
+        Message::user("implement async worker"),
+        Message::assistant_with_tools(
+            "",
+            vec![
+                ToolCall {
+                    id: "c1".to_string(),
+                    name: "vault_show".to_string(),
+                    arguments: serde_json::json!({"name": "rust-tokio"}),
+                },
+                ToolCall {
+                    id: "c2".to_string(),
+                    name: "exec_cmd".to_string(),
+                    arguments: serde_json::json!({"command": "cargo test"}),
+                },
+            ],
+        ),
+        Message::tool_result("c1", "vault_show", skill_payload.clone()),
+        Message::tool_result("c2", "exec_cmd", noisy_log),
+        Message::user("continue"),
+        Message::assistant("working"),
+        Message::user("next"),
+        Message::assistant("done"),
+        Message::user("verify"),
+        Message::assistant("verified"),
+        Message::user("ship"),
+        Message::assistant("shipped"),
+    ];
+    let _ = compactor.compact(&mut msgs, 4);
+    assert_eq!(
+        msgs[2].content, skill_payload,
+        "Active `vault_show` skill instructions must survive Tier-1 observation masking"
+    );
+
+    let summary = AutoCompactor::extract_turn_summary(&msgs[..4], 1, 2);
+    assert!(summary
+        .skills_used
+        .contains(&"skill://rust-tokio".to_string()));
+}
+
+#[tokio::test]
+async fn test_stateful_session_dedup_single_pin_live_capabilities_fork_guard_and_telemetry() {
+    use crate::vault::models::SkillFrontmatter;
+    use std::collections::HashSet;
+
+    let dir = tempdir().unwrap();
+    let ws = dir.path();
+    let global_vault = ws.join("global");
+    fs::write(
+        ws.join("Cargo.toml"),
+        "[package]\nname = \"demo\"\nversion = \"0.1.0\"\n[dependencies]\ntokio = \"1\"\n",
+    )
+    .unwrap();
+
+    let store = VaultStore::new(ws).with_custom_global_vault(global_vault.clone());
+
+    // 1. Ecosystem-scoped static `<available_skills>` omits foreign-stack Reference cheatsheets (e.g. `flutter`, `prisma`)
+    //    in a pure Rust Cargo.toml project while keeping 100% searchable via `vault_search`.
+    let static_ctx = store.format_prompt_skills_context::<&str>(None, None, &[]);
+    assert!(static_ctx.contains("cross-stack-references"));
+    assert!(!static_ctx.contains("`flutter` ("));
+    assert!(!store.search_skills("flutter").is_empty());
+
+    // 2. Single-Pin + Stateful Multi-Turn Deduplication (`session_active_skills` simulation)
+    let (turn1_block, turn1_inlined) = store
+        .format_dynamic_turn_skills_with_names::<&str>(
+            Some("Help me write unit tests with TDD red green refactor"),
+            None,
+            &[],
+            &[],
+        )
+        .unwrap();
+    assert_eq!(
+        turn1_inlined.len(),
+        1,
+        "Single-Pin discipline must auto-inline at most 1 skill per turn, got: {:?}",
+        turn1_inlined
+    );
+    assert!(turn1_block.contains("Skill `tdd-workflow`"));
+
+    // Turn 2 with `turn1_inlined` in `session_active_skills` must NOT re-dump `tdd-workflow`'s body!
+    let turn2_res = store.format_dynamic_turn_skills_with_names::<&str>(
+        Some("Help me write unit tests for the next module"),
+        None,
+        &[],
+        &turn1_inlined,
+    );
+    if let Some((turn2_block, turn2_inlined)) = turn2_res {
+        assert!(!turn2_inlined.contains(&"tdd-workflow".to_string()));
+        assert!(!turn2_block.contains("• Skill `tdd-workflow`"));
+    }
+
+    // Sticky `allowed_tools` remain retrievable even when Turn 2 prompt is `"fix line 42"`
+    let sticky_tools = store.collect_allowed_tools_for_skill_names(&turn1_inlined);
+    assert!(sticky_tools.contains(&"power_verify".to_string()));
+
+    // 3. Live `with_tool_capabilities` filters `requires_tools` and `fallback_for_tools` dynamically
+    store
+        .create_skill_from_frontmatter(
+            SkillScope::Global,
+            SkillFrontmatter {
+                name: "fallback-curl-fetch".to_string(),
+                description: "Fallback HTTP inspection when primary browser tools are inactive"
+                    .to_string(),
+                category: Some("web".to_string()),
+                kind: Some("workflow".to_string()),
+                triggers: vec!["inspect endpoint".to_string()],
+                requires_tools: vec!["exec_cmd".to_string()],
+                fallback_for_tools: vec!["browser_navigate".to_string()],
+                ..Default::default()
+            },
+            "Use curl -sS when browser_navigate is unavailable.",
+        )
+        .unwrap();
+
+    let avail_set: HashSet<String> = [
+        "exec_cmd".to_string(),
+        "read_file".to_string(),
+        "browser_navigate".to_string(),
+    ]
+    .into_iter()
+    .collect();
+    let active_no_browser: HashSet<String> = ["exec_cmd".to_string()].into_iter().collect();
+    let active_with_browser: HashSet<String> =
+        ["exec_cmd".to_string(), "browser_navigate".to_string()]
+            .into_iter()
+            .collect();
+
+    let matched_fallback = store
+        .clone()
+        .with_tool_capabilities(avail_set.clone(), active_no_browser)
+        .resolve_turn_active_skills::<&str>("inspect endpoint response headers", None, &[]);
+    assert!(matched_fallback.contains(&"fallback-curl-fetch".to_string()));
+
+    let suppressed_when_primary_active = store
+        .clone()
+        .with_tool_capabilities(avail_set, active_with_browser)
+        .resolve_turn_active_skills::<&str>("inspect endpoint response headers", None, &[]);
+    assert!(!suppressed_when_primary_active.contains(&"fallback-curl-fetch".to_string()));
+
+    // 4. Runtime-enforced `context: fork` isolation in `vault_show`
+    let large_body = format!(
+        "# Heavy Audit\n\n{}",
+        "- Check boundary invariant.\n".repeat(150)
+    );
+    store
+        .create_skill_from_frontmatter(
+            SkillScope::Project,
+            SkillFrontmatter {
+                name: "forked-sec-audit".to_string(),
+                description: "Comprehensive forked security audit".to_string(),
+                category: Some("security".to_string()),
+                kind: Some("workflow".to_string()),
+                triggers: vec!["forked-sec-audit".to_string()],
+                context: Some("fork".to_string()),
+                agent: Some("security".to_string()),
+                ..Default::default()
+            },
+            &large_body,
+        )
+        .unwrap();
+
+    let compact_dispatch = crate::tools::registry::vault_tools::dispatch(
+        "vault_show",
+        &serde_json::json!({ "name": "forked-sec-audit" }),
+        ws,
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    assert!(compact_dispatch.contains("Forked Subagent Execution Enforced"));
+    assert!(compact_dispatch
+        .contains("delegate_task(role=\"security\", load_skills=[\"forked-sec-audit\"]"));
+    assert!(compact_dispatch.len() < 1_600);
+
+    let full_override = crate::tools::registry::vault_tools::dispatch(
+        "vault_show",
+        &serde_json::json!({ "name": "forked-sec-audit", "full": true }),
+        ws,
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    assert!(full_override.len() > 3_500);
+
+    // 5. Empirical `SkillOutcomeStats` telemetry persistence & staleness decay
+    store.record_skill_activations(["tdd-workflow"]);
+    store.record_skill_verification_outcome(["tdd-workflow"], true, 0);
+    let telem = store.load_skill_telemetry();
+    let tdd_stats = telem.get("tdd-workflow").unwrap();
+    assert_eq!(tdd_stats.activations, 1);
+    assert_eq!(tdd_stats.verify_first_pass, 1);
+    assert!(tdd_stats.empirical_utility_bonus(false, tdd_stats.last_used_unix_secs + 10) > 0.0);
+
+    // Stale (>90 days idle) auto-learned skill receives negative decay adjustment
+    let stale_learned = crate::vault::models::SkillOutcomeStats {
+        activations: 1,
+        verify_failures: 2,
+        last_used_unix_secs: 1_700_000_000,
+        ..Default::default()
+    };
+    assert!(stale_learned.empirical_utility_bonus(true, 1_700_000_000 + 95 * 86_400) < -1.5);
+}
+
+#[test]
+fn test_minitest71_sync_project_active_skills_excludes_episodic_workflows_and_brand_noise() {
+    let dir = tempdir().unwrap();
+    let ws = dir.path();
+    fs::create_dir_all(ws.join("src")).unwrap();
+    fs::create_dir_all(ws.join("minikit_docs/core")).unwrap();
+
+    fs::write(
+        ws.join("package.json"),
+        r#"{
+          "name": "minitest71",
+          "dependencies": {
+            "react": "^19.0.0",
+            "react-dom": "^19.0.0",
+            "lucide-react": "^0.475.0",
+            "tailwindcss": "^4.0.0"
+          },
+          "devDependencies": { "vite": "^6.0.0" }
+        }"#,
+    )
+    .unwrap();
+    fs::write(
+        ws.join("minikit.json"),
+        r#"{"name":"minitest71","active_skills":[]}"#,
+    )
+    .unwrap();
+    fs::write(ws.join("README.md"), "# minitest71\n").unwrap();
+    fs::write(ws.join("minikit_docs/core/spec.md"), "# Spec\n").unwrap();
+    fs::write(ws.join("minikit_docs/core/design.md"), "# Design\n").unwrap();
+    fs::write(ws.join("index.html"), "<!doctype html><html></html>\n").unwrap();
+    fs::write(ws.join("src/index.css"), "@import \"tailwindcss\";\n").unwrap();
+    fs::write(
+        ws.join("src/App.tsx"),
+        "export function App() { return <div />; }\n",
+    )
+    .unwrap();
+
+    let store = VaultStore::new(ws).with_custom_global_vault(ws.join("global"));
+    let synced = store.sync_project_active_skills(&[
+        "README.md",
+        "minikit_docs/core/spec.md",
+        "minikit_docs/core/design.md",
+        "index.html",
+        "src/index.css",
+        "src/App.tsx",
+    ]);
+
+    assert!(synced.contains(&"react".to_string()));
+    assert!(synced.contains(&"tailwind-v4".to_string()));
+    assert!(synced.contains(&"vite".to_string()));
+
+    for unwanted in [
+        "brand-guidelines",
+        "theme-factory",
+        "speckit",
+        "caveman-compress",
+        "awesome-readme",
+        "design-md",
+        "diagnosing-minipower",
+    ] {
+        assert!(
+            !synced.contains(&unwanted.to_string()),
+            "Skill '{}' must not auto-bloat workspace active_skills: {:?}",
+            unwanted,
+            synced
+        );
+    }
+
+    let stack_resolved = crate::tools::minikit::MiniKitSkillsManager::resolve_skills_for_stack(
+        ws,
+        &[
+            "README.md".to_string(),
+            "minikit_docs/core/spec.md".to_string(),
+            "minikit_docs/core/design.md".to_string(),
+            "src/App.tsx".to_string(),
+        ],
+        &[
+            "react".to_string(),
+            "tailwindcss".to_string(),
+            "vite".to_string(),
+        ],
+    );
+    assert!(stack_resolved.contains(&"frontend-design".to_string()));
+    assert!(!stack_resolved.contains(&"awesome-readme".to_string()));
+    assert!(!stack_resolved.contains(&"speckit".to_string()));
+    assert!(!stack_resolved.contains(&"design-md".to_string()));
 }

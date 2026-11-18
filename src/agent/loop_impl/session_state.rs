@@ -626,6 +626,39 @@ impl AgentLoop {
         *turn_files_modified = net_modified;
     }
 
+    /// Returns the full set of available tool names across built-in categories and connected MCP servers.
+    pub(super) fn collect_available_tool_set(
+        mcp_tools_by_server: &std::collections::HashMap<
+            String,
+            Vec<crate::agent::provider::ToolSchema>,
+        >,
+    ) -> std::collections::HashSet<String> {
+        static BASE_REGISTERED_TOOLS: std::sync::OnceLock<std::collections::HashSet<String>> =
+            std::sync::OnceLock::new();
+        let base = BASE_REGISTERED_TOOLS.get_or_init(|| {
+            let mut set = std::collections::HashSet::new();
+            for s in crate::tools::category::get_core_schemas() {
+                set.insert(s.name);
+            }
+            for cat in crate::tools::category::ToolCategory::ALL {
+                for s in cat.get_schemas() {
+                    set.insert(s.name);
+                }
+            }
+            for s in crate::tools::registry::context_tools::graph::get_schemas() {
+                set.insert(s.name);
+            }
+            set
+        });
+        let mut out = base.clone();
+        for schemas in mcp_tools_by_server.values() {
+            for s in schemas {
+                out.insert(s.name.clone());
+            }
+        }
+        out
+    }
+
     /// Rebuilds, optionally compacts, and deterministically sorts the active tool schema list.
     pub(super) fn rebuild_active_tools(
         &self,
@@ -658,6 +691,23 @@ impl AgentLoop {
             {
                 effective_tool_names.insert("kit_stack_list".to_string());
                 effective_tool_names.insert("kit_stack_add".to_string());
+            }
+            // Auto-promote `allowed_tools` declared in frontmatter of BM25F-matched active skills
+            // AND sticky `session_active_skills` (preserving tool availability on follow-ups like "fix line 42")
+            let vstore = crate::vault::store::VaultStore::new(&self.workspace_root);
+            for skill_tool in vstore.collect_active_skill_allowed_tools(
+                Some(user_prompt),
+                None,
+                &Vec::<String>::new(),
+            ) {
+                effective_tool_names.insert(skill_tool);
+            }
+            if !self.session_active_skills.is_empty() {
+                for sticky_tool in
+                    vstore.collect_allowed_tools_for_skill_names(&self.session_active_skills)
+                {
+                    effective_tool_names.insert(sticky_tool);
+                }
             }
         }
 
@@ -712,6 +762,7 @@ impl AgentLoop {
         self.session_active_categories.clear();
         self.session_active_mcp_servers.clear();
         self.session_active_tool_names.clear();
+        self.session_active_skills.clear();
         self.fetch_tracker.clear();
         self._active_guard = None;
         crate::context::budget::ccr_cache::reclaim_idle_heap();
@@ -1000,6 +1051,25 @@ impl AgentLoop {
                             .insert(crate::tools::category::ToolCategory::Web);
                         self.session_active_categories
                             .insert(crate::tools::category::ToolCategory::Dev);
+                    } else if matches!(
+                        tool.as_str(),
+                        "vault_show"
+                            | "vault_skill_show"
+                            | "skill_show"
+                            | "kit_skill_show"
+                            | "inspect_skill"
+                            | "vault_load"
+                            | "kit_skill_install"
+                    ) {
+                        if let Some(sname) = ["name", "skill_name"]
+                            .into_iter()
+                            .find_map(|k| args.get(k).and_then(|v| v.as_str()))
+                        {
+                            let clean = crate::vault::models::sanitize_skill_name(sname);
+                            if !clean.is_empty() {
+                                self.session_active_skills.insert(clean);
+                            }
+                        }
                     }
                 }
                 AgentEvent::ToolResult {

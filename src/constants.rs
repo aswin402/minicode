@@ -464,8 +464,6 @@ pub const DEFAULT_DRIFT_MIN_STALE_FILES: usize = 3;
 pub const DEFAULT_DRIFT_STALE_COUNT: usize = 10;
 /// Drift ratio threshold (total_drift / cached_files) triggering stale classification (20%)
 pub const DEFAULT_DRIFT_STALE_RATIO: f64 = 0.20;
-/// Minimum file count drift to trigger background seamless incremental sync
-pub const DEFAULT_DRIFT_MINOR_SYNC_THRESHOLD: usize = 1;
 
 // === Symbol Index & BM25 Ranking ===
 /// Exact symbol name match score
@@ -1769,17 +1767,63 @@ pub const CODE_MORPHOLOGY_CHAR_MARKERS: &[char] = &['/', '\\', '_', '`'];
 pub const CODE_MORPHOLOGY_STR_MARKERS: &[&str] = &["::", "--"];
 /// Second-person / self-referential agent pronouns used in set-algebraic meta-introspection detection.
 pub const META_AGENT_PRONOUN_TOKENS: &[&str] = &["u", "you", "your", "ur", "minicode"];
-/// State and possession predicates used in set-algebraic meta-introspection detection.
+/// State, possession, and retrospective execution predicates used in set-algebraic meta-introspection detection.
 pub const META_STATE_PREDICATE_TOKENS: &[&str] = &[
     "have",
     "has",
+    "had",
+    "did",
+    "ran",
     "used",
+    "using",
+    "were",
+    "was",
     "active",
     "available",
     "registered",
     "loaded",
     "total",
 ];
+/// Interrogative WH-pronouns and adverbs used in set-algebraic epistemic and retrospective query detection.
+pub const INTERROGATIVE_WH_TOKENS: &[&str] =
+    &["what", "which", "who", "where", "when", "why", "how"];
+/// Imperative workspace-mutating engineering verbs that distinguish code/artifact changes from read-only epistemic questions.
+pub const MUTATING_TASK_VERBS: &[&str] = &[
+    "build",
+    "create",
+    "implement",
+    "scaffold",
+    "write",
+    "fix",
+    "patch",
+    "refactor",
+    "commit",
+    "push",
+    "deploy",
+    "install",
+    "add",
+    "remove",
+    "delete",
+    "update",
+    "edit",
+    "change",
+    "modify",
+    "make",
+    "generate",
+    "setup",
+    "configure",
+    "init",
+    "initialize",
+    "upgrade",
+    "migrate",
+    "clean",
+    "format",
+    "sync",
+];
+/// Practical Tier-1 observation-masking token ceiling on large-window (1M/2M) models so stale tool outputs are compacted before crossing 200K tokens.
+pub const COMPACT_PRACTICAL_TIER1_CEILING_TOKENS: usize = 140_000;
+/// Practical Tier-2 turn-summarization token ceiling on large-window (1M/2M) models.
+pub const COMPACT_PRACTICAL_TIER2_CEILING_TOKENS: usize = 220_000;
 /// Baseline Level-2 inline skill character budget for the static system prompt (`prompt == None`).
 pub const VAULT_STATIC_LEVEL2_BUDGET_CHARS: usize = 1_800;
 /// Dynamic Level-2 inline skill character budget when an actionable user prompt is present.

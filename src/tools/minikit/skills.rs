@@ -153,9 +153,20 @@ impl MiniKitSkillsManager {
                     .as_ref()
                     .map(|p| p.display().to_string())
                     .unwrap_or_else(|| "builtin".to_string());
+                let bundled = skill.discover_bundled_resources();
+                let bundled_note = if bundled.is_empty() {
+                    String::new()
+                } else {
+                    format!(
+                        "\nBundled Level-3 Resources: `{}` (read via `vault_show(name=\"{}\", file_path=\"...\")`)\n",
+                        bundled.join("`, `"),
+                        skill.name
+                    )
+                };
+                let rendered = skill.render_instructions(workspace_root);
                 Ok(format!(
-                    "📖 **Skill `{}`** ({}: `{}`):\n*{}*\n\n{}",
-                    skill.name, scope_label, path_str, skill.description, skill.instructions
+                    "📖 **Skill `{}`** ({}: `{}`):\n*{}*{}\n\n{}",
+                    skill.name, scope_label, path_str, skill.description, bundled_note, rendered
                 ))
             }
             Err(_) => Err(ToolError::InvalidArguments {
@@ -326,13 +337,33 @@ impl MiniKitSkillsManager {
             }
         }
 
+        let code_stack_files: Vec<&str> = stack_files
+            .iter()
+            .map(String::as_str)
+            .filter(|f| {
+                let norm = f.trim_start_matches("./");
+                let lower = norm.to_ascii_lowercase();
+                !norm.starts_with("minikit_docs/")
+                    && !norm.starts_with("onpkg_docs/")
+                    && !norm.starts_with(".minicode/")
+                    && !norm.starts_with(".git/")
+                    && !lower.ends_with(".md")
+                    && !lower.ends_with(".mdx")
+                    && !lower.ends_with(".txt")
+            })
+            .collect();
+
         let mut matched = Vec::new();
         for skill in store.list_all_skills() {
-            // Only true procedural/behavioral Agent Skills (`Workflow`) belong in `active_skills` and `.minicode/skills/`.
-            // Package reference documentation (`Reference`) belongs in `minikit_docs/packages/`.
-            // Meta/efficiency voice skills (`category == "efficiency"`) are activated by prompt/config triggers rather than stack files.
+            // Only true procedural/behavioral Agent Skills (`Workflow`) belong in stack-seeded `.minicode/skills/`.
+            // Package reference documentation (`Reference`) belongs in `minikit_docs/packages/` or auto_skills.
+            // Episodic meta/doc/quality/security/orchestrator/efficiency workflows activate dynamically per-turn via BM25F.
+            let cat = skill.frontmatter.category.as_deref().unwrap_or("");
             if skill.kind() != crate::vault::models::SkillKind::Workflow
-                || skill.frontmatter.category.as_deref() == Some("efficiency")
+                || matches!(
+                    cat,
+                    "efficiency" | "docs" | "quality" | "security" | "orchestrator"
+                )
             {
                 continue;
             }
@@ -346,8 +377,8 @@ impl MiniKitSkillsManager {
                     .globs
                     .iter()
                     .any(|g| g == "**/*" || g == "*");
-            if has_specific_globs && !stack_files.is_empty() {
-                for f in stack_files {
+            if has_specific_globs && !code_stack_files.is_empty() {
+                for f in &code_stack_files {
                     if skill.matches_file(workspace_root, Path::new(f)) {
                         matched.push(skill.name.clone());
                         break;

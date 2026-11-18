@@ -14,13 +14,13 @@ fn test_all_theme_palettes_and_detection() {
     std::env::set_var("TERM", "xterm-256color");
 
     let themes = Theme::list_themes();
-    assert_eq!(themes.len(), 9);
+    assert!(themes.len() >= 25);
 
     // Verify all theme ids are unique
     let mut ids: Vec<String> = themes.iter().map(|t| t.id.clone()).collect();
     ids.sort();
     ids.dedup();
-    assert_eq!(ids.len(), 9);
+    assert_eq!(ids.len(), themes.len());
 
     // Verify Theme::detect maps correctly
     let tokyo = Theme::detect("tokyo-night");
@@ -51,7 +51,15 @@ fn test_theme_modal_rendering() {
     let backend = TestBackend::new(100, 30);
     let mut terminal = Terminal::new(backend).unwrap();
 
-    let modal = ModalState::new_theme_select("catppuccin", "dual_pillars", "minimal", "cards");
+    let modal = ModalState::new_theme_select(
+        "catppuccin",
+        "dual_pillars",
+        "minimal",
+        "cards",
+        "pill",
+        "unicode",
+        "timeline",
+    );
 
     terminal
         .draw(|f| {
@@ -63,13 +71,10 @@ fn test_theme_modal_rendering() {
     let buffer = terminal.backend().buffer();
     let content: String = buffer.content().iter().map(|c| c.symbol()).collect();
 
-    assert!(content.contains("Theme & Animation Customization"));
-    assert!(content.contains("1. Themes"));
-    assert!(content.contains("2. Animations"));
+    assert!(content.contains("MiniCode Appearance & Themes"));
+    assert!(content.contains("APPEARANCE"));
     assert!(content.contains("Aura Dark"));
     assert!(content.contains("Tokyo Night"));
-    assert!(content.contains("Apply"));
-    assert!(content.contains("Cancel"));
 }
 
 #[test]

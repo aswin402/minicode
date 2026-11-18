@@ -614,32 +614,7 @@ impl WorkspaceProfile {
                 for dep_field in ["dependencies", "devDependencies", "peerDependencies"] {
                     if let Some(deps) = json.get(dep_field).and_then(|d| d.as_object()) {
                         for key in deps.keys() {
-                            let lower = key.to_lowercase();
-                            tokens.insert(lower.clone());
-                            let clean = lower.trim_start_matches('@');
-                            if let Some((scope, name)) = clean.split_once('/') {
-                                tokens.insert(scope.to_string());
-                                tokens.insert(name.to_string());
-                                for part in name.split('-') {
-                                    if !part.is_empty() {
-                                        tokens.insert(part.to_string());
-                                    }
-                                }
-                            } else {
-                                for part in clean.split('-') {
-                                    if !part.is_empty() {
-                                        tokens.insert(part.to_string());
-                                    }
-                                }
-                            }
-                            if let Some(stem) = clean.strip_suffix("css") {
-                                if stem.len() >= 3 {
-                                    tokens.insert(stem.to_string());
-                                }
-                            }
-                            if !clean.contains('/') && !clean.ends_with("js") {
-                                tokens.insert(format!("{}js", clean));
-                            }
+                            insert_package_specifier_tokens(&mut tokens, key);
                         }
                     }
                 }
@@ -739,6 +714,13 @@ impl WorkspaceProfile {
                             }
                         }
                     }
+                    for pkg_array_field in ["packages", "dev_packages"] {
+                        if let Some(arr) = val.get(pkg_array_field).and_then(|v| v.as_array()) {
+                            for pkg in arr.iter().filter_map(|v| v.as_str()) {
+                                insert_package_specifier_tokens(&mut tokens, pkg);
+                            }
+                        }
+                    }
                 }
             }
         }
@@ -770,6 +752,7 @@ impl WorkspaceProfile {
             tokens.insert("prisma".to_string());
         }
 
+        expand_canonical_ecosystem_aliases(&mut tokens);
         tokens
     }
 
@@ -840,6 +823,60 @@ impl WorkspaceProfile {
         }
 
         lines.join("\n")
+    }
+}
+
+pub(crate) fn insert_package_specifier_tokens(tokens: &mut HashSet<String>, raw_spec: &str) {
+    let lower = raw_spec.trim().to_lowercase();
+    if lower.is_empty() {
+        return;
+    }
+    tokens.insert(lower.clone());
+    let clean = lower.trim_start_matches('@');
+    let push_stem_rules = |seg: &str, out: &mut HashSet<String>| {
+        if let Some(stem) = seg.strip_suffix("css") {
+            if stem.len() >= 5 {
+                out.insert(stem.to_string());
+            }
+        }
+        if !seg.is_empty() && !seg.ends_with("js") {
+            out.insert(format!("{seg}js"));
+        }
+    };
+    if let Some((scope, name)) = clean.split_once('/') {
+        tokens.insert(scope.to_string());
+        tokens.insert(name.to_string());
+        push_stem_rules(scope, tokens);
+        push_stem_rules(name, tokens);
+        for part in name.split('-') {
+            if !part.is_empty() {
+                tokens.insert(part.to_string());
+            }
+        }
+    } else {
+        push_stem_rules(clean, tokens);
+        for part in clean.split('-') {
+            if !part.is_empty() {
+                tokens.insert(part.to_string());
+            }
+        }
+    }
+}
+
+fn expand_canonical_ecosystem_aliases(tokens: &mut HashSet<String>) {
+    const CANONICAL_PACKAGE_ALIASES: &[(&[&str], &str)] = &[
+        (
+            &["pg", "postgresql", "psycopg", "psycopg2", "asyncpg"],
+            "postgres",
+        ),
+        (&["mongoose", "pymongo"], "mongodb"),
+        (&["tailwindcss"], "tailwind"),
+        (&["next"], "nextjs"),
+    ];
+    for (variants, canonical) in CANONICAL_PACKAGE_ALIASES {
+        if variants.iter().any(|v| tokens.contains(*v)) {
+            tokens.insert((*canonical).to_string());
+        }
     }
 }
 

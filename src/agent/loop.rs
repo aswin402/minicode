@@ -82,6 +82,9 @@ pub struct AgentLoop {
     session_active_mcp_servers: std::collections::HashSet<String>,
     /// Individual tool names dynamically activated during this session.
     session_active_tool_names: std::collections::HashSet<String>,
+    /// Stateful session-active skill names (inlined once or loaded via `vault_show`/`vault_load`),
+    /// preventing duplicate multi-turn re-injection and keeping `allowed_tools` sticky across turns.
+    pub(super) session_active_skills: indexmap::IndexSet<String>,
     /// Index into `self.messages` up to which the prompt prefix is currently cached in provider KV memory.
     pub(super) kv_watermark_idx: usize,
     /// Timestamp of the last completed provider call (used for 5-minute KV TTL `idleCompact` expiry).
@@ -200,6 +203,7 @@ impl AgentLoop {
             session_active_categories: std::collections::HashSet::new(),
             session_active_mcp_servers: std::collections::HashSet::new(),
             session_active_tool_names: std::collections::HashSet::new(),
+            session_active_skills: indexmap::IndexSet::new(),
             kv_watermark_idx: 0,
             last_provider_call_at: None,
             async_idle_wakeup_enabled: false,
@@ -343,7 +347,7 @@ impl AgentLoop {
                 .workspace_root
                 .join(&self.config.agent.intent.persistence_file);
             if let Some(ref mut ledger) = self.intent_ledger {
-                if turn_id > 1 && prompt_signal.has_substantive_goal_intent() {
+                if turn_id > 1 && prompt_signal.has_goal_mutation_intent() {
                     ledger.refresh_for_new_turn(
                         user_prompt,
                         self.config.agent.intent.max_ledger_items,
@@ -509,19 +513,95 @@ impl AgentLoop {
                 .clone_from(&active_tool_names);
         }
 
-        // Autonomous State-Driven Context Enrichment + Deterministic Tool Registry Telemetry
-        let raw_workflow_enrichment =
-            crate::agent::orchestrator::WorkflowRouter::enrich_state_driven_context_with_baseline(
+        // Autonomous State-Driven Context Enrichment + Stateful Session Skill Harness
+        let live_available_tools = Self::collect_available_tool_set(&mcp_tools_by_server);
+        let live_active_tools: std::collections::HashSet<String> =
+            tools.iter().map(|t| t.name.clone()).collect();
+        let mut combined_excluded_skills: Vec<String> =
+            self.baseline_static_skills.clone().unwrap_or_default();
+        for s in &self.session_active_skills {
+            if !combined_excluded_skills.contains(s) {
+                combined_excluded_skills.push(s.clone());
+            }
+        }
+        let prior_dynamic_session_skills: Vec<String> = self
+            .session_active_skills
+            .iter()
+            .filter(|s| {
+                !self
+                    .baseline_static_skills
+                    .as_ref()
+                    .is_some_and(|b| b.contains(*s))
+            })
+            .cloned()
+            .collect();
+
+        let (raw_workflow_enrichment, newly_inlined_skills) =
+            crate::agent::orchestrator::WorkflowRouter::enrich_state_driven_context_full(
                 &self.workspace_root,
                 user_prompt,
-                self.baseline_static_skills.as_deref(),
+                Some(&combined_excluded_skills),
+                Some(live_available_tools.clone()),
+                Some(live_active_tools.clone()),
             )
             .await;
-        let workflow_enrichment = Some(match raw_workflow_enrichment {
-            Some(enr) if !enr.trim().is_empty() => {
-                format!("{}\n\n{}", enr.trim(), tool_registry_telemetry)
+
+        if !newly_inlined_skills.is_empty() {
+            for s in &newly_inlined_skills {
+                self.session_active_skills.insert(s.clone());
             }
-            _ => tool_registry_telemetry,
+            // Promote `allowed_tools` of newly activated turn skills when the prompt introduces
+            // substantive task intent (skipping bare "continue" nudges so baseline stays lean).
+            if prompt_signal.has_substantive_goal_intent() {
+                let mut promoted_tools = false;
+                for allowed_tool in crate::vault::store::VaultStore::new(&self.workspace_root)
+                    .collect_allowed_tools_for_skill_names(&newly_inlined_skills)
+                {
+                    if active_tool_names.insert(allowed_tool) {
+                        promoted_tools = true;
+                    }
+                }
+                if promoted_tools {
+                    self.session_active_tool_names
+                        .clone_from(&active_tool_names);
+                    tools = self.rebuild_active_tools(
+                        user_prompt,
+                        &active_categories,
+                        &mcp_tools_by_server,
+                        &active_mcp_servers,
+                        &active_tool_names,
+                    );
+                }
+            }
+        }
+
+        let session_skills_pin = if prompt_signal.has_actionable_task_intent()
+            && !prior_dynamic_session_skills.is_empty()
+        {
+            let uris: Vec<String> = prior_dynamic_session_skills
+                .iter()
+                .map(|s| format!("`skill://{}`", s))
+                .collect();
+            format!(
+                "<session_active_skills>\n  Sticky Active Session Skills (already loaded in context — do NOT reload unless compacted): {}\n</session_active_skills>",
+                uris.join(", ")
+            )
+        } else {
+            String::new()
+        };
+
+        let workflow_enrichment = Some({
+            let mut parts = Vec::new();
+            if let Some(enr) = raw_workflow_enrichment {
+                if !enr.trim().is_empty() {
+                    parts.push(enr.trim().to_string());
+                }
+            }
+            if !session_skills_pin.is_empty() {
+                parts.push(session_skills_pin);
+            }
+            parts.push(tool_registry_telemetry);
+            parts.join("\n\n")
         });
 
         // Auto-initialize living IntentLedger only when prompt carries actionable task intent
@@ -714,24 +794,41 @@ impl AgentLoop {
             });
         }
 
-        let turn_active_skills =
-            if prompt_signal.has_actionable_task_intent() {
-                let effective_ws: &[String] = if prompt_signal.has_code_exploration_intent()
-                    || prompt_signal.has_plan_continuation_affinity()
-                {
-                    &working_set_vec[..]
-                } else {
-                    &[]
-                };
-                let effective_objective = active_plan_text
-                    .as_deref()
-                    .or(fallback_goal_prompt.as_deref());
-                crate::vault::store::VaultStore::new(&self.workspace_root)
-                    .resolve_turn_active_skills(user_prompt, effective_objective, effective_ws)
+        let turn_active_skills = if prompt_signal.has_actionable_task_intent() {
+            let effective_ws: &[String] = if prompt_signal.has_code_exploration_intent()
+                || prompt_signal.has_plan_continuation_affinity()
+            {
+                &working_set_vec[..]
             } else {
-                Vec::new()
+                &[]
             };
+            let effective_objective = active_plan_text.as_deref().or_else(|| {
+                prompt_signal
+                    .has_plan_continuation_affinity()
+                    .then_some(fallback_goal_prompt.as_deref())
+                    .flatten()
+            });
+            let live_active_after: std::collections::HashSet<String> =
+                tools.iter().map(|t| t.name.clone()).collect();
+            let resolved = crate::vault::store::VaultStore::new(&self.workspace_root)
+                .with_tool_capabilities(live_available_tools, live_active_after)
+                .resolve_turn_active_skills(user_prompt, effective_objective, effective_ws);
+            let mut merged = Vec::new();
+            for s in newly_inlined_skills.iter().chain(resolved.iter()) {
+                if !merged.iter().any(|m: &String| m.eq_ignore_ascii_case(s)) {
+                    merged.push(s.clone());
+                }
+                if merged.len() >= 4 {
+                    break;
+                }
+            }
+            merged
+        } else {
+            Vec::new()
+        };
         if !turn_active_skills.is_empty() {
+            crate::vault::store::VaultStore::new(&self.workspace_root)
+                .record_skill_activations(&turn_active_skills);
             let skill_event = AgentEvent::SkillActivity {
                 turn_id,
                 action: "using".to_string(),
@@ -757,9 +854,9 @@ impl AgentLoop {
         let mut items_progressed_this_turn = false;
         let mut yielded_for_async_background = false;
 
-        // Automatically begin a workspace transaction only when prompt carries actionable task intent
-        let turn_tx_id = prompt_signal
-            .has_actionable_task_intent()
+        // Automatically begin a workspace transaction only when prompt carries mutating task intent
+        let turn_tx_id = (prompt_signal.has_actionable_task_intent()
+            && !prompt_signal.is_epistemic_question)
             .then(|| {
                 crate::session::transaction::TransactionManager::get_active(&self.workspace_root)
                     .ok()
@@ -2504,6 +2601,16 @@ impl AgentLoop {
                         let _reconciled = wm.reconcile_workspace_tasks(&turn_files_modified);
                         self.emit_current_plan(Some(turn_id), &event_sender);
 
+                        // Record empirical skill verification outcome (`first_pass` vs `after_heal`)
+                        if !self.session_active_skills.is_empty() {
+                            crate::vault::store::VaultStore::new(&self.workspace_root)
+                                .record_skill_verification_outcome(
+                                    &self.session_active_skills,
+                                    true,
+                                    heal_attempts,
+                                );
+                        }
+
                         // Autonomous Continual Learning & Skill Harvesting (Zero `/commands`):
                         // Distills verified self-healing recoveries into BM25-indexed GlobalGotchas
                         // and promotes multi-iteration / recurring fixes into `.minicode/skills/`.
@@ -3110,6 +3217,31 @@ impl AgentLoop {
         // Persist deterministic Continuity Ledger (.minicode/ledgers/CONTINUITY.md) after turn
         self.compactor
             .write_continuity_ledger(&self.workspace_root, &self.session_id);
+
+        // Silently update per-file AST CodeGraph shards and workspace active_skills ledger in the background
+        // whenever workspace mutations occurred, so newly created/edited project files & manifests are immediately synced.
+        let had_mutating_tool_call = turn_tool_results
+            .iter()
+            .any(|r| r.success && !crate::tools::is_read_only(&r.tool_name));
+        if !was_cancelled
+            && !circuit_tripped
+            && (!turn_files_modified.is_empty() || had_mutating_tool_call)
+        {
+            let ws_for_skills = self.workspace_root.clone();
+            if let Ok(handle) = tokio::runtime::Handle::try_current() {
+                handle.spawn_blocking(move || {
+                    let (_, code_files, _) =
+                        crate::agent::orchestrator::WorkflowRouter::scan_repository_state(
+                            &ws_for_skills,
+                        );
+                    let _ = crate::vault::store::VaultStore::new(&ws_for_skills)
+                        .sync_project_active_skills(&code_files);
+                });
+            }
+            crate::context::graph::CodeGraph::spawn_background_mutation_sync(
+                self.workspace_root.clone(),
+            );
+        }
 
         // Return freed transient streaming/JSON/tool arenas to the OS when the turn settles.
         crate::context::budget::ccr_cache::reclaim_idle_heap();
