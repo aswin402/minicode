@@ -139,6 +139,16 @@ pub enum RepoState {
     ExistingCodebase,
 }
 
+/// Stateful multi-turn delta options controlling Zone-3 deduplication and quantitative telemetry.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct SessionContextDeltaOptions {
+    /// Omit static `<recommended_miniblocks>` / `<minikit_scaffolding_guidance>` catalogs when the
+    /// exact same foundation/framework signature was already emitted earlier in this session.
+    pub omit_static_ui_warehouse: bool,
+    /// Active context window utilization percentage (`0..=100`).
+    pub context_pressure_pct: Option<u8>,
+}
+
 /// Autonomous state-driven workflow router that inspects live workspace and runtime state,
 /// activates tool categories, and synthesizes pre-turn context without keyword heuristics.
 pub struct WorkflowRouter;
@@ -242,6 +252,41 @@ impl WorkflowRouter {
         available_tools: Option<std::collections::HashSet<String>>,
         active_tools: Option<std::collections::HashSet<String>>,
     ) -> (Option<String>, Vec<String>) {
+        Self::enrich_state_driven_context_with_delta(
+            workspace_root,
+            prompt,
+            exclude_inlined_skills,
+            available_tools,
+            active_tools,
+            SessionContextDeltaOptions::default(),
+        )
+        .await
+    }
+
+    /// Computes a deterministic signature of the workspace's UI/foundation surface so multi-turn
+    /// sessions only emit the full `<recommended_miniblocks>` + `<taste_art_direction>` catalog
+    /// once per foundation/framework transition.
+    #[must_use]
+    pub fn ui_warehouse_signature(workspace_root: &Path) -> String {
+        let manifest = Self::project_manifest(workspace_root).unwrap_or("none");
+        let stack = crate::blocks::seed::ProjectStackInfo::detect(workspace_root);
+        let fw = stack
+            .framework
+            .map(|f| format!("{:?}", f))
+            .unwrap_or_else(|| "none".to_string());
+        format!("{manifest}:{fw}")
+    }
+
+    /// Stateful delta-aware Zone-3 enrichment that deduplicates previously emitted static UI
+    /// warehouse blocks across turns and attaches quantitative context-pressure telemetry.
+    pub async fn enrich_state_driven_context_with_delta(
+        workspace_root: &Path,
+        prompt: &str,
+        exclude_inlined_skills: Option<&[String]>,
+        available_tools: Option<std::collections::HashSet<String>>,
+        active_tools: Option<std::collections::HashSet<String>>,
+        delta_opts: SessionContextDeltaOptions,
+    ) -> (Option<String>, Vec<String>) {
         let wm = crate::context::working_memory::WorkingMemory::new(workspace_root);
         let active_plan_summary = wm.read_active_plan_summary();
         let active_plan_text = active_plan_summary.as_ref().map(|s| {
@@ -303,14 +348,17 @@ impl WorkflowRouter {
             &code_files,
             &doc_files,
         ));
-        sections.push(Self::enrich_orchestrator_guidance_with_affinity(
+        sections.push(Self::enrich_orchestrator_guidance_with_telemetry(
             workspace_root,
             repo_state,
             signal.has_plan_continuation_affinity(),
+            delta_opts.context_pressure_pct,
         ));
 
         // 2. When foundation is not yet established, always show available MiniKit starter stacks
-        if matches!(repo_state, RepoState::FreshWorkspace | RepoState::DocsOnly) {
+        if matches!(repo_state, RepoState::FreshWorkspace | RepoState::DocsOnly)
+            && !delta_opts.omit_static_ui_warehouse
+        {
             if let Some(scaffolding) = Self::enrich_minikit_scaffolding(workspace_root, prompt) {
                 sections.push(scaffolding);
             }
@@ -320,7 +368,11 @@ impl WorkflowRouter {
         if matches!(repo_state, RepoState::FreshWorkspace | RepoState::DocsOnly)
             || Self::has_ui_surface(workspace_root, &code_files)
         {
-            if let Some(ui_block) = Self::enrich_ui_design(workspace_root, prompt) {
+            if delta_opts.omit_static_ui_warehouse {
+                sections.push(
+                    "<ui_warehouse_pin>\n  MiniBlocks UI warehouse & Art Direction already loaded earlier in this session — query `block_search` / `block_scaffold` directly when adding UI sections.\n</ui_warehouse_pin>".to_string(),
+                );
+            } else if let Some(ui_block) = Self::enrich_ui_design(workspace_root, prompt) {
                 sections.push(ui_block);
             }
         }
@@ -495,7 +547,29 @@ impl WorkflowRouter {
         state: RepoState,
         include_active_plan: bool,
     ) -> String {
+        Self::enrich_orchestrator_guidance_with_telemetry(
+            workspace_root,
+            state,
+            include_active_plan,
+            None,
+        )
+    }
+
+    pub fn enrich_orchestrator_guidance_with_telemetry(
+        workspace_root: &Path,
+        state: RepoState,
+        include_active_plan: bool,
+        context_pressure_pct: Option<u8>,
+    ) -> String {
         let mut out = String::from("<orchestrator_dynamic_guidance>\n");
+        if let Some(pct) = context_pressure_pct {
+            if pct >= 45 {
+                out.push_str(&format!(
+                    "  Context Budget Pressure: {}% used — preserve orchestrator headroom by delegating broad multi-file searches (`delegate_task(role=\"scout\")`) and independent parallel sub-waves (`execute_task_dag(from_active_plan=true)`).\n",
+                    pct
+                ));
+            }
+        }
         let wm = crate::context::working_memory::WorkingMemory::new(workspace_root);
         let active_plan = wm
             .read_active_plan_summary()
@@ -503,7 +577,7 @@ impl WorkflowRouter {
         match &active_plan {
             None => {
                 out.push_str(
-                    "  Active Plan: NONE. For any task mutating files or spanning multiple steps, initialize a right-sized plan FIRST via `create_plan` or `power_plan(topic=..., steps=[...])` (name explicit target files per step so progress tracking is deterministic).\n",
+                    "  Active Plan: NONE. Execute localized single-file edits directly without planning ceremony; for multi-file features, refactors, or multi-stage tasks, initialize a right-sized plan via `create_plan` (passing `target_files` and `depends_on` when independent waves can run in parallel).\n",
                 );
             }
             Some(summary) => {
@@ -511,9 +585,19 @@ impl WorkflowRouter {
                     .active_task
                     .as_deref()
                     .unwrap_or("final verification");
+                let dag_hint = crate::context::memory::task_dag::PlanDag::load(workspace_root)
+                    .and_then(|d| d.compute_execution_topology().ok())
+                    .filter(|t| t.max_parallelism >= 2)
+                    .map(|t| {
+                        format!(
+                            " [Task-DAG max parallelism `{}` — `execute_task_dag(from_active_plan=true)` available]",
+                            t.max_parallelism
+                        )
+                    })
+                    .unwrap_or_default();
                 out.push_str(&format!(
-                    "  Active Plan: IN PROGRESS ({}/{} steps completed; current focus: `{}`). Maintain strictly one active `[>]` step, call `update_progress(step=\"active\", status=\"completed\")` immediately when each step's deliverable is ready, and run `power_review` + `power_verify` before `archive_plan`.\n",
-                    summary.completed_tasks, summary.total_tasks, active_step
+                    "  Active Plan: IN PROGRESS ({}/{} steps completed; current focus: `{}`){}. Maintain strictly one active `[>]` step, call `update_progress(step=\"active\", status=\"completed\")` immediately when each step's deliverable is ready (or `action=\"add\"|\"split\"|\"drop\"` to adapt mid-flight), and run `power_review` + `power_verify` before `archive_plan`.\n",
+                    summary.completed_tasks, summary.total_tasks, active_step, dag_hint
                 ));
             }
         }
@@ -1366,5 +1450,50 @@ mod tests {
         assert!(!crate::agent::AgentLoop::detect_ultrawork_intent(
             "explain \"ulw\" mode"
         ));
+    }
+
+    #[tokio::test]
+    async fn test_stateful_delta_deduplicates_ui_warehouse_and_emits_context_pressure() {
+        let temp = tempfile::tempdir().unwrap();
+        std::fs::write(
+            temp.path().join("package.json"),
+            "{\"dependencies\":{\"react\":\"^18.2.0\"}}",
+        )
+        .unwrap();
+        std::fs::create_dir_all(temp.path().join("src")).unwrap();
+        std::fs::write(temp.path().join("src/App.tsx"), "export function App() {}").unwrap();
+
+        let (turn1, _) = WorkflowRouter::enrich_state_driven_context_with_delta(
+            temp.path(),
+            "Add analytics chart section",
+            None,
+            None,
+            None,
+            SessionContextDeltaOptions {
+                omit_static_ui_warehouse: false,
+                context_pressure_pct: Some(18),
+            },
+        )
+        .await;
+        let t1 = turn1.unwrap();
+        assert!(t1.contains("<recommended_miniblocks>"));
+        assert!(!t1.contains("Context Budget Pressure:"));
+
+        let (turn2, _) = WorkflowRouter::enrich_state_driven_context_with_delta(
+            temp.path(),
+            "Now wire the export button",
+            None,
+            None,
+            None,
+            SessionContextDeltaOptions {
+                omit_static_ui_warehouse: true,
+                context_pressure_pct: Some(62),
+            },
+        )
+        .await;
+        let t2 = turn2.unwrap();
+        assert!(!t2.contains("<recommended_miniblocks>"));
+        assert!(t2.contains("<ui_warehouse_pin>"));
+        assert!(t2.contains("Context Budget Pressure: 62% used"));
     }
 }

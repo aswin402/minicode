@@ -53,6 +53,27 @@ impl From<reqwest::Error> for MinicodeError {
     }
 }
 
+impl MinicodeError {
+    /// Returns `true` when a provider failure is transient according to RFC 9110 HTTP status
+    /// semantics (`408`, `409`, `425`, `429`, `5xx`, network/stream transport failures) and
+    /// `false` for deterministic client errors (`400`, `401`, `403`, `404`, `422`, unsupported model).
+    #[must_use]
+    pub fn is_retryable_provider_error(&self) -> bool {
+        match self {
+            MinicodeError::Provider(ProviderError::Api { status, .. }) => {
+                !((400..500).contains(status) && !matches!(*status, 408 | 409 | 425 | 429))
+            }
+            MinicodeError::Provider(
+                ProviderError::UnsupportedModel { .. }
+                | ProviderError::ContextWindowExceeded { .. }
+                | ProviderError::CircuitOpen(_),
+            )
+            | MinicodeError::Config(_) => false,
+            _ => true,
+        }
+    }
+}
+
 #[derive(Error, Debug)]
 pub enum ConfigError {
     #[error("Failed to read config file at {path}: {source}")]

@@ -181,6 +181,9 @@ impl WorkingMemory {
         let _ = fs::remove_file(self.task_plan_path());
         let _ = fs::remove_file(self.progress_path());
         let _ = fs::remove_file(self.findings_path());
+        let _ = fs::remove_file(crate::context::memory::task_dag::PlanDag::file_path(
+            &self.workspace_root,
+        ));
         self.clear_verification_evidence();
         let _ = fs::remove_file(
             self.workspace_root

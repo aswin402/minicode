@@ -26,25 +26,20 @@ pub struct GitReviewer;
 
 impl GitReviewer {
     /// Discovers workspace source files for verification and review when `.git` is absent
-    /// or has no uncommitted diff (checking active transaction snapshots first, then walking source directories).
+    /// or has no uncommitted diff (unioning active transaction paths with walked source/test files
+    /// so files merged via Git worktrees or `exec_cmd` are never hidden behind a 1-file transaction).
     pub fn discover_workspace_source_files(workspace_root: &Path) -> Vec<String> {
+        let mut discovered = Vec::new();
         if let Ok(Some(active_tx)) =
             crate::session::transaction::TransactionManager::get_active(workspace_root)
         {
-            let mut tx_files: Vec<String> = active_tx
-                .files
-                .iter()
-                .map(|f| f.relative_path.clone())
-                .filter(|rel| workspace_root.join(rel).is_file())
-                .collect();
-            tx_files.sort();
-            tx_files.dedup();
-            if !tx_files.is_empty() {
-                return tx_files;
+            for f in &active_tx.files {
+                if workspace_root.join(&f.relative_path).is_file() {
+                    discovered.push(f.relative_path.clone());
+                }
             }
         }
 
-        let mut discovered = Vec::new();
         let walker = ignore::WalkBuilder::new(workspace_root)
             .max_depth(Some(5))
             .hidden(true)
@@ -109,8 +104,47 @@ impl GitReviewer {
         workspace_root: &Path,
         staged_only: bool,
     ) -> Result<ReviewReport> {
+        Self::review_workspace_with_range(workspace_root, staged_only, None, None)
+            .await
+            .map(|(report, _)| report)
+    }
+
+    /// Range-aware workspace review returning `(ReviewReport, audited_diff_text)`.
+    /// Honors explicit `base_sha..head_sha` when passed, and when the working tree is clean after a
+    /// swarm/worktree auto-merge (`target_files.is_empty()`), inspects `HEAD~1..HEAD` before falling back.
+    pub async fn review_workspace_with_range(
+        workspace_root: &Path,
+        staged_only: bool,
+        base_sha: Option<&str>,
+        head_sha: Option<&str>,
+    ) -> Result<(ReviewReport, String)> {
         let git = GitService::new(workspace_root.to_path_buf());
         let (diff_text, target_files) = if git.is_git_repo().await {
+            if let Some(base) = base_sha.map(str::trim).filter(|s| !s.is_empty()) {
+                let head = head_sha
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty())
+                    .unwrap_or("HEAD");
+                if let Ok((range_diff, mut range_files)) = git.diff_range(base, head).await {
+                    let filtered_range_diff =
+                        crate::git::diff_filter::DiffFilter::filter_diff(&range_diff);
+                    range_files.retain(|rel| {
+                        !crate::agent::verification_barrier::VerificationBarrier::is_ignored_artifact_or_vendor_path(
+                            workspace_root,
+                            rel,
+                        )
+                    });
+                    if !range_files.is_empty() || !filtered_range_diff.trim().is_empty() {
+                        return Self::evaluate_diff_and_files(
+                            workspace_root,
+                            false,
+                            filtered_range_diff,
+                            range_files,
+                        )
+                        .await;
+                    }
+                }
+            }
             let mut diff_text = git.diff(staged_only, None).await?;
             let status = git.get_status().await?;
 
@@ -186,24 +220,50 @@ impl GitReviewer {
 
             if target_files.is_empty() && diff_text.trim().is_empty() {
                 if staged_only {
-                    return Ok(ReviewReport {
-                        total_score: 100,
-                        files_audited: 0,
-                        findings: vec![],
-                        summary: "✔ Working tree is completely clean — zero staged diffs to audit."
-                            .to_string(),
+                    return Ok((
+                        ReviewReport {
+                            total_score: 100,
+                            files_audited: 0,
+                            findings: vec![],
+                            summary:
+                                "✔ Working tree is completely clean — zero staged diffs to audit."
+                                    .to_string(),
+                        },
+                        String::new(),
+                    ));
+                }
+                if let Ok((head_diff, mut head_files)) = git.diff_range("HEAD~1", "HEAD").await {
+                    let filtered_head_diff =
+                        crate::git::diff_filter::DiffFilter::filter_diff(&head_diff);
+                    head_files.retain(|rel| {
+                        !crate::agent::verification_barrier::VerificationBarrier::is_ignored_artifact_or_vendor_path(
+                            workspace_root,
+                            rel,
+                        )
                     });
+                    if !head_files.is_empty() && !filtered_head_diff.trim().is_empty() {
+                        return Self::evaluate_diff_and_files(
+                            workspace_root,
+                            false,
+                            filtered_head_diff,
+                            head_files,
+                        )
+                        .await;
+                    }
                 }
                 let fallback_files = Self::discover_workspace_source_files(workspace_root);
                 if fallback_files.is_empty() {
-                    return Ok(ReviewReport {
-                        total_score: 100,
-                        files_audited: 0,
-                        findings: vec![],
-                        summary:
-                            "✔ Working tree is completely clean — zero uncommitted diffs to audit."
-                                .to_string(),
-                    });
+                    return Ok((
+                        ReviewReport {
+                            total_score: 100,
+                            files_audited: 0,
+                            findings: vec![],
+                            summary:
+                                "✔ Working tree is completely clean — zero uncommitted diffs to audit."
+                                    .to_string(),
+                        },
+                        String::new(),
+                    ));
                 }
                 let mut synth_diff = String::new();
                 for rel in &fallback_files {
@@ -221,12 +281,15 @@ impl GitReviewer {
         } else {
             let fallback_files = Self::discover_workspace_source_files(workspace_root);
             if fallback_files.is_empty() {
-                return Ok(ReviewReport {
-                    total_score: 100,
-                    files_audited: 0,
-                    findings: vec![],
-                    summary: "ℹ Workspace is not a git repository.".to_string(),
-                });
+                return Ok((
+                    ReviewReport {
+                        total_score: 100,
+                        files_audited: 0,
+                        findings: vec![],
+                        summary: "ℹ Workspace is not a git repository.".to_string(),
+                    },
+                    String::new(),
+                ));
             }
             let mut synth_diff = String::new();
             for rel in &fallback_files {
@@ -240,6 +303,15 @@ impl GitReviewer {
             (synth_diff, fallback_files)
         };
 
+        Self::evaluate_diff_and_files(workspace_root, staged_only, diff_text, target_files).await
+    }
+
+    async fn evaluate_diff_and_files(
+        workspace_root: &Path,
+        staged_only: bool,
+        diff_text: String,
+        target_files: Vec<String>,
+    ) -> Result<(ReviewReport, String)> {
         let mut findings = Vec::new();
         let mut score = 100_u32;
         let mut low_deductions = 0_u32;
@@ -671,12 +743,15 @@ impl GitReviewer {
             lean_line
         );
 
-        Ok(ReviewReport {
-            total_score: score,
-            files_audited: target_files.len(),
-            findings,
-            summary,
-        })
+        Ok((
+            ReviewReport {
+                total_score: score,
+                files_audited: target_files.len(),
+                findings,
+                summary,
+            },
+            diff_text,
+        ))
     }
 
     /// Deducts points for `LOW` severity style/nesting notices while capping cumulative
@@ -914,6 +989,85 @@ mod tests {
             !report.findings.iter().any(|f| f.category == "Security"),
             "bun.lock and node_modules must never trigger security findings: {:?}",
             report.findings
+        );
+    }
+
+    #[tokio::test]
+    async fn test_review_workspace_with_range_audits_clean_post_merge_head_commit() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let root = dir.path();
+
+        for args in [
+            vec!["init"],
+            vec!["config", "user.name", "Reviewer Test"],
+            vec!["config", "user.email", "reviewer@minicode.local"],
+        ] {
+            tokio::process::Command::new("git")
+                .args(&args)
+                .current_dir(root)
+                .output()
+                .await
+                .expect("git setup");
+        }
+
+        std::fs::write(root.join("README.md"), "# pulse\n").expect("write readme");
+        tokio::process::Command::new("git")
+            .args(["add", "README.md"])
+            .current_dir(root)
+            .output()
+            .await
+            .expect("git add base");
+        tokio::process::Command::new("git")
+            .args(["commit", "-m", "chore: initial"])
+            .current_dir(root)
+            .output()
+            .await
+            .expect("git commit base");
+
+        std::fs::create_dir_all(root.join("src")).expect("mkdir src");
+        std::fs::create_dir_all(root.join("tests")).expect("mkdir tests");
+        std::fs::write(
+            root.join("src/calc.ts"),
+            "export function sumCents(items: number[]): number {\n  return items.reduce((a, b) => a + b, 0);\n}\n",
+        )
+        .expect("write src/calc.ts");
+        std::fs::write(
+            root.join("tests/calc.test.ts"),
+            "import test from 'node:test';\nimport assert from 'node:assert/strict';\nimport { sumCents } from '../src/calc.ts';\ntest('sums', () => assert.equal(sumCents([10, 20]), 30));\n",
+        )
+        .expect("write tests/calc.test.ts");
+        tokio::process::Command::new("git")
+            .args(["add", "."])
+            .current_dir(root)
+            .output()
+            .await
+            .expect("git add feature");
+        tokio::process::Command::new("git")
+            .args(["commit", "-m", "feat: swarm merged wave"])
+            .current_dir(root)
+            .output()
+            .await
+            .expect("git commit feature");
+
+        let (report, raw_diff) = GitReviewer::review_workspace_with_range(root, false, None, None)
+            .await
+            .expect("review_workspace_with_range");
+
+        assert_eq!(
+            report.files_audited, 2,
+            "clean post-merge tree must audit HEAD~1..HEAD files (src + tests)"
+        );
+        assert!(
+            !report
+                .findings
+                .iter()
+                .any(|f| f.title.contains("Without Associated Tests")),
+            "merged test file in HEAD~1..HEAD must be recognized: {:?}",
+            report.findings
+        );
+        assert!(
+            raw_diff.contains("src/calc.ts") && raw_diff.contains("tests/calc.test.ts"),
+            "returned diff must include unified diff for post-merge review package"
         );
     }
 }

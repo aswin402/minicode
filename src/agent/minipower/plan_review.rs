@@ -204,9 +204,52 @@ pub fn review_structural(workspace_root: &Path, input: PlanReviewInput<'_>) -> P
                     '`' | '"' | '\'' | '(' | ')' | '[' | ']' | ',' | ';' | ':'
                 )
         }) {
-            let token = raw_token.trim_matches('.');
+            let token = raw_token.trim_end_matches('.');
             if !looks_like_workspace_file_token(token) {
                 continue;
+            }
+            // Module-relative import specifiers inside step prose (e.g. `'./filter.ts'` or
+            // `'../src/events.ts'` imported from `tests/analytics.test.ts`):
+            // - `./foo/bar.ts` strips the current-dir `./` prefix.
+            // - `../foo/bar.ts` (1-2 levels up) is valid module-relative prose when `<foo/bar.ts>`
+            //   resolves inside `workspace_root` under an existing top-level directory (`src/`, `lib/`, etc.),
+            //   whereas multi-level escapes (`../../../etc/passwd`) or `/outside.ts` remain blocked.
+            if let Some(dot_rel) = token.strip_prefix("./") {
+                if dot_rel.is_empty() || !dot_rel.contains('/') {
+                    // Sibling relative specifier like `./filter.ts` inside step prose is relative to
+                    // the step's module directory, not workspace root.
+                    continue;
+                }
+                if MiniPowerEngine::workspace_relative(workspace_root, dot_rel).is_some() {
+                    continue;
+                }
+            }
+            if token.starts_with("../") {
+                let mut rest = token;
+                let mut climb = 0usize;
+                while let Some(after) = rest.strip_prefix("../") {
+                    climb += 1;
+                    rest = after;
+                }
+                if (1..=2).contains(&climb)
+                    && !rest.is_empty()
+                    && MiniPowerEngine::workspace_relative(workspace_root, rest).is_some_and(
+                        |norm| {
+                            Path::new(&norm)
+                                .components()
+                                .next()
+                                .and_then(|c| match c {
+                                    std::path::Component::Normal(seg) => {
+                                        Some(workspace_root.join(seg).exists())
+                                    }
+                                    _ => None,
+                                })
+                                .unwrap_or(false)
+                        },
+                    )
+                {
+                    continue;
+                }
             }
             match MiniPowerEngine::workspace_relative(workspace_root, token) {
                 None => report.blocking.push(format!(
@@ -636,5 +679,29 @@ mod tests {
             .advisory
             .iter()
             .any(|a| a.contains("[LLM] Step does not cover error handling")));
+    }
+
+    #[test]
+    fn test_relative_es_module_specifiers_in_step_prose_do_not_false_block() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        std::fs::create_dir_all(dir.path().join("src")).expect("mkdir src");
+        std::fs::write(dir.path().join("src/events.ts"), "export interface Ev {}").unwrap();
+
+        let steps = s(&[
+            "Create src/revenue.ts importing './filter.ts' and './events.ts'",
+            "Create tests/analytics.test.ts importing '../src/filter.ts' and '../src/events.ts'",
+        ]);
+        let targets = s(&["src/revenue.ts"]);
+        let r = review_structural(dir.path(), input(&steps, &targets, None));
+        assert!(
+            !r.is_blocked(),
+            "Relative ES module specifiers must not false-block as absolute root paths: {:?}",
+            r.blocking
+        );
+
+        // Multi-level traversal outside workspace must still block
+        let escape_steps = s(&["Read secret from '../../../etc/passwd.txt'"]);
+        let r_escape = review_structural(dir.path(), input(&escape_steps, &targets, None));
+        assert!(r_escape.is_blocked());
     }
 }

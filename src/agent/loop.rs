@@ -85,6 +85,9 @@ pub struct AgentLoop {
     /// Stateful session-active skill names (inlined once or loaded via `vault_show`/`vault_load`),
     /// preventing duplicate multi-turn re-injection and keeping `allowed_tools` sticky across turns.
     pub(super) session_active_skills: indexmap::IndexSet<String>,
+    /// Foundation/framework signature for which the full `<recommended_miniblocks>` catalog was already
+    /// emitted in this session (re-emitted automatically if `kit_stack_add` changes the stack).
+    pub(super) session_emitted_ui_warehouse_sig: Option<String>,
     /// Index into `self.messages` up to which the prompt prefix is currently cached in provider KV memory.
     pub(super) kv_watermark_idx: usize,
     /// Timestamp of the last completed provider call (used for 5-minute KV TTL `idleCompact` expiry).
@@ -204,6 +207,7 @@ impl AgentLoop {
             session_active_mcp_servers: std::collections::HashSet::new(),
             session_active_tool_names: std::collections::HashSet::new(),
             session_active_skills: indexmap::IndexSet::new(),
+            session_emitted_ui_warehouse_sig: None,
             kv_watermark_idx: 0,
             last_provider_call_at: None,
             async_idle_wakeup_enabled: false,
@@ -536,15 +540,36 @@ impl AgentLoop {
             .cloned()
             .collect();
 
+        let current_ui_sig = crate::agent::orchestrator::WorkflowRouter::ui_warehouse_signature(
+            &self.workspace_root,
+        );
+        let omit_static_ui_warehouse = self
+            .session_emitted_ui_warehouse_sig
+            .as_deref()
+            .is_some_and(|prev| prev == current_ui_sig);
+        let context_pressure_pct =
+            ((active_context_tokens.saturating_mul(100)) / model_token_limit.max(1)).min(100) as u8;
+
         let (raw_workflow_enrichment, newly_inlined_skills) =
-            crate::agent::orchestrator::WorkflowRouter::enrich_state_driven_context_full(
+            crate::agent::orchestrator::WorkflowRouter::enrich_state_driven_context_with_delta(
                 &self.workspace_root,
                 user_prompt,
                 Some(&combined_excluded_skills),
                 Some(live_available_tools.clone()),
                 Some(live_active_tools.clone()),
+                crate::agent::orchestrator::SessionContextDeltaOptions {
+                    omit_static_ui_warehouse,
+                    context_pressure_pct: Some(context_pressure_pct),
+                },
             )
             .await;
+
+        if raw_workflow_enrichment
+            .as_deref()
+            .is_some_and(|enr| enr.contains("<recommended_miniblocks>"))
+        {
+            self.session_emitted_ui_warehouse_sig = Some(current_ui_sig);
+        }
 
         if !newly_inlined_skills.is_empty() {
             for s in &newly_inlined_skills {
@@ -988,7 +1013,7 @@ impl AgentLoop {
                         Ok(s) => s,
                         Err(e) => {
                             self.speculative_executor.cancel_all().await;
-                            if retry_count < max_retries {
+                            if retry_count < max_retries && e.is_retryable_provider_error() {
                                 retry_count += 1;
                                 let backoff_shift = retry_count.saturating_sub(1).min(4) as u32;
                                 let delay_secs =
@@ -1226,7 +1251,7 @@ impl AgentLoop {
                                 visible_text.len(),
                                 err_msg
                             );
-                        } else if retry_count < max_retries {
+                        } else if retry_count < max_retries && err.is_retryable_provider_error() {
                             retry_count += 1;
                             let backoff_shift = retry_count.saturating_sub(1).min(4) as u32;
                             let delay_secs =
@@ -1331,7 +1356,7 @@ impl AgentLoop {
                             let _ = event_sender.send(update_event);
                         }
                         Err(e) => {
-                            if retry_count < max_retries {
+                            if retry_count < max_retries && e.is_retryable_provider_error() {
                                 retry_count += 1;
                                 let backoff_shift = retry_count.saturating_sub(1).min(4) as u32;
                                 let delay_secs =

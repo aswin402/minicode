@@ -1013,21 +1013,18 @@ impl AgentLoop {
                     let next_step_num = summary.completed_tasks.saturating_add(1);
                     return match readiness {
                         ActiveStepReadiness::DeliverablesReady => format!(
-                            "\n\n{}\n[Plan Catch-Up: Preceding step(s) 1..={} marked [x] ({}/{} completed — do NOT re-update them). MANDATORY STEP CHECKPOINT: Primary deliverables for active step #{} (\"{}\") are on disk — finish any remaining wiring/imports for step #{} first if needed, otherwise call `update_progress(step=\"active\", status=\"completed\")` NOW BEFORE creating or editing files for step #{}!{}]",
+                            "\n\n{}\n[Plan {}/{} · Step #{} \"{}\" deliverables on disk — finish wiring or call `update_progress(step=\"active\", status=\"completed\")` before starting step #{}.{}]",
                             rem_hint,
-                            summary.completed_tasks,
                             summary.completed_tasks,
                             summary.total_tasks,
                             next_step_num,
                             next_active,
-                            next_step_num,
                             next_step_num.saturating_add(1),
                             miniblocks_hint
                         ),
                         ActiveStepReadiness::AwaitingVerification => format!(
-                            "\n\n{}\n[Plan Catch-Up: Preceding step(s) 1..={} marked [x] ({}/{} completed — do NOT re-update them). Active step [>] is now #{}: \"{}\" — file deliverables are on disk; complete its runtime build/lint/browser verification checks, then call `update_progress(step=\"active\", status=\"completed\")`.{}]",
+                            "\n\n{}\n[Plan {}/{} · Active [>] #{}: \"{}\" — run its build/lint/browser verification, then call `update_progress(step=\"active\", status=\"completed\")`.{}]",
                             rem_hint,
-                            summary.completed_tasks,
                             summary.completed_tasks,
                             summary.total_tasks,
                             next_step_num,
@@ -1035,9 +1032,8 @@ impl AgentLoop {
                             miniblocks_hint
                         ),
                         ActiveStepReadiness::InProgress => format!(
-                            "\n\n{}\n[Plan Catch-Up: Preceding step(s) 1..={} marked [x] ({}/{} completed — do NOT re-update them). Active step [>] is now #{}: \"{}\". Finish this step's remaining work and call `update_progress(step=\"active\", status=\"completed\")` immediately before starting the next step.{}]",
+                            "\n\n{}\n[Plan {}/{} · Active [>] #{}: \"{}\" — complete this step and call `update_progress(step=\"active\", status=\"completed\")` when done.{}]",
                             rem_hint,
-                            summary.completed_tasks,
                             summary.completed_tasks,
                             summary.total_tasks,
                             next_step_num,
@@ -1048,8 +1044,9 @@ impl AgentLoop {
                 } else if summary.completed_tasks == summary.total_tasks && summary.total_tasks > 0
                 {
                     return format!(
-                        "\n\n{}\n[Plan Catch-Up: All {} tasks are marked [x] (100% — do NOT call `update_progress`). Next: run `power_review` + `power_verify`, then `archive_plan`.]",
+                        "\n\n{}\n[Plan {}/{} (100% [x]) — run `power_review` + `power_verify`, then `archive_plan`.]",
                         rem_hint,
+                        summary.completed_tasks,
                         summary.total_tasks
                     );
                 }

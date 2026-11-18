@@ -121,6 +121,30 @@ pub fn emit_subagent_event(event: crate::agent::types::AgentEvent) {
     }
 }
 
+/// Returns `true` when the Orchestrator has a live non-mock LLM provider registered and we are
+/// executing on the top-level Orchestrator outside unit test harnesses.
+#[must_use]
+pub fn has_live_non_mock_runtime() -> bool {
+    if cfg!(test) || is_inside_minipub() {
+        return false;
+    }
+    let Some(lock) = LIVE_ORCHESTRATOR_MODEL.get() else {
+        return false;
+    };
+    let Ok(guard) = lock.read() else {
+        return false;
+    };
+    let Some((prov, model)) = guard.as_ref() else {
+        return false;
+    };
+    !prov.is_empty()
+        && !model.is_empty()
+        && !matches!(
+            prov.as_str(),
+            "mock" | "dummy" | "dummy-toolcall" | "test" | "noop"
+        )
+}
+
 /// Returns the Orchestrator's live active model if its provider matches `provider_name`.
 pub fn get_live_orchestrator_model_for_provider(provider_name: &str) -> Option<String> {
     let lock = LIVE_ORCHESTRATOR_MODEL.get()?;

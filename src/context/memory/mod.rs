@@ -5,6 +5,7 @@ pub mod intent;
 #[allow(clippy::module_inception)]
 pub mod memory;
 pub mod progressive_memory;
+pub mod task_dag;
 pub mod working_memory;
 
 #[allow(unused_imports)]

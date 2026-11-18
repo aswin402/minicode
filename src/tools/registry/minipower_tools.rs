@@ -20,7 +20,7 @@ pub fn get_schemas() -> Vec<ToolSchema> {
         // the system prompt); its dispatch handler remains for compatibility.
         ToolSchema {
             name: "power_brainstorm".to_string(),
-            description: "Start or persist the design phase for open-ended work (a new product or feature, a redesign, an architecture change) whose requirements or approach are not settled. Inspects live workspace state, sizes ceremony (`QuickTask`, `Spike`, `SmallChange`, `Project`), optionally saves a design specification (`spec`) to `<docs_dir>/core/spec.md` or a visual companion HTML mockup (`visual_mockup`) to `.minicode/brainstorm/`, runs the cold-reader Builder Check (`run_builder_check=true`), and guides `ask_user` / `record_decision` -> `create_plan` / `power_plan`. Do NOT use for small, fully specified changes or bug fixes.".to_string(),
+            description: "Start or persist the design phase for open-ended work (a new product or feature, a redesign, an architecture change) whose requirements or approach are not settled. Extracts settled `[D1..DN]` decisions to prune redundant `open_questions`, scores candidate `approaches` via AST symbol reuse & 4-axis Pareto dominance, persists `<docs_dir>/core/spec.md` + responsive HTML visual comparisons in `.minicode/brainstorm/` (with optional live `MiniBrowse` preview), and optionally dispatches a cold-reader `Architect` gap pass (`deep_audit=true`). Do NOT use for small, fully specified changes or bug fixes.".to_string(),
             parameters: json!({
                 "type": "object",
                 "properties": {
@@ -36,18 +36,43 @@ pub fn get_schemas() -> Vec<ToolSchema> {
                         "type": "string",
                         "description": "Optional ceremony size classification: 'quick_task', 'spike', 'small_change', or 'project'."
                     },
+                    "approaches": {
+                        "type": "array",
+                        "description": "Optional candidate architectural/product approaches (`2..=4` options) to rank via workspace AST symbol reuse & Pareto dominance, emitting ready-to-use `ask_user` trade-off cards and an HTML comparison board.",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "id": { "type": "string", "description": "Short identifier (e.g. 'opt_extend_graph')." },
+                                "title": { "type": "string", "description": "Concise approach name." },
+                                "summary": { "type": "string", "description": "1-2 sentence architectural summary." },
+                                "pros": { "type": "array", "items": { "type": "string" } },
+                                "cons": { "type": "array", "items": { "type": "string" } },
+                                "files_touched": { "type": "array", "items": { "type": "string" } },
+                                "complexity": { "type": "number", "description": "Estimated complexity on 1.0..=5.0 (default 2.5)." }
+                            },
+                            "required": ["title"]
+                        }
+                    },
                     "run_builder_check": {
                         "type": "boolean",
                         "description": "If true (or when size='project' and spec is provided), includes the cold-reader Builder Check prompt to surface missing builder decisions in one round."
                     },
+                    "deep_audit": {
+                        "type": "boolean",
+                        "description": "If true, dispatches an isolated read-only `Architect` subagent (`<= 4` turns) to audit the proposed design with fresh eyes for unstated assumptions, failure modes, and YAGNI cuts."
+                    },
                     "visual_mockup": {
                         "type": "string",
-                        "description": "Optional HTML wireframe/mockup snippet to write to `.minicode/brainstorm/<slug>.html` for visual inspection via `browser_navigate` / `browser_screenshot`."
+                        "description": "Optional HTML wireframe/mockup snippet to write to `.minicode/brainstorm/<slug>.html` for visual inspection via `MiniBrowse`."
+                    },
+                    "open_preview": {
+                        "type": "boolean",
+                        "description": "If true and a desktop GUI display is active, opens the generated `.minicode/brainstorm/<slug>.html` comparison board or visual mockup directly in `MiniBrowse`."
                     },
                     "open_questions": {
                         "type": "array",
                         "items": { "type": "string" },
-                        "description": "Optional list of unresolved design questions to clarify via `ask_user`."
+                        "description": "Optional list of unresolved design questions (questions already answered in `.minicode/decisions.md` or `spec.md` are automatically pruned)."
                     },
                     "branches": {
                         "type": "array",
@@ -564,6 +589,53 @@ async fn run_reviewer_subagent(
     }
 }
 
+/// Dispatches an isolated read-only `Architect` subagent (`max_turns <= 4`) as a fresh-eye
+/// pre-planning gap analyst (`Metis` lens) to surface unstated assumptions, failure modes, and YAGNI cuts.
+async fn run_architect_gap_subagent(
+    workspace_root: &Path,
+    topic: &str,
+    spec_excerpt: Option<&str>,
+    spec_rel: &str,
+) -> String {
+    let spec_block = spec_excerpt
+        .map(|s| {
+            let trimmed: String = s.chars().take(3200).collect();
+            format!("\n### Proposed Design Summary\n{trimmed}\n")
+        })
+        .unwrap_or_default();
+    let prompt = format!(
+        "You are an isolated read-only Staff Architect reviewing the proposed design for `{topic}` with fresh eyes before implementation starts.\n\
+         1. Inspect `.minicode/decisions.md` and `{spec_rel}` (plus at most 2-3 directly relevant source files via `batch_read` / `code_map` if needed; <= 4 tool calls total).\n\
+         2. Identify ONLY concrete pre-planning blind spots:\n\
+            - Unstated assumptions or boundary invariants that could break at integration time\n\
+            - Missing failure-mode / concurrency / state-lifecycle handling\n\
+            - Scope creep or YAGNI abstractions that should be cut in favor of reusing existing workspace modules\n\
+         3. Keep your report concise (< 220 words), bulleted, and grounded in exact workspace files/symbols. Do not modify any files.\n\
+         {spec_block}",
+    );
+    let app_cfg = crate::config::Config::load_for_workspace(workspace_root);
+    let mut config = crate::agent::subagent::SubagentConfig::for_role_with_minipub_config(
+        SubagentRole::Architect,
+        &app_cfg.agent.minipub,
+    );
+    config.max_turns = config.max_turns.min(4);
+    match crate::agent::orchestrator::MultiAgentOrchestrator::delegate_with_config(
+        workspace_root,
+        &prompt,
+        false,
+        None,
+        Some(config),
+    )
+    .await
+    {
+        Ok(result) => format!(
+            "\n### 🔭 Cold-Reader Architect Gap Pass\n{}\n",
+            crate::agent::orchestrator::MultiAgentOrchestrator::format_result(&result)
+        ),
+        Err(e) => format!("\n! Architect gap pass skipped: {}\n", e),
+    }
+}
+
 pub async fn dispatch(
     tool_name: &str,
     args: &serde_json::Value,
@@ -671,6 +743,18 @@ pub async fn dispatch(
                         )))?;
                 }
 
+                // Set-algebraic pruning of open questions already settled in `.minicode/decisions.md` or `spec.md`
+                let settled_decisions =
+                    crate::agent::minipower::brainstorm_algebra::extract_settled_decisions(
+                        workspace_root,
+                    );
+                let q_filter =
+                    crate::agent::minipower::brainstorm_algebra::filter_redundant_questions(
+                        &open_questions,
+                        &settled_decisions,
+                    );
+                open_questions = q_filter.active_questions;
+
                 let ceremony_size = crate::agent::minipower::CeremonySize::classify(
                     workspace_root,
                     topic,
@@ -682,6 +766,35 @@ pub async fn dispatch(
                     "\n**Detected Ceremony Size:** `{}`\n",
                     ceremony_size
                 ));
+
+                if !q_filter.pruned_questions.is_empty() {
+                    prompt.push_str("\n<pruned_settled_questions>\n");
+                    prompt.push_str(
+                        "### ✓ Pruned Already-Settled Questions (Do NOT re-ask via `ask_user`)\n",
+                    );
+                    for pq in &q_filter.pruned_questions {
+                        prompt.push_str(&format!(
+                            "- ~~{}~~ → already settled by **[{}]** _{}_ (`containment={:.0}%`)\n",
+                            pq.question,
+                            pq.matched_id,
+                            pq.matched_heading,
+                            pq.containment * 100.0
+                        ));
+                    }
+                    prompt.push_str("</pruned_settled_questions>\n");
+                }
+
+                // AST-grounded multi-criteria & 4-axis Pareto trade-off evaluation of candidate approaches
+                let approach_candidates =
+                    crate::agent::minipower::brainstorm_algebra::parse_approach_candidates(args);
+                let approach_eval =
+                    crate::agent::minipower::brainstorm_algebra::evaluate_approaches_against_ast(
+                        workspace_root,
+                        &approach_candidates,
+                    );
+                if !approach_eval.ranked.is_empty() {
+                    prompt.push_str(&approach_eval.format_markdown());
+                }
 
                 if !existing_branches.is_empty() {
                     let mut exploring_count = 0usize;
@@ -746,39 +859,72 @@ pub async fn dispatch(
                     .display()
                     .to_string();
 
-                if let Some(spec_text) = opt_str(args, "spec") {
-                    if !spec_text.trim().is_empty() {
-                        let entry = format!(
-                            "\n\n## Brainstorm Specification: {}\n\n{}\n",
-                            topic,
-                            spec_text.trim()
-                        );
-                        let spec_file = append_doc_entry(workspace_root, "spec.md", &entry)?;
-                        prompt.push_str(&format!(
-                            "\n\n✔ Persisted design specification for \"{}\" to `{}`.",
-                            topic,
-                            spec_file.display()
-                        ));
-                        rel_spec_path = spec_file
-                            .strip_prefix(workspace_root)
-                            .unwrap_or(&spec_file)
-                            .display()
-                            .to_string();
-                    }
+                let spec_input = opt_str(args, "spec").filter(|s| !s.trim().is_empty());
+                if let Some(spec_text) = spec_input {
+                    let entry = format!(
+                        "\n\n## Brainstorm Specification: {}\n\n{}\n",
+                        topic,
+                        spec_text.trim()
+                    );
+                    let spec_file = append_doc_entry(workspace_root, "spec.md", &entry)?;
+                    prompt.push_str(&format!(
+                        "\n\n✔ Persisted design specification for \"{}\" to `{}`.",
+                        topic,
+                        spec_file.display()
+                    ));
+                    rel_spec_path = spec_file
+                        .strip_prefix(workspace_root)
+                        .unwrap_or(&spec_file)
+                        .display()
+                        .to_string();
                 }
 
-                if let Some(mockup_html) = opt_str(args, "visual_mockup") {
-                    if !mockup_html.trim().is_empty() {
-                        let bs_dir = workspace_root.join(".minicode/brainstorm");
-                        let _ = std::fs::create_dir_all(&bs_dir);
-                        let slug = MiniPowerEngine::sanitize_slug(topic);
-                        let mockup_path = bs_dir.join(format!("{}.html", slug));
-                        if std::fs::write(&mockup_path, mockup_html).is_ok() {
-                            prompt.push_str(&format!(
-                                "\n\n🎨 **Visual Companion Mockup Saved:** `{}` (inspect via `browser_navigate` / `browser_screenshot`).",
-                                mockup_path.display()
-                            ));
+                let explicit_mockup =
+                    opt_str(args, "visual_mockup").filter(|m| !m.trim().is_empty());
+                let rendered_companion_html: Option<String> = explicit_mockup
+                    .map(String::from)
+                    .or_else(|| {
+                        (approach_eval.ranked.len() >= 2).then(|| {
+                            approach_eval.render_comparison_html(
+                                topic,
+                                &settled_decisions,
+                                &open_questions,
+                            )
+                        })
+                    });
+
+                if let Some(ref html_doc) = rendered_companion_html {
+                    let bs_root = workspace_root.join(".minicode/brainstorm");
+                    let _ = std::fs::create_dir_all(&bs_root);
+                    let slug = MiniPowerEngine::sanitize_slug(topic);
+                    let mockup_path = bs_root.join(format!("{}.html", slug));
+                    if std::fs::write(&mockup_path, html_doc).is_ok() {
+                        let want_preview = opt_bool(args, "open_preview", explicit_mockup.is_some());
+                        let mut preview_note = String::new();
+                        if want_preview
+                            && crate::agent::minipower::brainstorm_algebra::has_interactive_gui_display()
+                        {
+                            if let Ok(abs_path) = std::fs::canonicalize(&mockup_path) {
+                                if let Ok(file_url) = url::Url::from_file_path(&abs_path) {
+                                    if crate::tools::browser::BrowserController::navigate_and_snapshot(
+                                        file_url.as_str(),
+                                        crate::tools::browser::BrowserMode::Gui,
+                                        workspace_root,
+                                    )
+                                    .await
+                                    .is_ok()
+                                    {
+                                        preview_note =
+                                            " — opened live in `MiniBrowse` companion window".to_string();
+                                    }
+                                }
+                            }
                         }
+                        prompt.push_str(&format!(
+                            "\n\n🎨 **Visual Companion Mockup Saved:** `{}`{} (inspect via `browser_navigate` / `browser_screenshot`).",
+                            mockup_path.display(),
+                            preview_note
+                        ));
                     }
                 }
 
@@ -788,6 +934,22 @@ pub async fn dispatch(
                         topic,
                         &rel_spec_path,
                     ));
+                }
+
+                let want_deep_audit = match args.get("deep_audit").and_then(|v| v.as_bool()) {
+                    Some(explicit) => explicit,
+                    None => is_project && spec_input.is_some(),
+                };
+                if want_deep_audit && crate::agent::subagent::has_live_non_mock_runtime() {
+                    prompt.push_str(
+                        &run_architect_gap_subagent(
+                            workspace_root,
+                            topic,
+                            spec_input,
+                            &rel_spec_path,
+                        )
+                        .await,
+                    );
                 }
 
                 let has_decisions =
@@ -901,6 +1063,23 @@ pub async fn dispatch(
                     let has_existing_roadmap = wm.read_active_plan_summary().is_some();
                     if has_existing_roadmap {
                         wm.init_tactical_subplan(topic, &steps)?;
+                        if let Some(mut existing_dag) =
+                            crate::context::memory::task_dag::PlanDag::load(workspace_root)
+                        {
+                            if let Some(node) = existing_dag
+                                .nodes
+                                .iter_mut()
+                                .find(|n| n.title.eq_ignore_ascii_case(topic))
+                            {
+                                node.substeps = steps
+                                    .iter()
+                                    .map(|s| {
+                                        crate::context::working_memory::WorkingMemory::sanitize_step_title(s)
+                                    })
+                                    .collect();
+                                let _ = existing_dag.save(workspace_root);
+                            }
+                        }
                     } else {
                         let step_substeps: Vec<Vec<String>> = steps
                             .iter()
@@ -915,6 +1094,14 @@ pub async fn dispatch(
                             None,
                             None,
                         )?;
+                        if let Ok(dag) = crate::context::memory::task_dag::PlanDag::from_plan_args(
+                            topic,
+                            args,
+                            &steps,
+                            &step_substeps,
+                        ) {
+                            let _ = dag.save(workspace_root);
+                        }
                     }
 
                     for (idx, step_raw) in steps.iter().enumerate() {
@@ -1013,7 +1200,13 @@ pub async fn dispatch(
                 let base_sha = opt_str(args, "base_sha");
                 let head_sha = opt_str(args, "head_sha");
 
-                let report = GitReviewer::review_workspace(workspace_root, staged_only).await?;
+                let (report, raw_audited_diff) = GitReviewer::review_workspace_with_range(
+                    workspace_root,
+                    staged_only,
+                    base_sha,
+                    head_sha,
+                )
+                .await?;
                 let mut formatted = GitReviewer::format_report(&report);
 
                 let mp_task =
@@ -1031,13 +1224,19 @@ pub async fn dispatch(
                         .collect::<Vec<_>>()
                         .join("\n")
                 };
+                let package_body = if raw_audited_diff.trim().is_empty() {
+                    diff_summary.clone()
+                } else {
+                    let capped_diff: String = raw_audited_diff.chars().take(65_536).collect();
+                    format!("{diff_summary}\n\n```diff\n{capped_diff}\n```")
+                };
 
                 if let Ok(pkg_path) = MiniPowerEngine::write_review_package(
                     workspace_root,
                     None,
                     base_sha,
                     head_sha,
-                    &diff_summary,
+                    &package_body,
                 ) {
                     let rel_pkg = pkg_path
                         .strip_prefix(workspace_root)
@@ -1177,7 +1376,15 @@ pub async fn dispatch(
                     serde_json::to_string_pretty(&review_state).unwrap_or_default(),
                 );
 
-                if opt_bool(args, "subagent_review", false) {
+                let should_run_subagent_review =
+                    match args.get("subagent_review").and_then(|v| v.as_bool()) {
+                        Some(explicit) => explicit,
+                        None => {
+                            report.files_audited >= 3
+                                && crate::agent::subagent::has_live_non_mock_runtime()
+                        }
+                    };
+                if should_run_subagent_review {
                     let subagent_payload = if formatted.contains(&reviewer_rubric) {
                         formatted.clone()
                     } else {
@@ -1194,7 +1401,7 @@ pub async fn dispatch(
                         .await,
                     );
                 }
-                let reviewer_still_running = opt_bool(args, "subagent_review", false)
+                let reviewer_still_running = should_run_subagent_review
                     && crate::agent::subagent::try_get_global_subagent_pool()
                         .is_some_and(|p| p.active_worker_count() > 0);
                 if actionable_count > 0 {
@@ -1610,6 +1817,64 @@ mod tests {
         assert!(temp
             .path()
             .join(".minicode/brainstorm/distributed-cache.html")
+            .exists());
+    }
+
+    #[tokio::test]
+    async fn test_power_brainstorm_prunes_settled_questions_and_scores_approaches() {
+        let temp = tempfile::tempdir().unwrap();
+        let ws = temp.path();
+        crate::agent::decisions::upsert_decision(
+            ws,
+            "Database Storage Engine",
+            "Use SQLite with rusqlite WAL mode for local persistence",
+            Some("Zero external server setup"),
+        )
+        .unwrap();
+
+        let out = dispatch(
+            "power_brainstorm",
+            &json!({
+                "topic": "Local Sync Engine",
+                "open_questions": [
+                    "Should database storage use SQLite persistence?",
+                    "Should conflict resolution use Lamport timestamps or CRDTs?"
+                ],
+                "approaches": [
+                    {
+                        "id": "opt_crdt",
+                        "title": "Full Op-Based CRDT Log",
+                        "summary": "Maintain causal op log per field",
+                        "pros": ["Automatic offline merge"],
+                        "cons": ["Tombstone memory growth", "Complex schema migration"],
+                        "files_touched": ["src/sync/crdt.rs", "src/sync/log.rs", "src/sync/gc.rs"],
+                        "complexity": 4.2
+                    },
+                    {
+                        "id": "opt_lww",
+                        "title": "Hybrid Logical Clock LWW Rows",
+                        "summary": "Per-record HLC column inside SQLite tables",
+                        "pros": ["Minimal SQLite schema overhead", "Deterministic merge", "Zero tombstones"],
+                        "cons": ["Row-level granularity"],
+                        "files_touched": ["src/sync/hlc.rs"],
+                        "complexity": 1.8
+                    }
+                ]
+            }),
+            ws,
+        )
+        .await
+        .unwrap()
+        .unwrap();
+
+        assert!(out.contains("<pruned_settled_questions>"));
+        assert!(out.contains("[D1]"));
+        assert!(out.contains("resolve the 1 open design question(s)"));
+        assert!(out.contains("<approach_pareto_matrix>"));
+        assert!(out.contains("Hybrid Logical Clock LWW Rows"));
+        assert!(out.contains("Ready `ask_user` trade-off options"));
+        assert!(ws
+            .join(".minicode/brainstorm/local-sync-engine.html")
             .exists());
     }
 

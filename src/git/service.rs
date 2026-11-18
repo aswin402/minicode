@@ -169,6 +169,26 @@ impl GitService {
         Ok(DiffFilter::filter_diff(&raw_diff))
     }
 
+    /// Returns `(filtered_diff, changed_files)` between two git refs (e.g. `HEAD~1..HEAD` or `base..head`).
+    pub async fn diff_range(
+        &self,
+        base_ref: &str,
+        head_ref: &str,
+    ) -> Result<(String, Vec<String>)> {
+        let range = format!("{}..{}", base_ref.trim(), head_ref.trim());
+        let raw_diff = self.run_git(&["diff", &range]).await?;
+        let names_out = self.run_git(&["diff", "--name-only", &range]).await?;
+        let mut files: Vec<String> = names_out
+            .lines()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(String::from)
+            .collect();
+        files.sort();
+        files.dedup();
+        Ok((DiffFilter::filter_diff(&raw_diff), files))
+    }
+
     /// Returns the content of a file at git HEAD (useful for AST diffs).
     pub async fn show_file_at_head(&self, relative_path: &str) -> Result<String> {
         let target = format!("HEAD:{}", relative_path.trim_start_matches('/'));

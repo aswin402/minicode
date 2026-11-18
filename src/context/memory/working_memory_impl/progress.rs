@@ -858,6 +858,9 @@ impl WorkingMemory {
             }
         }
 
+        // Synchronize `.minicode/plan/task_dag.json` node statuses with canonical tasks
+        self.sync_task_dag_statuses();
+
         // When all tasks in the active plan and roadmap are completed, ensure progress.md and core docs reflect 100% completion
         if self.is_all_project_tasks_completed() {
             let p_path = self.progress_path();
@@ -872,5 +875,409 @@ impl WorkingMemory {
         }
 
         Ok((is_any_modified, resolved_title))
+    }
+
+    /// Synchronizes `.minicode/plan/task_dag.json` node statuses from canonical `todo.md` / `task_plan.md`.
+    pub fn sync_task_dag_statuses(&self) {
+        let Some(mut dag) = crate::context::memory::task_dag::PlanDag::load(&self.workspace_root)
+        else {
+            return;
+        };
+        let macro_tasks: Vec<super::TaskItem> = self
+            .read_roadmap_milestones()
+            .into_iter()
+            .find(|m| m.is_active)
+            .map(|m| m.tasks)
+            .filter(|t| !t.is_empty())
+            .unwrap_or_else(|| self.read_task_plan_tasks());
+        if !macro_tasks.is_empty() && dag.sync_statuses_from_tasks(&macro_tasks) {
+            let _ = dag.save(&self.workspace_root);
+        }
+    }
+
+    fn resolve_macro_task_index(tasks: &[super::TaskItem], selector: &str) -> Option<usize> {
+        let trimmed = selector.trim();
+        if trimmed.is_empty() {
+            return None;
+        }
+        if trimmed.eq_ignore_ascii_case("active") || trimmed.eq_ignore_ascii_case("current") {
+            return tasks
+                .iter()
+                .position(|t| t.status == TaskItemStatus::InProgress)
+                .or_else(|| {
+                    tasks
+                        .iter()
+                        .position(|t| t.status == TaskItemStatus::Pending)
+                });
+        }
+        if let Ok(one_based) = trimmed.parse::<usize>() {
+            if one_based >= 1 && one_based <= tasks.len() {
+                return Some(one_based - 1);
+            }
+        }
+        let needle = Self::sanitize_step_title(trimmed).to_ascii_lowercase();
+        tasks.iter().position(|t| {
+            let tl = Self::sanitize_step_title(&t.title).to_ascii_lowercase();
+            tl == needle || tl.contains(&needle) || needle.contains(&tl)
+        })
+    }
+
+    fn rewrite_canonical_macro_tasks(&self, title: &str, tasks: &[super::TaskItem]) -> Result<()> {
+        let dir = self.plan_dir();
+        fs::create_dir_all(&dir).map_err(|e| ContextError::Memory(e.to_string()))?;
+        let timestamp = Utc::now().format(TIMESTAMP_FORMAT).to_string();
+
+        let todo_path = self.canonical_todo_path();
+        if let Some(parent) = todo_path.parent() {
+            let _ = fs::create_dir_all(parent);
+        }
+        let mut todo_out = format!(
+            "# Tasks & Milestone Roadmap: {}\n\n> Updated: {}\n\n## Active Milestone: {}\n",
+            title, timestamp, title
+        );
+        for task in tasks {
+            let marker = match task.status {
+                TaskItemStatus::Completed => "[x]",
+                TaskItemStatus::InProgress => "[>]",
+                TaskItemStatus::Pending => "[ ]",
+            };
+            todo_out.push_str(&format!("- {} {}\n", marker, task.title));
+            for sub in &task.sub_tasks {
+                let sub_marker = match sub.status {
+                    TaskItemStatus::Completed => "[x]",
+                    TaskItemStatus::InProgress => "[>]",
+                    TaskItemStatus::Pending => "[ ]",
+                };
+                todo_out.push_str(&format!("  - {} {}\n", sub_marker, sub.title));
+            }
+        }
+        fs::write(&todo_path, todo_out).map_err(|e| ContextError::Memory(e.to_string()))?;
+
+        if !self.is_tactical_subplan() {
+            let mut plan_out = format!(
+                "# Task Plan: {}\n\n> Created: {}\n> Mode: direct\n\n## Objectives & Steps:\n",
+                title, timestamp
+            );
+            for (idx, task) in tasks.iter().enumerate() {
+                let marker = match task.status {
+                    TaskItemStatus::Completed => "[x]",
+                    TaskItemStatus::InProgress => "[>]",
+                    TaskItemStatus::Pending => "[ ]",
+                };
+                plan_out.push_str(&format!("{}. {} {}\n", idx + 1, marker, task.title));
+            }
+            fs::write(self.task_plan_path(), plan_out)
+                .map_err(|e| ContextError::Memory(e.to_string()))?;
+        }
+        Ok(())
+    }
+
+    /// Mid-flight adaptive mutation: inserts a new step into the active plan without losing
+    /// completed `[x]` progress, updating `todo.md`, `task_plan.md`, and `task_dag.json`.
+    #[allow(clippy::too_many_arguments)]
+    pub fn add_step_in_place(
+        &self,
+        new_step: &str,
+        after_step: Option<&str>,
+        substeps: &[String],
+        target_files: &[String],
+        depends_on: &[String],
+        role: Option<&str>,
+        verify_cmd: Option<&str>,
+    ) -> Result<String> {
+        let clean_title = Self::sanitize_step_title(new_step);
+        if clean_title.is_empty() {
+            return Err(ContextError::Memory("Cannot add an empty plan step.".to_string()).into());
+        }
+        let mut tasks = self
+            .read_roadmap_milestones()
+            .into_iter()
+            .find(|m| m.is_active)
+            .map(|m| m.tasks)
+            .filter(|t| !t.is_empty())
+            .unwrap_or_else(|| self.read_task_plan_tasks());
+        if tasks.is_empty() {
+            return Err(ContextError::Memory(
+                "No active plan exists yet; call `create_plan` first.".to_string(),
+            )
+            .into());
+        }
+
+        let has_in_progress = tasks.iter().any(|t| t.status == TaskItemStatus::InProgress);
+        let has_pending = tasks.iter().any(|t| t.status == TaskItemStatus::Pending);
+        let new_status = if !has_in_progress && !has_pending {
+            TaskItemStatus::InProgress
+        } else {
+            TaskItemStatus::Pending
+        };
+
+        let parsed_subs: Vec<super::TaskItem> = substeps
+            .iter()
+            .enumerate()
+            .map(|(i, s)| super::TaskItem {
+                line_index: i,
+                status: if i == 0 && new_status == TaskItemStatus::InProgress {
+                    TaskItemStatus::InProgress
+                } else {
+                    TaskItemStatus::Pending
+                },
+                title: Self::sanitize_step_title(s),
+                sub_tasks: Vec::new(),
+            })
+            .filter(|st| !st.title.is_empty())
+            .collect();
+
+        let insert_pos = after_step
+            .and_then(|sel| Self::resolve_macro_task_index(&tasks, sel))
+            .map(|idx| idx + 1)
+            .unwrap_or(tasks.len());
+
+        tasks.insert(
+            insert_pos,
+            super::TaskItem {
+                line_index: insert_pos,
+                status: new_status,
+                title: clean_title.clone(),
+                sub_tasks: parsed_subs,
+            },
+        );
+
+        let plan_title = self
+            .read_roadmap_root_title()
+            .or_else(|| self.read_task_plan_title())
+            .unwrap_or_else(|| "Active Plan".to_string());
+
+        if let Some(mut dag) = crate::context::memory::task_dag::PlanDag::load(&self.workspace_root)
+        {
+            let next_id = format!("t{}", dag.nodes.len() + 1);
+            let unique_id = if dag.nodes.iter().any(|n| n.id == next_id) {
+                format!("t{}_{}", dag.nodes.len() + 1, insert_pos + 1)
+            } else {
+                next_id
+            };
+            let resolved_deps = if !depends_on.is_empty() {
+                dag.explicit_dependencies = true;
+                depends_on.to_vec()
+            } else if insert_pos > 0 && insert_pos <= dag.nodes.len() {
+                vec![dag.nodes[insert_pos - 1].id.clone()]
+            } else {
+                Vec::new()
+            };
+            let normalized_files: Vec<String> = if target_files.is_empty() {
+                Self::extract_candidate_files(&clean_title)
+            } else {
+                target_files
+                    .iter()
+                    .map(|p| crate::context::memory::task_dag::normalize_boundary_path(p))
+                    .filter(|p| !p.is_empty())
+                    .collect()
+            };
+            dag.nodes.insert(
+                insert_pos.min(dag.nodes.len()),
+                crate::context::memory::task_dag::PlanDagNode {
+                    id: unique_id,
+                    title: clean_title.clone(),
+                    description: clean_title.clone(),
+                    substeps: substeps
+                        .iter()
+                        .map(|s| Self::sanitize_step_title(s))
+                        .filter(|s| !s.is_empty())
+                        .collect(),
+                    target_files: normalized_files,
+                    depends_on: resolved_deps,
+                    role: role
+                        .map(str::trim)
+                        .filter(|s| !s.is_empty())
+                        .map(String::from),
+                    verify_cmd: verify_cmd
+                        .map(str::trim)
+                        .filter(|s| !s.is_empty())
+                        .map(String::from),
+                    status: new_status,
+                },
+            );
+            dag.updated_at = Utc::now().to_rfc3339();
+            let _ = dag.compute_execution_topology()?;
+            dag.save(&self.workspace_root)?;
+        }
+
+        self.rewrite_canonical_macro_tasks(&plan_title, &tasks)?;
+        let timestamp = Utc::now().format(TIMESTAMP_FORMAT).to_string();
+        let entry = format!(
+            "\n- [{}] **Adapted Plan (+Step #{})**: {}\n",
+            timestamp,
+            insert_pos + 1,
+            clean_title
+        );
+        let _ = fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(self.progress_path())
+            .and_then(|mut f| f.write_all(entry.as_bytes()));
+
+        Ok(clean_title)
+    }
+
+    /// Mid-flight adaptive mutation: splits a macro step into nested tactical `substeps`.
+    pub fn split_step_in_place(&self, target_step: &str, substeps: &[String]) -> Result<String> {
+        let clean_subs: Vec<String> = substeps
+            .iter()
+            .map(|s| Self::sanitize_step_title(s))
+            .filter(|s| !s.is_empty())
+            .collect();
+        if clean_subs.is_empty() {
+            return Err(ContextError::Memory(
+                "`split` requires a non-empty `substeps` array.".to_string(),
+            )
+            .into());
+        }
+        let mut tasks = self
+            .read_roadmap_milestones()
+            .into_iter()
+            .find(|m| m.is_active)
+            .map(|m| m.tasks)
+            .filter(|t| !t.is_empty())
+            .unwrap_or_else(|| self.read_task_plan_tasks());
+        let Some(idx) = Self::resolve_macro_task_index(&tasks, target_step) else {
+            return Err(ContextError::Memory(format!(
+                "Could not find plan step matching `{}` to split.",
+                target_step
+            ))
+            .into());
+        };
+        let matched_title = tasks[idx].title.clone();
+        let is_active = tasks[idx].status == TaskItemStatus::InProgress;
+
+        if let Some(mut dag) = crate::context::memory::task_dag::PlanDag::load(&self.workspace_root)
+        {
+            if let Some(node) = dag
+                .nodes
+                .iter_mut()
+                .find(|n| n.title.eq_ignore_ascii_case(&matched_title))
+            {
+                node.substeps.clone_from(&clean_subs);
+                dag.updated_at = Utc::now().to_rfc3339();
+                let _ = dag.save(&self.workspace_root);
+            }
+        }
+
+        if is_active {
+            self.init_tactical_subplan(&matched_title, &clean_subs)?;
+        } else {
+            tasks[idx].sub_tasks = clean_subs
+                .iter()
+                .enumerate()
+                .map(|(i, s)| super::TaskItem {
+                    line_index: i,
+                    status: TaskItemStatus::Pending,
+                    title: s.clone(),
+                    sub_tasks: Vec::new(),
+                })
+                .collect();
+            let plan_title = self
+                .read_roadmap_root_title()
+                .or_else(|| self.read_task_plan_title())
+                .unwrap_or_else(|| "Active Plan".to_string());
+            self.rewrite_canonical_macro_tasks(&plan_title, &tasks)?;
+        }
+        Ok(matched_title)
+    }
+
+    /// Mid-flight adaptive mutation: drops an obsolete uncompleted step from the active plan
+    /// while preserving completed `[x]` tasks and rewiring downstream sequential dependencies.
+    pub fn drop_step_in_place(&self, target_step: &str, reason: Option<&str>) -> Result<String> {
+        let mut tasks = self
+            .read_roadmap_milestones()
+            .into_iter()
+            .find(|m| m.is_active)
+            .map(|m| m.tasks)
+            .filter(|t| !t.is_empty())
+            .unwrap_or_else(|| self.read_task_plan_tasks());
+        let Some(idx) = Self::resolve_macro_task_index(&tasks, target_step) else {
+            return Err(ContextError::Memory(format!(
+                "Could not find plan step matching `{}` to drop.",
+                target_step
+            ))
+            .into());
+        };
+        if tasks[idx].status == TaskItemStatus::Completed {
+            return Err(ContextError::Memory(format!(
+                "Step `{}` is already completed (`[x]`) and cannot be dropped.",
+                tasks[idx].title
+            ))
+            .into());
+        }
+        if tasks.len() <= 1 {
+            return Err(ContextError::Memory(
+                "Cannot drop the sole remaining step in the plan; call `archive_plan` or `create_plan` instead.".to_string(),
+            )
+            .into());
+        }
+
+        let removed = tasks.remove(idx);
+        if removed.status == TaskItemStatus::InProgress
+            && !tasks.iter().any(|t| t.status == TaskItemStatus::InProgress)
+        {
+            if let Some(next_pending) = tasks
+                .iter_mut()
+                .skip(idx)
+                .find(|t| t.status == TaskItemStatus::Pending)
+            {
+                next_pending.status = TaskItemStatus::InProgress;
+            } else if let Some(any_pending) = tasks
+                .iter_mut()
+                .find(|t| t.status == TaskItemStatus::Pending)
+            {
+                any_pending.status = TaskItemStatus::InProgress;
+            }
+            if self.is_tactical_subplan() {
+                let _ = fs::remove_file(self.task_plan_path());
+            }
+        }
+
+        let plan_title = self
+            .read_roadmap_root_title()
+            .or_else(|| self.read_task_plan_title())
+            .unwrap_or_else(|| "Active Plan".to_string());
+        self.rewrite_canonical_macro_tasks(&plan_title, &tasks)?;
+
+        if let Some(mut dag) = crate::context::memory::task_dag::PlanDag::load(&self.workspace_root)
+        {
+            if let Some(d_idx) = dag
+                .nodes
+                .iter()
+                .position(|n| n.title.eq_ignore_ascii_case(&removed.title))
+            {
+                let dropped_node = dag.nodes.remove(d_idx);
+                let inherited_deps = dropped_node.depends_on;
+                for node in &mut dag.nodes {
+                    if let Some(pos) = node.depends_on.iter().position(|d| d == &dropped_node.id) {
+                        node.depends_on.remove(pos);
+                        for dep in &inherited_deps {
+                            if dep != &node.id && !node.depends_on.contains(dep) {
+                                node.depends_on.push(dep.clone());
+                            }
+                        }
+                    }
+                }
+                dag.sync_statuses_from_tasks(&tasks);
+                dag.updated_at = Utc::now().to_rfc3339();
+                let _ = dag.save(&self.workspace_root);
+            }
+        }
+
+        let timestamp = Utc::now().format(TIMESTAMP_FORMAT).to_string();
+        let why = reason.unwrap_or("superseded during implementation");
+        let entry = format!(
+            "\n- [{}] **Adapted Plan (-Dropped)**: {} _(reason: {})_\n",
+            timestamp, removed.title, why
+        );
+        let _ = fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(self.progress_path())
+            .and_then(|mut f| f.write_all(entry.as_bytes()));
+
+        Ok(removed.title)
     }
 }

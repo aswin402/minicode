@@ -763,6 +763,7 @@ impl AgentLoop {
         self.session_active_mcp_servers.clear();
         self.session_active_tool_names.clear();
         self.session_active_skills.clear();
+        self.session_emitted_ui_warehouse_sig = None;
         self.fetch_tracker.clear();
         self._active_guard = None;
         crate::context::budget::ccr_cache::reclaim_idle_heap();

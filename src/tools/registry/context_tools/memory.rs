@@ -83,18 +83,37 @@ pub fn get_schemas() -> Vec<ToolSchema> {
                                 {
                                     "type": "object",
                                     "properties": {
+                                        "id": { "type": "string", "description": "Optional task DAG node ID (e.g. 't1_schema')." },
                                         "title": { "type": "string" },
                                         "description": { "type": "string" },
                                         "substeps": {
                                             "type": "array",
                                             "items": { "type": "string" },
                                             "description": "Tier-2 tactical sub-steps nested under this macro task (recommended whenever a phase builds 2+ sections/components or runs multi-stage verification)."
+                                        },
+                                        "target_files": {
+                                            "type": "array",
+                                            "items": { "type": "string" },
+                                            "description": "Relative file/directory write boundaries touched by this step (enables conflict-free parallel sub-wave coloring)."
+                                        },
+                                        "depends_on": {
+                                            "type": "array",
+                                            "items": { "type": "string" },
+                                            "description": "Upstream step IDs (`t1`, `t2`, ...) that must finish before this step runs (`[]` for Wave-0 roots)."
+                                        },
+                                        "role": {
+                                            "type": "string",
+                                            "description": "Optional MiniPub worker role (`coder`, `frontend`, `backend`, `tester`, `scout`)."
+                                        },
+                                        "verify_cmd": {
+                                            "type": "string",
+                                            "description": "Optional command verifying this step's deliverable."
                                         }
                                     }
                                 }
                             ]
                         },
-                        "description": "Ordered list of macro tasks or tactical action steps (optionally with nested `substeps` per task)"
+                        "description": "Ordered list of macro tasks or DAG step objects (optionally with `substeps`, `target_files`, and `depends_on` for parallel wave scheduling)"
                     },
                     "architecture": {
                         "type": "string",
@@ -164,13 +183,18 @@ pub fn get_schemas() -> Vec<ToolSchema> {
         },
         ToolSchema {
             name: "update_progress".to_string(),
-            description: "Immediately update the status of the active task step (`step=\"active\"`, `status=\"completed\"`) or a specific step right when its work finishes so the live TUI Todo tree advances step-by-step in real time (never defer `update_progress` calls to the end). Completing a step automatically promotes the next pending step to `[>]` `in_progress` — NEVER emit a second `update_progress(..., status=\"in_progress\")` call.".to_string(),
+            description: "Update active plan progress or adapt the plan mid-flight without losing `[x]` completed tasks. Default `action=\"update\"` marks `step` (`\"active\"` or index/title) as `status=\"completed\"` and auto-promotes the next pending step to `[>]` (never emit a second `in_progress` call). Pass `action=\"add\"` (`new_step`, optional `after_step`/`substeps`/`target_files`/`depends_on`), `action=\"split\"` (`step`, `substeps`), or `action=\"drop\"` (`step`, optional `reason`) when runtime discoveries require adapting the plan.".to_string(),
             parameters: json!({
                 "type": "object",
                 "properties": {
+                    "action": {
+                        "type": "string",
+                        "enum": ["update", "add", "split", "drop"],
+                        "description": "Operation: 'update' (default status transition), 'add' (insert step), 'split' (decompose step into substeps), or 'drop' (remove obsolete uncompleted step)."
+                    },
                     "step": {
                         "type": "string",
-                        "description": "The description or 1-based number of the step matching the task plan"
+                        "description": "Target step ('active', 1-based number, or title match)"
                     },
                     "steps": {
                         "type": "array",
@@ -179,10 +203,37 @@ pub fn get_schemas() -> Vec<ToolSchema> {
                     },
                     "status": {
                         "type": "string",
-                        "description": "The status (e.g. 'Completed', 'In Progress', 'Blocked')"
+                        "description": "Target status when action='update' (e.g. 'completed', 'in_progress', 'pending')"
+                    },
+                    "new_step": {
+                        "type": "string",
+                        "description": "Title of the newly discovered step when action='add'"
+                    },
+                    "after_step": {
+                        "type": "string",
+                        "description": "Optional step ('active', 1-based index, or title) after which to insert `new_step` (defaults to end of plan)"
+                    },
+                    "substeps": {
+                        "type": "array",
+                        "items": { "type": "string" },
+                        "description": "Nested tactical sub-steps when action='split' or action='add'"
+                    },
+                    "target_files": {
+                        "type": "array",
+                        "items": { "type": "string" },
+                        "description": "Optional write-boundary file paths when action='add'"
+                    },
+                    "depends_on": {
+                        "type": "array",
+                        "items": { "type": "string" },
+                        "description": "Optional upstream DAG node IDs when action='add'"
+                    },
+                    "reason": {
+                        "type": "string",
+                        "description": "Optional rationale recorded in progress.md when action='drop'"
                     }
                 },
-                "required": ["status"]
+                "required": []
             }),
         },
         ToolSchema {
@@ -882,6 +933,17 @@ pub async fn dispatch(
                     );
                 }
             }
+            let plan_dag = crate::context::memory::task_dag::PlanDag::from_plan_args(
+                title,
+                args,
+                &steps,
+                &step_substeps,
+            )
+            .map_err(|e| ToolError::InvalidArguments {
+                name: "create_plan".to_string(),
+                reason: e.to_string(),
+            })?;
+            let topology_note = plan_dag.format_topology_note();
             let _ = std::fs::remove_file(workspace_root.join(".minicode/plan/last_verify.json"));
             let _ = std::fs::remove_file(workspace_root.join(".minicode/plan/last_review.json"));
             wm.init_two_tier_plan_with_substeps(
@@ -891,12 +953,19 @@ pub async fn dispatch(
                 architecture,
                 milestones.as_deref(),
             )?;
+            let _ = plan_dag.save(workspace_root);
             let assumptions = param::opt_string_array(args, "assumptions").unwrap_or_default();
             if let Err(e) =
                 crate::agent::decisions::record_assumptions(workspace_root, title, &assumptions)
             {
                 tracing::warn!("Failed to record plan assumptions: {}", e);
             }
+            crate::context::memory::task_dag::hydrate_canonical_spec_if_stub(
+                workspace_root,
+                title,
+                architecture,
+                &plan_dag,
+            );
             let first_step = steps
                 .first()
                 .map(|s| crate::context::working_memory::WorkingMemory::sanitize_step_title(s))
@@ -912,6 +981,9 @@ pub async fn dispatch(
                     )
                 })
                 .unwrap_or_default();
+            if !topology_note.is_empty() {
+                triad_note.push_str(&topology_note);
+            }
             if review.as_ref().is_some_and(|r| !r.advisory.is_empty())
                 && crate::agent::decisions::read_for_prompt(workspace_root).is_some()
             {
@@ -992,6 +1064,81 @@ pub async fn dispatch(
             ))
         })()),
         "update_progress" => Some((|| {
+            let wm = crate::context::working_memory::WorkingMemory::new(workspace_root);
+            let action = param::opt_str(args, "action")
+                .unwrap_or("update")
+                .trim()
+                .to_ascii_lowercase();
+
+            match action.as_str() {
+                "add" | "insert" | "append" => {
+                    let new_step = param::require_str_with_aliases(
+                        args,
+                        &["new_step", "title", "step", "task"],
+                        "update_progress",
+                    )?;
+                    let after_step = param::opt_str(args, "after_step")
+                        .or_else(|| param::opt_str(args, "after"));
+                    let substeps = param::opt_string_array(args, "substeps").unwrap_or_default();
+                    let target_files = param::opt_string_array(args, "target_files")
+                        .or_else(|| param::opt_string_array(args, "files"))
+                        .unwrap_or_default();
+                    let depends_on = param::opt_string_array(args, "depends_on")
+                        .or_else(|| param::opt_string_array(args, "dependencies"))
+                        .unwrap_or_default();
+                    let role = param::opt_str(args, "role");
+                    let verify_cmd = param::opt_str(args, "verify_cmd")
+                        .or_else(|| param::opt_str(args, "check_cmd"));
+                    let added = wm.add_step_in_place(
+                        new_step,
+                        after_step,
+                        &substeps,
+                        &target_files,
+                        &depends_on,
+                        role,
+                        verify_cmd,
+                    )?;
+                    let hint = wm.format_remaining_tasks_hint();
+                    return Ok(format!(
+                        "✔ Adapted active plan in-place: added step \"{}\" (completed `[x]` steps preserved).\n{}",
+                        added, hint
+                    ));
+                }
+                "split" | "decompose" => {
+                    let target = param::get_str_with_aliases(
+                        args,
+                        &["step", "task", "id", "index"],
+                    )
+                    .unwrap_or("active");
+                    let substeps = param::opt_string_array(args, "substeps")
+                        .or_else(|| param::opt_string_array(args, "steps"))
+                        .unwrap_or_default();
+                    let split_title = wm.split_step_in_place(target, &substeps)?;
+                    let hint = wm.format_remaining_tasks_hint();
+                    return Ok(format!(
+                        "✔ Adapted active plan in-place: split \"{}\" into {} tactical sub-steps.\n{}",
+                        split_title,
+                        substeps.len(),
+                        hint
+                    ));
+                }
+                "drop" | "remove" | "skip" => {
+                    let target = param::require_str_with_aliases(
+                        args,
+                        &["step", "task", "id", "index"],
+                        "update_progress",
+                    )?;
+                    let reason = param::opt_str(args, "reason");
+                    let dropped = wm.drop_step_in_place(target, reason)?;
+                    let hint = wm.format_remaining_tasks_hint();
+                    return Ok(format!(
+                        "✔ Adapted active plan in-place: dropped obsolete step \"{}\".\n{}",
+                        dropped, hint
+                    ));
+                }
+                _ => {}
+            }
+
             let status = param::require_str_with_aliases(
                 args,
                 &["status", "state", "progress"],
@@ -1012,8 +1159,6 @@ pub async fn dispatch(
                 } else {
                     vec!["active".to_string()]
                 };
-
-            let wm = crate::context::working_memory::WorkingMemory::new(workspace_root);
             let mut resolved_titles = Vec::with_capacity(step_list.len());
             let mut any_modified = false;
             for s in &step_list {
@@ -1707,6 +1852,115 @@ mod tests {
                 "4/5 macro tasks completed (active step sub-plan: 3/3 sub-steps completed)"
             ),
             "expected 4/5 macro + 3/3 sub-steps, got:\n{sub3}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_create_plan_dag_spec_hydration_and_midflight_adaptive_mutations() {
+        let temp = tempfile::tempdir().unwrap();
+        let ws = temp.path();
+        std::fs::create_dir_all(ws.join("minikit_docs/core")).unwrap();
+        std::fs::write(
+            ws.join("minikit_docs/core/spec.md"),
+            "# Specification\n\nCore invariants, interfaces, and constraints.\n",
+        )
+        .unwrap();
+        crate::agent::decisions::upsert_decision(
+            ws,
+            "State Store",
+            "Zustand immutable slices in src/store/",
+            None,
+        )
+        .unwrap();
+
+        let created = dispatch(
+            "create_plan",
+            &serde_json::json!({
+                "title": "Realtime Analytics Dashboard",
+                "architecture": "Modular React + Zustand dashboard with isolated chart & table slices.",
+                "steps": [
+                    {
+                        "id": "t1_store",
+                        "title": "Create src/store/metrics.ts store",
+                        "target_files": ["src/store/metrics.ts"],
+                        "depends_on": []
+                    },
+                    {
+                        "id": "t2_chart",
+                        "title": "Build src/components/MetricsChart.tsx",
+                        "target_files": ["src/components/MetricsChart.tsx"],
+                        "depends_on": ["t1_store"]
+                    },
+                    {
+                        "id": "t3_table",
+                        "title": "Build src/components/EventsTable.tsx",
+                        "target_files": ["src/components/EventsTable.tsx"],
+                        "depends_on": ["t1_store"]
+                    }
+                ],
+                "force": true
+            }),
+            ws,
+        )
+        .await
+        .unwrap()
+        .unwrap();
+
+        assert!(created.contains("Task-DAG Topology"));
+        assert!(created.contains("max parallelism `2`"));
+        assert!(ws.join(".minicode/plan/task_dag.json").exists());
+
+        // Verify boilerplate `spec.md` stub was hydrated with architecture + settled [D1] + module boundaries
+        let hydrated_spec = std::fs::read_to_string(ws.join("minikit_docs/core/spec.md")).unwrap();
+        assert!(hydrated_spec.contains("Zustand immutable slices"));
+        assert!(hydrated_spec.contains("src/components/MetricsChart.tsx"));
+
+        // Complete step 1, then test mid-flight `add`, `split`, and `drop` without losing `[x]` on step 1!
+        std::fs::create_dir_all(ws.join("src/store")).unwrap();
+        std::fs::write(ws.join("src/store/metrics.ts"), "export const s = 1;").unwrap();
+        let _ = dispatch(
+            "update_progress",
+            &serde_json::json!({ "step": "1", "status": "completed" }),
+            ws,
+        )
+        .await
+        .unwrap()
+        .unwrap();
+
+        let add_out = dispatch(
+            "update_progress",
+            &serde_json::json!({
+                "action": "add",
+                "new_step": "Build src/components/ExportCsvButton.tsx",
+                "target_files": ["src/components/ExportCsvButton.tsx"],
+                "depends_on": ["t1_store"]
+            }),
+            ws,
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        assert!(add_out.contains("added step"));
+
+        let drop_out = dispatch(
+            "update_progress",
+            &serde_json::json!({
+                "action": "drop",
+                "step": "EventsTable",
+                "reason": "User deferred table view to v2"
+            }),
+            ws,
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        assert!(drop_out.contains("dropped obsolete step"));
+
+        let dag = crate::context::memory::task_dag::PlanDag::load(ws).unwrap();
+        assert_eq!(dag.nodes.len(), 3);
+        assert_eq!(
+            dag.nodes[0].status,
+            crate::context::working_memory::TaskItemStatus::Completed
         );
     }
 }

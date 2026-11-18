@@ -1,3 +1,4 @@
+pub mod brainstorm_algebra;
 pub mod plan_review;
 pub mod speckit;
 
@@ -119,38 +120,31 @@ impl CeremonySize {
 
         let has_manifest =
             crate::agent::orchestrator::WorkflowRouter::project_manifest(workspace_root).is_some();
-        if !has_manifest {
-            return Self::Project;
-        }
-
         let docs_dir = crate::tools::minikit::resolve_docs_dir(workspace_root);
         let has_core_spec = docs_dir.join("core/spec.md").is_file()
             || docs_dir.join("core/architecture.md").is_file()
             || docs_dir.join("core/prd.md").is_file();
 
-        let plan_tasks =
-            std::fs::read_to_string(workspace_root.join(".minicode/plan/task_plan.md"))
-                .ok()
-                .map(|c| {
-                    c.lines()
-                        .filter(|l| {
-                            let t = l.trim_start();
-                            t.starts_with("- [") || t.starts_with("* [")
-                        })
-                        .count()
-                })
-                .unwrap_or(0);
+        let plan_tasks = crate::context::memory::working_memory::WorkingMemory::new(workspace_root)
+            .read_active_plan_summary()
+            .map(|s| s.total_tasks)
+            .unwrap_or(0);
+        let stem_count =
+            crate::agent::minipower::brainstorm_algebra::extract_morphological_stems(topic).len();
+        let settled_count =
+            crate::agent::minipower::brainstorm_algebra::extract_settled_decisions(workspace_root)
+                .len();
 
-        let token_count = topic.split_whitespace().count();
+        let sigma = 1.5 * (open_questions_count as f64)
+            + 0.6 * (plan_tasks as f64)
+            + if has_manifest { 0.0 } else { 1.8 }
+            + if has_core_spec { 0.0 } else { 0.55 }
+            + 0.35 * (1.0 + stem_count as f64).ln()
+            - 0.25 * (settled_count.min(3) as f64);
 
-        if open_questions_count >= 2
-            || plan_tasks >= 4
-            || (!has_core_spec && open_questions_count >= 1)
-            || token_count >= 25
-        {
+        if sigma >= 2.15 {
             Self::Project
-        } else if open_questions_count == 0 && plan_tasks <= 1 && token_count <= 6 && has_core_spec
-        {
+        } else if sigma < 0.85 && open_questions_count == 0 {
             Self::QuickTask
         } else {
             Self::SmallChange
@@ -367,54 +361,28 @@ impl MiniPowerEngine {
             Self::collect_custom_phase_skills(workspace, "brainstorming ask-user-inquiry", topic);
 
         format!(
-            "### 🧠 MiniPower: Socratic Brainstorming & Spec Refinement (v7.0.1)\n\n\
+            "### 🧠 MiniPower: Socratic Brainstorming & Spec Convergence\n\n\
             **Goal/Topic:** {topic}\n\n\
             **Already settled:**\n{settled}\n\
-            **Active Vault Skills (`vault_show` / `vault_update`):** `brainstorming`, `ask-user-inquiry`\n\
-            **Procedure (`<HARD-GATE>`: no product code or scaffolding until Step 6 is approved):**\n\
-            1. **Look Before You Ask (Ground First)**: Read relevant workspace files (`read_file`, `grep_search`, `locate_symbol`), docs, and `{decisions}`. Never ask what the workspace already answers.\n\
-            2. **Play It Back & Size the Work**: Echo the user's intent back in ~200 words (marking your own inferences/defaults explicitly as your proposal) and classify ceremony size:\n\
-               - `Quick Task`: Everything is specified -> state defaults and execute.\n\
-               - `Spike`: Throwaway prototype to test an unknown -> build minimal spike, bring findings back.\n\
-               - `Small Change`: Short 1-2 line per-section design summary.\n\
-               - `Project`: Full written design specification + Builder Check.\n\
-            3. **Clarify Open Decisions & Information (`ask_user` + `record_decision`)**: Never guess or silently assume when you need clarity, domain data, or information from the user, or when you lack confidence on what to build. Ask as many questions as needed in `ask_user` (with 2 to 6 distinct options per choice question, recommended option first) covering purpose, goals/non-goals, data/business rules, stack, architecture, data model, and UI direction. Record every settled choice via `record_decision` (`[D1]..[DN]`).\n\
-            4. **Lay Out the Approaches**: Present 2 to 6 concrete implementation options or architectural approaches grounded in the codebase with explicit trade-offs, put your recommended approach first with a 1-line reason, and ask the user to pick via `ask_user`.\n\
-            5. **Write the Design & Run Builder Check**: Write the agreed design to `{docs_name}/core/spec.md` (covering intent, goals/non-goals/anti-goals, constraints, approaches considered, user decisions, and builder calls). For a `Project`, run the cold-reader **Builder Check** (`delegate_task` or self-audit) to resolve missing builder questions in at most one round.\n\
-            6. **Spec Approval & Plan Handoff**: Confirm design approval via `ask_user`, then transition to `power_plan` / `create_plan`.\n{live_skill_section}",
+            **Single-Round Tech-Lead Convergence Protocol:**\n\
+            1. **Ground First**: Inspect relevant workspace files (`read_file`, `locate_symbol`, `grep_search`), existing specs, and `{decisions}`. Never ask what workspace code or settled `[D1..DN]` entries already answer.\n\
+            2. **Batch High-Blast-Radius Choices into ONE `ask_user` Round**: Present 2–4 concrete architectural approaches with explicit `pros`/`cons` trade-offs (recommended option first) alongside any unresolved scope/schema/stack questions in a single `ask_user` call, then persist answers via `record_decision`. Decide minor reversible builder details autonomously.\n\
+            3. **No Double Confirmation**: Once the user answers `ask_user` (or when 0 unresolved high-impact questions remain), persist architectural invariants to `{docs_name}/core/spec.md` (applying the cold-reader **Builder Check** on `Project` scope) and proceed directly into `create_plan` without pausing for a second approval prompt.\n{live_skill_section}",
             decisions = crate::agent::decisions::DECISIONS_FILE
         )
     }
 
-    /// Generates structured task planning prompt with decision-focused tasks, `Interfaces`, and `Review Focus` (`obra/superpowers` v6.4.2).
+    /// Generates concise structured task planning summary (`Structured Implementation Plan` + `Review Focus`).
     pub fn format_plan_prompt(workspace: &Path, topic: &str) -> String {
         let (_, docs_name) = Self::resolve_docs_dir_name(workspace);
         let live_skill_section =
             Self::collect_custom_phase_skills(workspace, "writing-plans todo-planning", topic);
 
         format!(
-            "### 🛠️ MiniPower: Structured Implementation Plan Builder (v7.0.1)\n\n\
-            **Goal/Topic:** {topic}\n\n\
-            **Active Vault Skills (`vault_show` / `vault_update`):** `writing-plans`, `todo-planning`\n\
-            **Methodology Instructions:**\n\
-            1. **Two-Tier Planning Architecture:**\n\
-               - Tier 1 (Core Milestones): High-level strategic roadmap recorded in `{docs_name}/core/todo.md` and `{docs_name}/core/implementation.md` (viewed in `/todo` modal).\n\
-               - Tier 2 (Active Step Plan): Tactical execution steps recorded in `.minicode/plan/task_plan.md` via `create_plan` or `power_plan` (viewed live in TUI dock).\n\
-            2. **A Plan Records Decisions, Not Code Transcripts:**\n\
-               - Each task is the smallest unit that carries its own RED->GREEN test cycle.\n\
-               - Specify exact **Target Files** (`Create` / `Modify` / `Test`), **Interfaces (`Consumes` / `Produces` exact signatures)**, **Test Assertions** (with exact spec values), and **Verification Command**.\n\
-               - Do NOT paste full function bodies that signatures and tests already determine (Proportion Check).\n\
-            3. **5-Item `Review Focus` & Pre-Flight Interface Scan:**\n\
-               - Identify up to **5 implied inputs or failure modes** the spec implies that could bite a real user, and pin each with a test in the owning task.\n\
-               - Scan task pairs that share a file or `Consumes`/`Produces` interface to verify signature consistency before Step 1 begins.\n\
-            4. **Rulings, Not Stalls (`record_decision`):**\n\
-               - Resolve non-destructive plan ambiguities or conflicts against `{docs_name}/core/spec.md`, log them in `.minicode/decisions.md` via `record_decision` (`[D1]..[DN]`), and continue without stalling. Stop only for destructive/irreversible actions, external side-effects, security risks, or a broken spec.\n\
-            5. **Strict Red/Green TDD & MiniBlocks Reuse:**\n\
-               - Write the failing test first, watch it fail, write minimal code to pass, and run the project test suite.\n\
-               - For UI/frontend tasks, query `block_search`, `block_palettes`, and `block_scaffold` first.\n\
-            6. **Execution Handoff (Subagent-Driven vs Native Inline):**\n\
-               - **Subagent-Driven (`power_worktree_task` / `delegate_task`)**: Fresh isolated implementer per task + two-stage review (`SpecCompliance` + `CodeQuality`).\n\
-               - **Native Inline (`update_progress` + `power_verify` + `power_review`)**: Execute each `[>]` step sequentially in this session, advancing immediately with `update_progress`, followed by `power_verify` and `power_review` at completion.\n{live_skill_section}"
+            "### 🛠️ MiniPower: Structured Implementation Plan — {topic}\n\n\
+            - **Two-Tier Artifacts**: Strategic blueprint in `{docs_name}/core/implementation.md` + `{docs_name}/core/todo.md`; live steps & DAG topology in `.minicode/plan/task_plan.md` + `.minicode/plan/task_dag.json`.\n\
+            - **Decision-Focused Tasks & `Review Focus`**: Specify `target_files`, `depends_on`, interface contracts (`Consumes` / `Produces`), and up to 5 implied edge-case failure modes pinned by tests.\n\
+            - **Rulings, Not Stalls**: Resolve minor implementation ambiguities against `{docs_name}/core/spec.md` via `record_decision`; execute independent waves via `execute_task_dag(from_active_plan=true)` or inline via `update_progress`.\n{live_skill_section}"
         )
     }
 

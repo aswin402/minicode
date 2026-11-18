@@ -5,6 +5,33 @@ All notable changes to **minicode** will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.55] — 2026-11-19
+
+### Autonomous Tech-Lead Orchestrator, AST-Grounded Pareto Brainstorm Algebra & Visual Board (`brainstorm_algebra.rs`), Petgraph Topological + Welsh-Powell Write-Boundary `PlanDag` (`task_dag.rs`), Cross-Wave AST/Ruling Relay, Stateful Zone-3 Delta Deduplication, & Post-Swarm Range Review
+
+#### 🧠 AST-Grounded Brainstorm Algebra, Single-Round Convergence & Visual Comparison Board (`src/agent/minipower/{brainstorm_algebra,mod,plan_review}.rs`, `src/tools/registry/minipower_tools.rs`)
+- **Set-Algebraic Settled-Question Pruning & 4-Axis Pareto Dominance Scoring (`brainstorm_algebra.rs`)**:
+  - Added `pulldown-cmark` AST extraction of settled `[D1..DN]` rulings across `.minicode/decisions.md` and `spec.md` (excluding unconfirmed auto-defaults) plus morphological stem Jaccard & directional containment filtering ($J \ge 0.35 \lor C \ge 0.65$ with $\ge 2$ shared stems) to prune already-settled `open_questions` with `[Dk]` citations before calling `ask_user`.
+  - Grounded candidate architecture approaches against cached `CodeGraph` AST symbol shards (`.minicode/graph_shards.bin`), computing 4-axis multi-criteria utility (`AST Symbol Reuse`, `Inertial Alignment`, `Simplicity`, `Verification Clarity`), Pareto-frontier non-domination ranks, and ready-to-pass `ask_user` `pros`/`cons` cards.
+  - Added continuous structural entropy sizing (`CeremonySize::classify`), single-round brainstorm convergence (`format_brainstorm_prompt` eliminating double `ask_user` round-trips), self-contained responsive dark-mode HTML comparison boards (`.minicode/brainstorm/<slug>.html`) with optional `MiniBrowse` GUI preview, and bounded read-only `Architect` (`max_turns <= 4`) cold-reader `Metis` gap auditing (`deep_audit`).
+- **Module-Relative ES Import Validation in `PlanReviewer` (`plan_review.rs`)**:
+  - Preserved leading `./` and `../` prefixes on quoted module specifiers in plan step prose (`trim_end_matches('.')` + 1–2 level module-relative resolution) so relative ES/TS imports (`'./filter.ts'`, `'../src/events.ts'`) never false-block as Unix root paths outside the workspace.
+
+#### 🕸️ Petgraph Topological + Welsh-Powell `PlanDag`, Cross-Wave AST/Decision Relay & Adaptive Mid-Flight Plan Mutations (`src/context/memory/task_dag.rs`, `src/context/memory/working_memory_impl/{progress,notes_and_archive}.rs`, `src/tools/registry/context_tools/memory.rs`, `src/tools/registry/agent_tools/dag.rs`)
+- **Topological Wave DP + Write-Boundary Conflict Coloring (`task_dag.rs`)**:
+  - Built `PlanDag` combining `petgraph::algo::toposort` cycle detection, longest-path dependency wave DP, and Welsh-Powell degree-ordered conflict-graph coloring over `boundary_paths_overlap`, persisting 100% conflict-free parallel execution waves in `.minicode/plan/task_dag.json` across `create_plan` and `power_plan`.
+  - Added automatic boilerplate `spec.md` stub hydration during `create_plan` (`hydrate_canonical_spec_if_stub`) and mid-flight adaptive plan mutations in `update_progress` (`action = "update" | "add" | "split" | "drop"`) while preserving completed `[x]` steps.
+- **Zero-Redundancy `execute_task_dag(from_active_plan=true)`, Cross-Wave Contract Injection & `WorkingMemory` Reconciliation (`dag.rs`)**:
+  - `execute_task_dag` now loads remaining uncompleted waves directly from `.minicode/plan/task_dag.json` (`from_active_plan=true` or omitted `tasks`), injects settled `[D1..DN]` rulings plus Tree-sitter exported symbol signatures (`RepoMapExtractor::extract_symbols_from_str`) from upstream `depends_on` files into downstream worker prompts, supports non-Git shared-workspace lease waves (`execute_conflict_free_shared_waves`), and reconciles completed `SwarmTask` waves into both macro and `Mode: subplan` steps in `.minicode/plan/todo.md`.
+
+#### ⚡ Tech-Lead Prompt Calibration, Stateful Zone-3 Delta Deduplication, Diff-Scale Cold-Eye `Reviewer` Escalation & RFC-9110 `4xx` Fail-Fast (`src/agent/{prompt,orchestrator,loop,subagent/mod}.rs`, `src/agent/loop_impl/{session_state,tool_finalize}.rs`, `src/git/{service,reviewer}.rs`, `src/error.rs`)
+- **Scope-Earned Planning, Zone-3 Hash Deduplication & Provider `4xx` Fail-Fast**:
+  - Refined `STATIC_SYSTEM_PROMPT` and `WorkflowRouter` (`Active Plan: NONE`) for scope-earned planning so localized single-file edits execute directly without ceremony while multi-file/DAG workflows leverage `create_plan` + `MiniPub` delegation.
+  - Added stateful Zone-3 `DefaultHasher` digest deduplication (`Zone3BlockDigests`) across `decisions`, `plan`, and `quality` recency blocks (invalidated automatically on `create_plan` / `update_progress` / `archive_plan` / `ask_user` / `power_*`), preserving prompt tokens and KV-cache locality.
+  - Added `MinicodeError::is_retryable_provider_error` so deterministic HTTP `400`/`401`/`403`/`404`/`422` client errors fail fast in `0ms` instead of burning exponential retry backoffs (`408`/`409`/`425`/`429` and `5xx`/stream errors remain resiliently retried).
+- **Post-Swarm Commit-Range Auditing & Diff-Scale Cold-Eye `Reviewer` Escalation (`reviewer.rs`, `service.rs`, `minipower_tools.rs`)**:
+  - Added `GitService::diff_range` and `GitReviewer::review_workspace_with_range` honoring `base_sha..head_sha` and inspecting `HEAD~1..HEAD` on clean post-merge trees (after `SwarmArbitrator::merge_integration`), forwarding real unified diffs to `.minicode/reviews/<slug>.md`, and auto-escalating an isolated read-only `Reviewer` subagent on multi-file (`files_audited >= 3`) or large (`diff_lines >= 120`) changesets even when static heuristics score `100/100`.
+
 ## [0.5.54] — 2026-11-18
 
 ### BM25F + Set-Algebraic `active_skills` Engine & Forked Skill Isolation, Zero-Modal Per-File AST CodeGraph Shards (`.minicode/graph_shards.bin`), `MiniBrowse` Viewport/JSC/Multi-Engine Hardening, & `minitest71` Orchestrator Reliability Fixes
