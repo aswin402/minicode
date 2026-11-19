@@ -10,6 +10,7 @@ pub mod markdown;
 pub mod modal;
 pub mod modals;
 pub mod notifier;
+pub mod prompt_corpus;
 pub mod pty_drawer;
 pub mod scheduler;
 pub mod selection;

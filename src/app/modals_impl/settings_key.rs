@@ -150,11 +150,7 @@ impl<'a> App<'a> {
 
                                 // Save to target config layer
                                 if state.save_to_workspace {
-                                    let ws_minicode_dir = self
-                                        .workspace_root
-                                        .join(crate::constants::WORKSPACE_DIR_NAME);
-                                    let _ = std::fs::create_dir_all(&ws_minicode_dir);
-                                    let _ = self.config.save(Some(&self.workspace_root));
+                                    let _ = self.config.save_workspace(&self.workspace_root);
                                     if target_slug == "global" && slot_num == 1 {
                                         let _ = crate::config::Config::save_workspace_preference(
                                             &self.workspace_root,
@@ -164,6 +160,7 @@ impl<'a> App<'a> {
                                     }
                                 } else {
                                     let _ = self.config.save(None);
+                                    let _ = self.config.save(Some(&self.workspace_root));
                                 }
 
                                 if close_drilldown {
@@ -719,11 +716,7 @@ impl<'a> App<'a> {
                         self.config.browser.gui_priority = state.browser_gui_priority.clone();
 
                         if state.save_to_workspace {
-                            let ws_minicode_dir = self
-                                .workspace_root
-                                .join(crate::constants::WORKSPACE_DIR_NAME);
-                            let _ = std::fs::create_dir_all(&ws_minicode_dir);
-                            let _ = self.config.save(Some(&self.workspace_root));
+                            let _ = self.config.save_workspace(&self.workspace_root);
                             let _ = crate::config::Config::save_workspace_preference(
                                 &self.workspace_root,
                                 &self.config.provider.default,
@@ -731,6 +724,7 @@ impl<'a> App<'a> {
                             );
                         } else {
                             let _ = self.config.save(None);
+                            let _ = self.config.save(Some(&self.workspace_root));
                         }
 
                         let config_changed = old_provider != self.config.provider.default

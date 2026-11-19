@@ -257,7 +257,11 @@ pub fn apply_proposal(proposal: &ConfigChangeProposal, workspace_root: &Path) ->
     if let Some(ref th) = proposal.theme {
         config.ui.theme = th.clone();
     }
-    config.save(ws_opt)?;
+    if let Some(ws) = ws_opt {
+        config.save_workspace(ws)?;
+    } else {
+        config.save(None)?;
+    }
 
     if ws_opt.is_some() && (proposal.provider.is_some() || proposal.model.is_some()) {
         let _ = Config::save_workspace_preference(
@@ -987,7 +991,11 @@ pub async fn dispatch(
                         let _ = crate::agent::caveman::write_flag_safe(&flag_path, flag_val);
                     }
                     cfg.sync_runtime_timeouts();
-                    cfg.save(target_ws)?;
+                    if let Some(ws) = target_ws {
+                        cfg.save_workspace(ws)?;
+                    } else {
+                        cfg.save(None)?;
+                    }
                 }
 
                 let proposal = ConfigChangeProposal {

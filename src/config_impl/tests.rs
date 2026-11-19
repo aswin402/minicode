@@ -535,3 +535,47 @@ fn test_four_slot_orchestrator_and_minipub_routing() {
         config.resolve_orchestrator_chain(None)
     );
 }
+
+#[test]
+fn test_ui_theme_toast_symbols_and_non_destructive_map_preservation() {
+    let dir = tempfile::tempdir().unwrap();
+    let ws = dir.path();
+
+    let mut cfg = Config::default();
+    cfg.ui.theme = "catppuccin".to_string();
+    cfg.ui.menu_style = "icons".to_string();
+    cfg.ui.toast_symbols = "emoji".to_string();
+    cfg.agent.ponytail_mode = true;
+    cfg.agent.ponytail_level = "ultra".to_string();
+    cfg.agent.caveman_mode = true;
+    cfg.agent.caveman_level = "full".to_string();
+    cfg.provider
+        .api_keys
+        .insert("minimax".to_string(), "sk-preserve-me".to_string());
+    cfg.save_workspace(ws).unwrap();
+
+    // Saving a fresh Config with empty `api_keys` over the same file preserves existing `api_keys`
+    // while updating modified UI/agent fields
+    let mut cfg2 = Config::load(Some(ws), None).unwrap();
+    assert_eq!(cfg2.ui.theme, "catppuccin");
+    assert_eq!(cfg2.ui.menu_style, "icons");
+    assert_eq!(cfg2.ui.toast_symbols, "emoji");
+    assert_eq!(cfg2.agent.ponytail_level, "ultra");
+    assert_eq!(cfg2.agent.caveman_level, "full");
+
+    cfg2.provider.api_keys.clear();
+    cfg2.ui.theme = "tokyo-night".to_string();
+    cfg2.save_workspace(ws).unwrap();
+
+    let reloaded = Config::load(Some(ws), None).unwrap();
+    assert_eq!(reloaded.ui.theme, "tokyo-night");
+    assert_eq!(reloaded.ui.toast_symbols, "emoji");
+    assert_eq!(
+        reloaded
+            .provider
+            .api_keys
+            .get("minimax")
+            .map(String::as_str),
+        Some("sk-preserve-me")
+    );
+}

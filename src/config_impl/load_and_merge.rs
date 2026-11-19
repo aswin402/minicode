@@ -99,6 +99,7 @@ pub struct RawUiConfig {
     pub todo_style: Option<String>,
     pub swarm_style: Option<String>,
     pub toast_style: Option<String>,
+    pub toast_symbols: Option<String>,
     pub activity_style: Option<String>,
     pub menu_style: Option<String>,
     pub max_width: Option<usize>,
@@ -146,18 +147,45 @@ impl Config {
         Self::load(Some(workspace_dir), None).unwrap_or_default()
     }
 
+    /// Resolves the global configuration directory (`~/.config/minicode`), honoring `MINICODE_CONFIG_DIR`.
+    ///
+    /// In unit-test builds (`#[cfg(test)]`), returns `None` unless `MINICODE_CONFIG_DIR` is explicitly set
+    /// so test runs can NEVER clobber or read the developer's live `~/.config/minicode/config.toml`.
+    #[must_use]
+    pub fn resolve_global_config_dir() -> Option<std::path::PathBuf> {
+        if let Ok(custom) = std::env::var("MINICODE_CONFIG_DIR") {
+            let trimmed = custom.trim();
+            if !trimmed.is_empty() {
+                return Some(std::path::PathBuf::from(trimmed));
+            }
+        }
+        #[cfg(test)]
+        {
+            None
+        }
+        #[cfg(not(test))]
+        {
+            dirs::config_dir().map(|d| d.join(crate::constants::CONFIG_DIR_NAME))
+        }
+    }
+
     /// Loads configuration respecting the hierarchy:
-    /// 1. Project-local `.minicode/config.toml` (if present)
+    /// 1. Project-local `.minicode/config.toml` (if present; newer global `[ui]`/autonomy preferences win over stale snapshots)
     /// 2. Global `~/.config/minicode/config.toml` (if present)
     /// 3. Project-local `mcp.json` or `.minicode/mcp.json` (if present)
     /// 4. Built-in defaults
     /// 5. Environment variable overrides (MINICODE_*)
     pub fn load(workspace_dir: Option<&Path>, custom_config_path: Option<&Path>) -> Result<Self> {
+        let is_ephemeral_ws = workspace_dir.is_some_and(|ws| ws.starts_with(std::env::temp_dir()));
+        let global_cfg_dir = if is_ephemeral_ws {
+            None
+        } else {
+            Self::resolve_global_config_dir()
+        };
+
         // 0. Load global ~/.config/minicode/.env if present
-        if let Some(global_dir) = dirs::config_dir() {
-            let global_env = global_dir
-                .join(crate::constants::CONFIG_DIR_NAME)
-                .join(crate::constants::ENV_FILE_NAME);
+        if let Some(ref global_dir) = global_cfg_dir {
+            let global_env = global_dir.join(crate::constants::ENV_FILE_NAME);
             match dotenvy::from_path(&global_env) {
                 Ok(_) => {}
                 Err(dotenvy::Error::Io(e)) if e.kind() == std::io::ErrorKind::NotFound => {}
@@ -196,11 +224,16 @@ impl Config {
             }
         } else {
             // 2. Global config: ~/.config/minicode/config.toml
-            if let Some(global_dir) = dirs::config_dir() {
-                let global_config = global_dir
-                    .join(crate::constants::CONFIG_DIR_NAME)
-                    .join(crate::constants::CONFIG_FILE_NAME);
+            let mut global_loaded: Option<(RawConfig, std::time::SystemTime)> = None;
+            if let Some(ref global_dir) = global_cfg_dir {
+                let global_config = global_dir.join(crate::constants::CONFIG_FILE_NAME);
+                let g_mtime = std::fs::metadata(&global_config)
+                    .ok()
+                    .and_then(|m| m.modified().ok());
                 if let Some(raw) = Self::load_raw_from_file(&global_config)? {
+                    if let Some(mt) = g_mtime {
+                        global_loaded = Some((raw.clone(), mt));
+                    }
                     config.merge_raw(raw);
                 }
             }
@@ -210,19 +243,25 @@ impl Config {
                 let local_config = dir
                     .join(crate::constants::WORKSPACE_DIR_NAME)
                     .join(crate::constants::CONFIG_FILE_NAME);
+                let l_mtime = std::fs::metadata(&local_config)
+                    .ok()
+                    .and_then(|m| m.modified().ok());
                 if let Some(raw) = Self::load_raw_from_file(&local_config)? {
                     config.merge_raw(raw);
+                    // If the user updated Global `~/.config/minicode/config.toml` MORE RECENTLY than an older
+                    // workspace `.minicode/config.toml`, preserve their newer global UI theme & autonomy modes!
+                    if let (Some((g_raw, g_mt)), Some(l_mt)) = (global_loaded, l_mtime) {
+                        if g_mt > l_mt {
+                            config.merge_ui_and_autonomy_from_raw(&g_raw);
+                        }
+                    }
                 }
             }
         }
 
         // 4. Always load global and workspace MCP configs
-        if let Some(global_dir) = dirs::config_dir() {
-            config.load_mcp_json_if_exists(
-                &global_dir
-                    .join(crate::constants::CONFIG_DIR_NAME)
-                    .join(crate::constants::MCP_CONFIG_FILE),
-            );
+        if let Some(ref global_dir) = global_cfg_dir {
+            config.load_mcp_json_if_exists(&global_dir.join(crate::constants::MCP_CONFIG_FILE));
         }
 
         if let Some(dir) = workspace_dir {
@@ -248,37 +287,66 @@ impl Config {
         Ok(config)
     }
 
+    /// Explicitly writes configuration to `<workspace>/.minicode/config.toml`.
+    pub fn save_workspace(&self, workspace_root: &Path) -> Result<()> {
+        let local_path = workspace_root
+            .join(crate::constants::WORKSPACE_DIR_NAME)
+            .join(crate::constants::CONFIG_FILE_NAME);
+        self.write_config_to_path(&local_path)
+    }
+
     /// Saves the current configuration to disk:
-    /// If project-local `.minicode/config.toml` exists, updates it.
-    /// Otherwise writes to global `~/.config/minicode/config.toml`.
+    /// - If project-local `.minicode/config.toml` already exists (or `workspace_root` is an isolated tempdir / test workspace),
+    ///   updates `<workspace>/.minicode/config.toml`.
+    /// - Otherwise writes non-destructively to global `~/.config/minicode/config.toml` without creating accidental
+    ///   per-project `.minicode/config.toml` snapshots just because `.minicode/sessions/` exists.
     pub fn save(&self, workspace_root: Option<&Path>) -> Result<()> {
+        let global_cfg_dir = Self::resolve_global_config_dir();
         let path = if let Some(ws) = workspace_root {
-            let ws_minicode_dir = ws.join(crate::constants::WORKSPACE_DIR_NAME);
-            let local_path = ws_minicode_dir.join(crate::constants::CONFIG_FILE_NAME);
-            if local_path.exists() || ws_minicode_dir.exists() {
+            let local_path = ws
+                .join(crate::constants::WORKSPACE_DIR_NAME)
+                .join(crate::constants::CONFIG_FILE_NAME);
+            if local_path.exists() || ws.starts_with(std::env::temp_dir()) {
                 local_path
-            } else if let Some(global_dir) = dirs::config_dir() {
-                global_dir
-                    .join(crate::constants::CONFIG_DIR_NAME)
-                    .join(crate::constants::CONFIG_FILE_NAME)
+            } else if let Some(global_dir) = global_cfg_dir {
+                global_dir.join(crate::constants::CONFIG_FILE_NAME)
             } else {
                 local_path
             }
-        } else if let Some(global_dir) = dirs::config_dir() {
-            global_dir
-                .join(crate::constants::CONFIG_DIR_NAME)
-                .join(crate::constants::CONFIG_FILE_NAME)
+        } else if let Some(global_dir) = global_cfg_dir {
+            global_dir.join(crate::constants::CONFIG_FILE_NAME)
         } else {
             return Ok(());
         };
 
+        self.write_config_to_path(&path)
+    }
+
+    fn write_config_to_path(&self, path: &Path) -> Result<()> {
         if let Some(parent) = path.parent() {
             let _ = std::fs::create_dir_all(parent);
         }
 
-        let toml_str = toml::to_string_pretty(self).map_err(ConfigError::TomlSerialize)?;
-        std::fs::write(&path, toml_str)?;
-        tracing::info!(path = %path.display(), "Configuration saved to disk");
+        let new_val = toml::Value::try_from(self.clone()).map_err(ConfigError::TomlSerialize)?;
+        let final_val = if let Ok(existing_str) = std::fs::read_to_string(path) {
+            if let Ok(mut existing_val) = toml::from_str::<toml::Value>(&existing_str) {
+                merge_config_preserving_existing_maps(&mut existing_val, &new_val);
+                existing_val
+            } else {
+                new_val
+            }
+        } else {
+            new_val
+        };
+
+        let toml_str = toml::to_string_pretty(&final_val).map_err(ConfigError::TomlSerialize)?;
+        let tmp_path = path.with_extension(format!("toml.tmp.{}", uuid::Uuid::new_v4()));
+        std::fs::write(&tmp_path, &toml_str)?;
+        if let Err(e) = std::fs::rename(&tmp_path, path) {
+            let _ = std::fs::remove_file(&tmp_path);
+            return Err(e.into());
+        }
+        tracing::info!(path = %path.display(), "Configuration saved atomically to disk");
         Ok(())
     }
 
@@ -548,6 +616,9 @@ impl Config {
         if let Some(toast_style) = other.ui.toast_style {
             self.ui.toast_style = toast_style;
         }
+        if let Some(toast_symbols) = other.ui.toast_symbols {
+            self.ui.toast_symbols = toast_symbols;
+        }
         if let Some(activity_style) = other.ui.activity_style {
             self.ui.activity_style = activity_style;
         }
@@ -720,5 +791,91 @@ impl Config {
         if let Some(ac) = Self::env_bool(env_vars::MINICODE_AUTO_CONTINUE) {
             self.agent.auto_continue = ac;
         }
+    }
+
+    /// Re-applies newer global `[ui]` visual settings and `ponytail`/`caveman` autonomy toggles
+    /// so an older workspace `.minicode/config.toml` never reverts recently saved global preferences.
+    fn merge_ui_and_autonomy_from_raw(&mut self, global: &RawConfig) {
+        if let Some(plain) = global.ui.plain {
+            self.ui.plain = plain;
+        }
+        if let Some(ref theme) = global.ui.theme {
+            self.ui.theme = theme.clone();
+        }
+        if let Some(ref animation) = global.ui.animation {
+            self.ui.animation = animation.clone();
+        }
+        if let Some(ref todo_style) = global.ui.todo_style {
+            self.ui.todo_style = todo_style.clone();
+        }
+        if let Some(ref swarm_style) = global.ui.swarm_style {
+            self.ui.swarm_style = swarm_style.clone();
+        }
+        if let Some(ref toast_style) = global.ui.toast_style {
+            self.ui.toast_style = toast_style.clone();
+        }
+        if let Some(ref toast_symbols) = global.ui.toast_symbols {
+            self.ui.toast_symbols = toast_symbols.clone();
+        }
+        if let Some(ref activity_style) = global.ui.activity_style {
+            self.ui.activity_style = activity_style.clone();
+        }
+        if let Some(ref menu_style) = global.ui.menu_style {
+            self.ui.menu_style = menu_style.clone();
+        }
+        if let Some(show_cost) = global.ui.show_cost {
+            self.ui.show_cost = show_cost;
+        }
+        if let Some(caveman_mode) = global.agent.caveman_mode {
+            self.agent.caveman_mode = caveman_mode;
+        }
+        if let Some(ref caveman_level) = global.agent.caveman_level {
+            if !caveman_level.trim().is_empty() {
+                self.agent.caveman_level = caveman_level.trim().to_lowercase();
+            }
+        }
+        if let Some(ponytail_mode) = global.agent.ponytail_mode {
+            self.agent.ponytail_mode = ponytail_mode;
+        }
+        if let Some(ref ponytail_level) = global.agent.ponytail_level {
+            if !ponytail_level.trim().is_empty() {
+                self.agent.ponytail_level = ponytail_level.trim().to_lowercase();
+            }
+        }
+    }
+}
+
+/// Deeply merges `source` TOML onto `target`, updating all explicit fields while preserving
+/// existing non-empty credential/endpoint maps and forward-compatible unknown keys if `source`
+/// holds empty maps.
+fn merge_config_preserving_existing_maps(target: &mut toml::Value, source: &toml::Value) {
+    const PROTECTED_MAP_KEYS: &[&str] = &["api_keys", "custom_endpoints", "default_models"];
+    if let (toml::Value::Table(target_tbl), toml::Value::Table(source_tbl)) = (&mut *target, source)
+    {
+        for (k, v) in source_tbl {
+            if PROTECTED_MAP_KEYS.contains(&k.as_str()) {
+                if let (Some(toml::Value::Table(existing_map)), toml::Value::Table(new_map)) =
+                    (target_tbl.get_mut(k), v)
+                {
+                    for (mk, mv) in new_map {
+                        if mv.as_str().is_none_or(|s| !s.trim().is_empty()) {
+                            existing_map.insert(mk.clone(), mv.clone());
+                        }
+                    }
+                    continue;
+                }
+            }
+            if let Some(target_child) = target_tbl.get_mut(k) {
+                if target_child.is_table() && v.is_table() {
+                    merge_config_preserving_existing_maps(target_child, v);
+                } else {
+                    *target_child = v.clone();
+                }
+            } else {
+                target_tbl.insert(k.clone(), v.clone());
+            }
+        }
+    } else {
+        *target = source.clone();
     }
 }

@@ -562,7 +562,7 @@ async fn test_debug_tools_route_to_minibrowse_even_when_general_browser_configur
     let tmp = tempfile::tempdir().unwrap();
     let mut cfg = minicode::config::Config::default();
     cfg.browser.default_engine = Some("firefox".to_string());
-    cfg.save(Some(tmp.path())).unwrap();
+    cfg.save_workspace(tmp.path()).unwrap();
 
     // General browser honors configured Firefox primary
     let general = BrowserManager::resolve_priority_chain(

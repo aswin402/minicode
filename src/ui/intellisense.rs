@@ -1,20 +1,30 @@
 //! Native Rust TUI Chatbox Intellisense, Inline Ghost-Text Hinter, Boundary-Bonus Fuzzy Matcher,
-//! and Frecency/Prefix-Locked Prompt History Engine.
+//! Unified `@` Multimodal Entity Graph (`Files + Functions + Types/Classes + Images`),
+//! and Global Omnibox/Gboard Kneser-Ney Prompt Recommender.
 //!
-//! Designed for sub-millisecond keystroke latency (`<0.05ms`) and minimal memory footprint (`<80 KB`)
-//! with zero external autocomplete crate dependencies.
+//! Architectural Guarantees:
+//! - Sub-millisecond keystroke latency (`< 0.05ms`) with zero regexes and zero hardcoded code-keyword lists.
+//! - `/` commands are strictly isolated from `PromptHistory` and `PromptCorpus`.
+//! - `@` mentions unify workspace files, Tree-sitter AST functions/methods, classes/structs/types
+//!   (backed by `.minicode/graph_shards.bin` + `RepoMapExtractor`), and project/screenshot images.
 
 use crate::constants::{
     CANDIDATE_KIND_COUNT, FUZZY_BASENAME_MATCH_BONUS, FUZZY_BASE_CHAR_SCORE,
     FUZZY_BOUNDARY_SEPARATOR_BONUS, FUZZY_CAMEL_CASE_BONUS, FUZZY_CONSECUTIVE_CHAR_BONUS,
     FUZZY_EXACT_PREFIX_BONUS, FUZZY_GAP_PENALTY_PER_CHAR, INTELLISENSE_EXACT_TOKEN_PREFIX_BONUS,
-    INTELLISENSE_HISTORY_FRECENCY_BONUS, INTELLISENSE_MAX_FILE_INDEX, INTELLISENSE_MAX_POPUP_ITEMS,
+    INTELLISENSE_MAX_FILE_INDEX, INTELLISENSE_MAX_IMAGE_INDEX, INTELLISENSE_MAX_POPUP_ITEMS,
     INTELLISENSE_MAX_SCAN_DEPTH, INTELLISENSE_MAX_SYMBOL_INDEX, INTELLISENSE_MAX_TASK_INDEX,
     INTELLISENSE_MIN_WORD_CHARS, MENU_STYLE_COUNT, PROMPT_HISTORY_FILE, PROMPT_HISTORY_MAX_ENTRIES,
     TRIGGER_KIND_COUNT,
 };
+use crate::context::graph_store::GraphStore;
+use crate::context::repomap::{RepoMapExtractor, SymbolDef};
+use crate::ui::prompt_corpus::{
+    compute_workspace_hash, is_slash_command_input, ordered_token_prefix_match, PromptCorpus,
+};
 use serde::{Deserialize, Serialize};
-use std::collections::{HashSet, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
+use std::io::Read;
 use std::path::{Path, PathBuf};
 
 /// Single-pass boundary-bonus subsequence fuzzy scorer (modeled after Helix `nucleo` / `fzf`).
@@ -35,7 +45,7 @@ pub fn fuzzy_score(candidate: &str, query: &str) -> Option<i32> {
 
     let basename_start = cand_chars
         .iter()
-        .rposition(|&c| c == '/' || c == '\\')
+        .rposition(|&c| c == '/' || c == '\\' || c == ':')
         .map_or(0, |idx| idx + 1);
 
     let mut score: i32 = 0;
@@ -88,9 +98,8 @@ pub fn fuzzy_score(candidate: &str, query: &str) -> Option<i32> {
         return None;
     }
 
-    // Exact prefix bonus on full string or basename
     let basename = &candidate[candidate
-        .rfind(['/', '\\'])
+        .rfind(['/', '\\', ':'])
         .map_or(0, |byte_idx| byte_idx + 1)..];
     if starts_with_ignore_ascii_case(candidate, query)
         || starts_with_ignore_ascii_case(basename, query)
@@ -98,7 +107,6 @@ pub fn fuzzy_score(candidate: &str, query: &str) -> Option<i32> {
         score += FUZZY_EXACT_PREFIX_BONUS;
     }
 
-    // Prefer shorter, tighter matches on ties
     score -= (cand_chars.len() as i32) / 4;
     Some(score)
 }
@@ -108,16 +116,6 @@ fn starts_with_ignore_ascii_case(haystack: &str, prefix: &str) -> bool {
     haystack
         .get(..prefix.len())
         .is_some_and(|sub| sub.eq_ignore_ascii_case(prefix))
-}
-
-#[inline]
-fn char_slice(s: &str, start_char: usize) -> &str {
-    if start_char == 0 {
-        return s;
-    }
-    s.char_indices()
-        .nth(start_char)
-        .map_or("", |(byte_idx, _)| &s[byte_idx..])
 }
 
 /// A persisted prompt history entry with usage frequency and timestamp for frecency ranking.
@@ -134,63 +132,115 @@ const fn default_one() -> u32 {
     1
 }
 
-/// Frecency-weighted, chronological + prefix-aware prompt history ring buffer (`Atuin` + `Fish` style).
+/// Pure-Prompt History & Global Omnibox/Gboard Corpus Wrapper.
 ///
-/// Entries are ordered newest-first (`entries[0]` is the most recently submitted prompt).
+/// Slash commands (`/...`) are structurally excluded from `entries`, `.minicode/prompt_history.jsonl`,
+/// and the global `PromptCorpus` so `Up`/`Down` strictly recalls conversational prompts.
 #[derive(Debug, Clone, Default)]
 pub struct PromptHistory {
-    /// Newest-first deque of unique prompt entries.
+    /// Newest-first deque of unique conversational prompt entries (workspace prioritized, then global).
     pub entries: VecDeque<HistoryEntry>,
+    /// Global + workspace persistent corpus and Order-4 Kneser-Ney language model.
+    pub corpus: PromptCorpus,
     /// Current navigation index into `entries` (`None` when editing live draft).
     pub cursor: Option<usize>,
     /// Unsubmitted user draft stashed when first pressing `Up`.
     pub draft_stash: String,
-    /// Prefix filter locked when using `Alt+Up` (`navigate_up_prefix`).
+    /// Prefix/token filter locked when using `Alt+Up` (`navigate_up_prefix`).
     pub prefix_filter: String,
 }
 
 impl PromptHistory {
     #[must_use]
     pub fn new() -> Self {
-        Self::default()
-    }
-
-    /// Loads workspace prompt history from `<workspace>/.minicode/prompt_history.jsonl`.
-    pub fn load_from_workspace(&mut self, workspace_root: &Path) {
-        let path = workspace_root.join(PROMPT_HISTORY_FILE);
-        let Ok(content) = std::fs::read_to_string(&path) else {
-            return;
-        };
-        for line in content.lines() {
-            let trimmed = line.trim();
-            if trimmed.is_empty() {
-                continue;
-            }
-            if let Ok(entry) = serde_json::from_str::<HistoryEntry>(trimmed) {
-                self.insert_or_promote_memory_only(entry.text, entry.count, entry.timestamp);
-            }
+        Self {
+            entries: VecDeque::new(),
+            corpus: PromptCorpus::new_in_memory(),
+            cursor: None,
+            draft_stash: String::new(),
+            prefix_filter: String::new(),
         }
     }
 
-    /// Seeds a prompt into the in-memory history (e.g. during session hydration) without disk I/O.
+    /// Loads workspace + global prompt history, purging any legacy `/command` lines.
+    pub fn load_from_workspace(&mut self, workspace_root: &Path) {
+        self.load_with_global_dir(workspace_root, None);
+    }
+
+    /// Loads workspace prompt history merged with a specific global corpus directory.
+    pub fn load_with_global_dir(&mut self, workspace_root: &Path, global_dir: Option<PathBuf>) {
+        self.corpus.bind_workspace(workspace_root, global_dir);
+        self.sync_entries_from_corpus(Some(workspace_root));
+    }
+
+    fn sync_entries_from_corpus(&mut self, workspace_root: Option<&Path>) {
+        let ws_hash = compute_workspace_hash(workspace_root);
+        let mut local_recs = Vec::new();
+        let mut global_recs = Vec::new();
+
+        for rec in self.corpus.records() {
+            if is_slash_command_input(&rec.text) {
+                continue;
+            }
+            if ws_hash != 0 && rec.workspace_hashes.contains(&ws_hash) {
+                local_recs.push(rec);
+            } else {
+                global_recs.push(rec);
+            }
+        }
+
+        local_recs.sort_by(|a, b| b.latest_timestamp().cmp(&a.latest_timestamp()));
+        global_recs.sort_by(|a, b| b.latest_timestamp().cmp(&a.latest_timestamp()));
+
+        self.entries.clear();
+        for rec in local_recs.into_iter().chain(global_recs) {
+            if self.entries.len() >= PROMPT_HISTORY_MAX_ENTRIES {
+                break;
+            }
+            self.entries.push_back(HistoryEntry {
+                text: rec.text.clone(),
+                count: rec.total_count.max(1),
+                timestamp: rec.latest_timestamp(),
+            });
+        }
+    }
+
+    /// Seeds a conversational prompt into in-memory history & LM during session hydration (without disk I/O).
+    /// Slash commands (`/...`) are structurally ignored.
     pub fn seed_prompt(&mut self, prompt: &str) {
         let clean = prompt.trim();
-        if clean.is_empty() {
+        if clean.is_empty() || is_slash_command_input(clean) {
+            return;
+        }
+        let redacted = crate::security::redactor::redact_secrets(clean);
+        if !redacted.warnings.is_empty() {
             return;
         }
         self.insert_or_promote_memory_only(clean.to_string(), 1, current_unix_secs());
+        let _ = self.corpus.record_submission(clean);
     }
 
-    /// Records a newly submitted prompt into the newest slot (`index 0`) and persists to disk.
+    /// Records a newly submitted prompt into slot `0` and persists to global + workspace stores.
+    /// Slash commands (`/...`) are strictly ignored so `Up`/`Down` only recalls prompts.
     pub fn record(&mut self, prompt: &str, workspace_root: Option<&Path>) {
         let clean = prompt.trim();
-        if clean.is_empty() {
-            return;
-        }
-        let now = current_unix_secs();
-        self.insert_or_promote_memory_only(clean.to_string(), 1, now);
         self.reset_navigation();
         self.draft_stash.clear();
+
+        if clean.is_empty() || is_slash_command_input(clean) {
+            return;
+        }
+
+        let redacted = crate::security::redactor::redact_secrets(clean);
+        if !redacted.warnings.is_empty() {
+            // Keep sanitized version in session memory for immediate Up-key editing, never on disk
+            self.insert_or_promote_memory_only(redacted.content, 1, current_unix_secs());
+            return;
+        }
+
+        let now = current_unix_secs();
+        self.insert_or_promote_memory_only(clean.to_string(), 1, now);
+        let _ = self.corpus.record_submission(clean);
 
         if let Some(root) = workspace_root {
             self.persist_to_workspace(root);
@@ -198,6 +248,9 @@ impl PromptHistory {
     }
 
     fn insert_or_promote_memory_only(&mut self, text: String, add_count: u32, timestamp: u64) {
+        if is_slash_command_input(&text) {
+            return;
+        }
         let prev_count = if let Some(pos) = self.entries.iter().position(|e| e.text == text) {
             self.entries.remove(pos).map_or(0, |removed| removed.count)
         } else {
@@ -220,9 +273,11 @@ impl PromptHistory {
         if let Some(parent) = path.parent() {
             let _ = std::fs::create_dir_all(parent);
         }
-        // Write oldest-to-newest so sequential loading reconstructs newest-first order
         let mut out = String::new();
         for entry in self.entries.iter().rev() {
+            if is_slash_command_input(&entry.text) {
+                continue;
+            }
             if let Ok(json) = serde_json::to_string(entry) {
                 out.push_str(&json);
                 out.push('\n');
@@ -237,12 +292,16 @@ impl PromptHistory {
         self.prefix_filter.clear();
     }
 
-    /// Navigates chronologically to the next older prompt (`None -> 0 -> 1 -> ... -> len - 1`).
-    ///
-    /// When already at the oldest entry (`len - 1`), clamps `cursor` at `Some(len - 1)` and returns
-    /// that oldest entry so pressing `Up` multiple times at the top boundary never resets `cursor`
-    /// and subsequent `Down` presses immediately step back toward newer prompts and `draft_stash`.
+    /// Navigates chronologically to the next older conversational prompt (`None -> 0 -> 1 -> ... -> len - 1`).
     pub fn navigate_up(&mut self, current_text: &str) -> Option<String> {
+        // Defensive filter in case an external caller mutated `entries`
+        while self
+            .entries
+            .front()
+            .is_some_and(|e| is_slash_command_input(&e.text))
+        {
+            self.entries.pop_front();
+        }
         if self.entries.is_empty() {
             return None;
         }
@@ -254,8 +313,14 @@ impl PromptHistory {
                 0
             }
             Some(cur) => {
-                if cur + 1 < self.entries.len() {
-                    cur + 1
+                let mut candidate = cur + 1;
+                while candidate < self.entries.len()
+                    && is_slash_command_input(&self.entries[candidate].text)
+                {
+                    candidate += 1;
+                }
+                if candidate < self.entries.len() {
+                    candidate
                 } else {
                     self.cursor = Some(cur);
                     return Some(self.entries[cur].text.clone());
@@ -267,7 +332,7 @@ impl PromptHistory {
         Some(self.entries[next_idx].text.clone())
     }
 
-    /// Navigates to the next older prompt matching the current single-line prefix (`Alt+Up`).
+    /// Navigates to the next older prompt matching the current prefix or Omnibox token sequence (`Alt+Up`).
     pub fn navigate_up_prefix(&mut self, current_text: &str) -> Option<String> {
         if self.entries.is_empty() {
             return None;
@@ -288,9 +353,18 @@ impl PromptHistory {
         };
 
         if !self.prefix_filter.is_empty() {
+            let filter_tokens: Vec<String> = self
+                .prefix_filter
+                .split_whitespace()
+                .map(|t| t.to_lowercase())
+                .collect();
             if let Some(found_idx) = (start_search_from..self.entries.len()).find(|&idx| {
-                starts_with_ignore_ascii_case(&self.entries[idx].text, &self.prefix_filter)
-                    && self.entries[idx].text != current_text
+                let cand = &self.entries[idx].text;
+                !is_slash_command_input(cand)
+                    && cand != current_text
+                    && (starts_with_ignore_ascii_case(cand, &self.prefix_filter)
+                        || (filter_tokens.len() >= 2
+                            && ordered_token_prefix_match(cand, &filter_tokens)))
             }) {
                 self.cursor = Some(found_idx);
                 return Some(self.entries[found_idx].text.clone());
@@ -314,8 +388,17 @@ impl PromptHistory {
         }
 
         if !self.prefix_filter.is_empty() {
+            let filter_tokens: Vec<String> = self
+                .prefix_filter
+                .split_whitespace()
+                .map(|t| t.to_lowercase())
+                .collect();
             if let Some(found_idx) = (0..cur).rev().find(|&idx| {
-                starts_with_ignore_ascii_case(&self.entries[idx].text, &self.prefix_filter)
+                let cand = &self.entries[idx].text;
+                !is_slash_command_input(cand)
+                    && (starts_with_ignore_ascii_case(cand, &self.prefix_filter)
+                        || (filter_tokens.len() >= 2
+                            && ordered_token_prefix_match(cand, &filter_tokens)))
             }) {
                 self.cursor = Some(found_idx);
                 return Some(self.entries[found_idx].text.clone());
@@ -325,115 +408,165 @@ impl PromptHistory {
             return Some(self.draft_stash.clone());
         }
 
-        let next_idx = cur - 1;
-        self.cursor = Some(next_idx);
-        Some(self.entries[next_idx].text.clone())
+        let mut prev_idx = cur - 1;
+        while prev_idx > 0 && is_slash_command_input(&self.entries[prev_idx].text) {
+            prev_idx -= 1;
+        }
+        if is_slash_command_input(&self.entries[prev_idx].text) {
+            self.cursor = None;
+            return Some(self.draft_stash.clone());
+        }
+        self.cursor = Some(prev_idx);
+        Some(self.entries[prev_idx].text.clone())
     }
 
-    /// Computes a Fish/Reedline-style inline ghost suffix from history frecency.
+    /// Computes inline dimmed ghost text from Omnibox Frecency + Order-4 Kneser-Ney Gboard rollout.
     #[must_use]
     pub fn suggest_ghost_suffix(&self, line_prefix: &str) -> Option<String> {
-        if line_prefix.is_empty() || line_prefix.starts_with('/') {
-            return None;
-        }
-        self.entries
-            .iter()
-            .filter_map(|entry| {
-                let first_line = entry.text.lines().next().unwrap_or("");
-                (first_line.len() > line_prefix.len()
-                    && starts_with_ignore_ascii_case(first_line, line_prefix))
-                .then(|| &first_line[line_prefix.len()..])
-            })
-            .next()
-            .map(str::to_string)
-    }
-
-    /// Predicts full-phrase and Markov word-ngram continuations from user history.
-    ///
-    /// Returns `(insert_text_from_token_start, display_label, score)`.
-    #[must_use]
-    pub fn predict_continuations(
-        &self,
-        line_prefix: &str,
-        replace_start_col: usize,
-        token_query: &str,
-        prev_word: &str,
-    ) -> Vec<(String, String, i32)> {
-        let mut results: Vec<(String, String, i32)> = Vec::new();
-        let mut seen: HashSet<String> = HashSet::new();
-
-        for (recency_rank, entry) in self.entries.iter().enumerate() {
-            let first_line = entry.text.lines().next().unwrap_or("").trim();
-            if first_line.is_empty() {
-                continue;
-            }
-            let recency_bonus = (20usize.saturating_sub(recency_rank)) as i32;
-            let freq_bonus = (entry.count.min(10) as i32) * 4;
-
-            // 1. Full-line prefix match
-            if !line_prefix.is_empty()
-                && first_line.len() > line_prefix.len()
-                && starts_with_ignore_ascii_case(first_line, line_prefix)
-            {
-                let insert_part = char_slice(first_line, replace_start_col).to_string();
-                if !insert_part.is_empty() && seen.insert(insert_part.to_ascii_lowercase()) {
-                    results.push((
-                        insert_part,
-                        first_line.to_string(),
-                        INTELLISENSE_HISTORY_FRECENCY_BONUS + 45 + recency_bonus + freq_bonus,
-                    ));
-                }
-            }
-
-            // 2. Markov bigram continuation (`prev_word -> next_words`)
-            if !prev_word.is_empty() {
-                let words: Vec<&str> = first_line.split_whitespace().collect();
-                for win_idx in 0..words.len().saturating_sub(1) {
-                    let w_prev = words[win_idx].trim_matches(|c: char| !c.is_ascii_alphanumeric());
-                    if w_prev.eq_ignore_ascii_case(prev_word) {
-                        let tail_end = (win_idx + 4).min(words.len());
-                        let continuation = words[win_idx + 1..tail_end].join(" ");
-                        if (token_query.is_empty()
-                            || starts_with_ignore_ascii_case(&continuation, token_query))
-                            && continuation.len() > token_query.len()
-                            && seen.insert(continuation.to_ascii_lowercase())
-                        {
-                            let display = format!("{prev_word} {continuation}");
-                            results.push((
-                                continuation,
-                                display,
-                                INTELLISENSE_HISTORY_FRECENCY_BONUS
-                                    + 25
-                                    + recency_bonus
-                                    + freq_bonus,
-                            ));
-                        }
-                    }
-                }
-            }
-        }
-
-        results
+        self.corpus.suggest_ghost_suffix(line_prefix)
     }
 }
 
-/// Kind of contextual or code-like intellisense trigger detected at the cursor position.
+/// Interactive facet filter inside the unified `@` mention popup (`Shift+Tab` cycles facets).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum MentionFilter {
+    #[default]
+    All = 0,
+    Files = 1,
+    Functions = 2,
+    Types = 3,
+    Images = 4,
+}
+
+impl MentionFilter {
+    #[must_use]
+    pub const fn all() -> &'static [MentionFilter] {
+        &[
+            MentionFilter::All,
+            MentionFilter::Files,
+            MentionFilter::Functions,
+            MentionFilter::Types,
+            MentionFilter::Images,
+        ]
+    }
+
+    #[must_use]
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::All => "All",
+            Self::Files => "Files",
+            Self::Functions => "Functions",
+            Self::Types => "Types",
+            Self::Images => "Images",
+        }
+    }
+
+    #[must_use]
+    pub const fn cycle(self, forward: bool) -> Self {
+        let all = Self::all();
+        let idx = self as usize;
+        if forward {
+            all[(idx + 1) % all.len()]
+        } else if idx == 0 {
+            all[all.len() - 1]
+        } else {
+            all[idx - 1]
+        }
+    }
+}
+
+struct ScopePrefixSpec {
+    prefix: &'static str,
+    filter: MentionFilter,
+}
+
+const MENTION_SCOPE_PREFIXES: &[ScopePrefixSpec] = &[
+    ScopePrefixSpec {
+        prefix: "fn:",
+        filter: MentionFilter::Functions,
+    },
+    ScopePrefixSpec {
+        prefix: "func:",
+        filter: MentionFilter::Functions,
+    },
+    ScopePrefixSpec {
+        prefix: "type:",
+        filter: MentionFilter::Types,
+    },
+    ScopePrefixSpec {
+        prefix: "cls:",
+        filter: MentionFilter::Types,
+    },
+    ScopePrefixSpec {
+        prefix: "class:",
+        filter: MentionFilter::Types,
+    },
+    ScopePrefixSpec {
+        prefix: "struct:",
+        filter: MentionFilter::Types,
+    },
+    ScopePrefixSpec {
+        prefix: "trait:",
+        filter: MentionFilter::Types,
+    },
+    ScopePrefixSpec {
+        prefix: "interface:",
+        filter: MentionFilter::Types,
+    },
+    ScopePrefixSpec {
+        prefix: "enum:",
+        filter: MentionFilter::Types,
+    },
+    ScopePrefixSpec {
+        prefix: "img:",
+        filter: MentionFilter::Images,
+    },
+    ScopePrefixSpec {
+        prefix: "image:",
+        filter: MentionFilter::Images,
+    },
+    ScopePrefixSpec {
+        prefix: "pic:",
+        filter: MentionFilter::Images,
+    },
+    ScopePrefixSpec {
+        prefix: "file:",
+        filter: MentionFilter::Files,
+    },
+    ScopePrefixSpec {
+        prefix: "path:",
+        filter: MentionFilter::Files,
+    },
+];
+
+/// Parses an `@` query for an optional scope prefix (`@fn:foo`, `@img:hero`, `@cls:Input`),
+/// returning `(scoped_filter_override, stripped_query)`.
+#[must_use]
+pub fn parse_at_mention_query(raw_query: &str) -> (Option<MentionFilter>, &str) {
+    for spec in MENTION_SCOPE_PREFIXES {
+        if starts_with_ignore_ascii_case(raw_query, spec.prefix) {
+            return (
+                Some(spec.filter),
+                raw_query.get(spec.prefix.len()..).unwrap_or(""),
+            );
+        }
+    }
+    (None, raw_query)
+}
+
+/// Kind of contextual or ambient intellisense trigger detected at the cursor position.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TriggerKind {
-    /// `@<path_query>` workspace file mention
-    FileMention,
-    /// `#<symbol_query>` AST symbol mention
+    /// `@<query>` unified multimodal mention (`Files + Functions + Classes/Types + Images`)
+    AtMention,
+    /// `#<symbol_query>` explicit AST symbol alias
     SymbolMention,
     /// `$<skill_query>` Vault skill mention
     SkillMention,
     /// `/<cmd> <arg_query>` slash command argument completion
     SlashArg { command: String },
-    /// IDE-style AI Code & Prompt Intellisense (mid-word token or next-word context prediction)
-    CodePrompt {
-        prev_word: String,
-        prev_two_words: String,
-        line_prefix: String,
-    },
+    /// Ambient conversational prompt continuation (`Omnibox + Gboard Kneser-Ney`, non-blocking strip)
+    PromptFlow { line_prefix: String },
 }
 
 impl TriggerKind {
@@ -441,11 +574,11 @@ impl TriggerKind {
     #[must_use]
     pub const fn kind_index(&self) -> usize {
         match self {
-            Self::FileMention => 0,
+            Self::AtMention => 0,
             Self::SymbolMention => 1,
             Self::SkillMention => 2,
             Self::SlashArg { .. } => 3,
-            Self::CodePrompt { .. } => 4,
+            Self::PromptFlow { .. } => 4,
         }
     }
 
@@ -460,10 +593,10 @@ impl TriggerKind {
     }
 
     /// Returns `true` for explicit sigil triggers (`@`, `#`, `$`, `/cmd <arg>`),
-    /// and `false` for ambient `CodePrompt` intellisense.
+    /// and `false` for ambient `PromptFlow` suggestions.
     #[must_use]
     pub const fn is_explicit(&self) -> bool {
-        !matches!(self, Self::CodePrompt { .. })
+        !matches!(self, Self::PromptFlow { .. })
     }
 }
 
@@ -480,6 +613,7 @@ pub enum CandidateKind {
     Task = 5,
     Skill = 6,
     Arg = 7,
+    Image = 8,
 }
 
 /// Frame border rendering mode for the intellisense and command menu popup.
@@ -496,18 +630,12 @@ pub enum MenuBorderMode {
 #[repr(usize)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub enum MenuStyle {
-    /// Zero glyphs, emojis, or tags — clean typography with full-row highlight bar (Default).
     #[default]
     Minimal = 0,
-    /// Pure 7-bit retro terminal style (`+---+` border, `>` pointer, `[PRMPT]`/`[SYM]`/`[FILE]` tags).
     Ascii = 1,
-    /// Modern IDE / Nerd-glyph style (`❯` pointer, `ƒ` symbol, `§` prompt, `⌖` file, `↺` history).
     Icons = 2,
-    /// Expressive visual emoji badges (`👉` pointer, `⚡` prompt, `🧩` symbol, `📄` file, `🕒` history).
     Emoji = 3,
-    /// Playful Japanese ASCII kaomoji expressions (`(☞ﾟヮﾟ)☞` pointer, `(・ω・)` badges, double frame).
     Kaomoji = 4,
-    /// Borderless compact 4-row floating strip with `▎` left accent bar.
     Compact = 5,
 }
 
@@ -520,22 +648,19 @@ pub struct MenuStyleSpec {
     pub aliases: &'static [&'static str],
     pub border_mode: MenuBorderMode,
     /// Header badges indexed by `TriggerKind::kind_index()`:
-    /// `[0: FileMention, 1: SymbolMention, 2: SkillMention, 3: SlashArg, 4: CodePrompt]`
+    /// `[0: AtMention, 1: SymbolMention, 2: SkillMention, 3: SlashArg, 4: PromptFlow]`
     pub trigger_badges: [&'static str; TRIGGER_KIND_COUNT],
     /// Key hints indexed by `usize::from(trigger.kind.is_explicit())`:
-    /// `[0: Ambient CodePrompt, 1: Explicit Sigil (@, #, $, /arg)]`
+    /// `[0: Ambient PromptFlow, 1: Explicit Sigil (@, #, $, /arg)]`
     pub key_hints: [&'static str; 2],
     /// Row selection prefix indexed by `usize::from(is_selected)`:
     /// `[0: Unselected, 1: Selected]`
     pub row_prefixes: [&'static str; 2],
     /// Candidate kind prefix indexed by `CandidateKind as usize`:
-    /// `[0: Prompt, 1: History, 2: Symbol, 3: File, 4: Command, 5: Task, 6: Skill, 7: Arg]`
+    /// `[0: Prompt, 1: History, 2: Symbol, 3: File, 4: Command, 5: Task, 6: Skill, 7: Arg, 8: Image]`
     pub kind_prefixes: [&'static str; CANDIDATE_KIND_COUNT],
-    /// Right-aligned detail wrapper `(left, right)` around `cand.detail`
     pub detail_wrap: (&'static str, &'static str),
-    /// Spotlight `/commands` palette chrome `(title_badge, unselected_prefix, selected_prefix)`
     pub palette_chrome: (&'static str, &'static str, &'static str),
-    /// Static preview lines displayed in the Theme & Style Selector modal
     pub preview: &'static [&'static str],
 }
 
@@ -548,25 +673,25 @@ pub static MENU_STYLE_SPECS: [MenuStyleSpec; MENU_STYLE_COUNT] = [
         aliases: &["clean", "default", "none"],
         border_mode: MenuBorderMode::Rounded,
         trigger_badges: [
-            " Files ",
+            " @ Mentions ",
             " Symbols ",
             " Skills ",
             " Arguments ",
-            " Intellisense ",
+            " Suggestions ",
         ],
         key_hints: [
-            "[Tab/Right] Complete  [Alt+Up/Down] Select  [Enter] Send  [Esc] Dismiss ",
-            "[Tab/Enter] Complete  [Up/Down] Select  [Esc] Dismiss ",
+            "[Tab/Right] Complete  [Alt+1..3] Pick  [Enter] Send  [Esc] Dismiss ",
+            "[Tab/Enter] Insert  [Up/Down] Select  [Shift+Tab] Filter  [Esc] Dismiss ",
         ],
         row_prefixes: ["  ", "  "],
-        kind_prefixes: ["", "", "", "", "", "", "", ""],
+        kind_prefixes: ["", "", "", "", "", "", "", "", ""],
         detail_wrap: ("", ""),
         palette_chrome: (" Commands ", "   ", " ❯ "),
         preview: &[
-            "╭ Intellisense [Tab/Right] Complete  [Alt+Up/Down] Select ───╮",
-            "│  so whats next                                      prompt │",
-            "│  InputDock                              src/ui/input.rs:L1 │",
-            "│  src/ui/intellisense.rs                               file │",
+            "╭ @ Mentions [Tab/Enter] Insert  [Shift+Tab] Filter ─────────╮",
+            "│  @InputDock                    struct · src/ui/input.rs:L1 │",
+            "│  @src/ui/intellisense.rs                         rs · file │",
+            "│  @assets/hero.png                    png · 1440x900 · 48KB │",
             "╰────────────────────────────────────────────────────────────╯",
         ],
     },
@@ -575,92 +700,92 @@ pub static MENU_STYLE_SPECS: [MenuStyleSpec; MENU_STYLE_COUNT] = [
         id: "ascii",
         name: "2. Pure ASCII Bracketed ([SYM] / +---+)",
         description:
-            "Strict 7-bit ASCII box frame (+---+) with > pointer and [PRMPT]/[SYM]/[FILE] tags",
+            "Strict 7-bit ASCII box frame (+---+) with > pointer and [PRMPT]/[SYM]/[FILE]/[IMG] tags",
         aliases: &["retro", "plain", "bracket", "terminal"],
         border_mode: MenuBorderMode::PlainAscii,
         trigger_badges: [
-            " [FILES] ",
+            " [@MENTIONS] ",
             " [SYMBOLS] ",
             " [SKILLS] ",
             " [ARGS] ",
-            " [INTELLISENSE] ",
+            " [SUGGESTIONS] ",
         ],
         key_hints: [
-            "[Tab/Right] Complete  [Alt+Up/Dn] Select  [Esc] Close ",
-            "[Tab/Enter] Complete  [Up/Dn] Select  [Esc] Close ",
+            "[Tab/Right] Complete  [Alt+1..3] Pick  [Esc] Close ",
+            "[Tab/Enter] Insert  [Up/Dn] Select  [S-Tab] Filter ",
         ],
         row_prefixes: ["   ", " > "],
         kind_prefixes: [
             "[PRMPT] ", "[HIST]  ", "[SYM]   ", "[FILE]  ", "[CMD]   ", "[TASK]  ", "[SKL]   ",
-            "[ARG]   ",
+            "[ARG]   ", "[IMG]   ",
         ],
         detail_wrap: ("(", ")"),
         palette_chrome: (" [COMMANDS] ", "   ", " > "),
         preview: &[
-            "+ [INTELLISENSE] [Tab/Right] Complete  [Alt+Up/Dn] Select ---+",
-            "| > [PRMPT] so whats next                           (prompt) |",
-            "|   [SYM]   InputDock                    (src/ui/input.rs:1) |",
-            "|   [FILE]  src/ui/intellisense.rs                    (file) |",
+            "+ [@MENTIONS] [Tab/Enter] Insert  [S-Tab] Filter ------------+",
+            "| > [SYM]   @InputDock                 (struct · input.rs:1) |",
+            "|   [FILE]  @src/ui/intellisense.rs              (rs · file) |",
+            "|   [IMG]   @assets/hero.png                  (png · 1440x900)|",
             "+------------------------------------------------------------+",
         ],
     },
     MenuStyleSpec {
         style: MenuStyle::Icons,
         id: "icons",
-        name: "3. Modern IDE Icons (❯ / ƒ / § / ⌖)",
-        description: "Crisp 1-cell developer glyphs (ƒ symbol, § prompt, ⌖ file, ↺ history, $ cmd)",
+        name: "3. Modern IDE Icons (❯ / ƒ / § / ⌖ / ◩)",
+        description: "Crisp 1-cell developer glyphs (ƒ symbol, § prompt, ⌖ file, ◩ image, ↺ history)",
         aliases: &["icon", "nerd", "ide", "glyph", "glyphs"],
         border_mode: MenuBorderMode::Rounded,
         trigger_badges: [
-            " ⌖ Files ",
+            " @ Mentions ",
             " ƒ Symbols ",
             " ✦ Skills ",
             " ▸ Arguments ",
-            " ✦ Intellisense ",
+            " ✦ Suggestions ",
         ],
         key_hints: [
-            "[Tab/→] Complete  [Alt+↑/↓] Select  [Enter] Send  [Esc] Dismiss ",
-            "[Tab/Enter] Complete  [↑/↓] Select  [Esc] Dismiss ",
+            "[Tab/→] Complete  [Alt+1..3] Pick  [Enter] Send  [Esc] Dismiss ",
+            "[Tab/Enter] Insert  [↑/↓] Select  [⇧Tab] Filter  [Esc] Dismiss ",
         ],
         row_prefixes: ["   ", " ❯ "],
-        kind_prefixes: ["§ ", "↺ ", "ƒ ", "⌖ ", "$ ", "✓ ", "✦ ", "▸ "],
+        kind_prefixes: ["§ ", "↺ ", "ƒ ", "⌖ ", "$ ", "✓ ", "✦ ", "▸ ", "◩ "],
         detail_wrap: ("", ""),
         palette_chrome: (" ⌘ Commands ", "   ", " ❯ "),
         preview: &[
-            "╭ ✦ Intellisense [Tab/→] Complete  [Alt+↑/↓] Select ─────────╮",
-            "│ ❯ § so whats next                                   prompt │",
-            "│   ƒ InputDock                           src/ui/input.rs:L1 │",
-            "│   ⌖ src/ui/intellisense.rs                            file │",
+            "╭ @ Mentions [Tab/Enter] Insert  [⇧Tab] Filter ──────────────╮",
+            "│ ❯ ƒ @InputDock                 struct · src/ui/input.rs:L1 │",
+            "│   ⌖ @src/ui/intellisense.rs                      rs · file │",
+            "│   ◩ @assets/hero.png                 png · 1440x900 · 48KB │",
             "╰────────────────────────────────────────────────────────────╯",
         ],
     },
     MenuStyleSpec {
         style: MenuStyle::Emoji,
         id: "emoji",
-        name: "4. Expressive Emoji (👉 / ⚡ / 🧩 / 📄)",
-        description: "Visual category emojis for prompts, AST symbols, files, history, and tasks",
+        name: "4. Expressive Emoji (👉 / ⚡ / 🧩 / 📄 / 🖼️)",
+        description: "Visual category emojis for prompts, AST symbols, files, images, and tasks",
         aliases: &["emojis", "expressive"],
         border_mode: MenuBorderMode::Rounded,
         trigger_badges: [
-            " 📁 Files ",
+            " 🎯 Mentions ",
             " 🧩 Symbols ",
             " 🧠 Skills ",
             " 🔧 Arguments ",
-            " ✨ Intellisense ",
+            " ✨ Suggestions ",
         ],
         key_hints: [
-            "[Tab/→] Complete  [Alt+↑/↓] Select  [Enter] Send  [Esc] Dismiss ",
-            "[Tab/Enter] Complete  [↑/↓] Select  [Esc] Dismiss ",
+            "[Tab/→] Complete  [Alt+1..3] Pick  [Enter] Send  [Esc] Dismiss ",
+            "[Tab/Enter] Insert  [↑/↓] Select  [⇧Tab] Filter  [Esc] Dismiss ",
         ],
         row_prefixes: ["    ", " 👉 "],
-        kind_prefixes: ["⚡ ", "🕒 ", "🧩 ", "📄 ", "⚙️ ", "✅ ", "🧠 ", "🔧 "],
+        kind_prefixes: ["⚡ ", "🕒 ", "🧩 ", "📄 ", "⚙️ ", "✅ ", "🧠 ", "🔧 ", "🖼️ "],
         detail_wrap: ("", ""),
         palette_chrome: (" ✨ Commands ", "    ", " 👉 "),
         preview: &[
-            "╭ ✨ Intellisense [Tab/→] Complete  [Alt+↑/↓] Select ────────╮",
-            "│ 👉 ⚡ so whats next                                  prompt │",
-            "│    🧩 InputDock                         src/ui/input.rs:L1 │",
-            "│    📄 src/ui/intellisense.rs                          file │",
+            "╭ 🎯 Mentions [Tab/Enter] Insert  [⇧Tab] Filter ─────────────╮",
+            "│ 👉 🧩 @InputDock               struct · src/ui/input.rs:L1 │",
+            "│    📄 @src/ui/intellisense.rs                    rs · file │",
+            "│    🖼️ @assets/hero.png               png · 1440x900 · 48KB │",
             "╰────────────────────────────────────────────────────────────╯",
         ],
     },
@@ -672,25 +797,25 @@ pub static MENU_STYLE_SPECS: [MenuStyleSpec; MENU_STYLE_COUNT] = [
         aliases: &["kamoji", "kaomojis", "face", "japanese"],
         border_mode: MenuBorderMode::DoubleFrame,
         trigger_badges: [
-            " (・ω・) Files ",
+            " (・ω・) @Mentions ",
             " (⌐■_■) Symbols ",
             " (✧ω✧) Skills ",
             " (•̀ᴗ•́)و Args ",
-            " (◕‿◕) Intellisense ",
+            " (◕‿◕) Suggestions ",
         ],
         key_hints: [
-            "[Tab/→] Complete  [Alt+↑/↓] Pick  [Esc] Bye ",
-            "[Tab/Enter] Complete  [↑/↓] Pick  [Esc] Bye ",
+            "[Tab/→] Complete  [Alt+1..3] Pick  [Esc] Bye ",
+            "[Tab/Enter] Insert  [↑/↓] Pick  [⇧Tab] Filter ",
         ],
         row_prefixes: ["  (•_•)  ", " (☞ﾟヮﾟ)☞ "],
-        kind_prefixes: ["", "", "", "", "", "", "", ""],
+        kind_prefixes: ["", "", "", "", "", "", "", "", ""],
         detail_wrap: ("[", "]"),
         palette_chrome: (" (◕‿◕) Commands ", "  (•_•)  ", " (☞ﾟヮﾟ)☞ "),
         preview: &[
-            "╔ (◕‿◕) Intellisense [Tab/→] Complete  [Alt+↑/↓] Pick ═══════╗",
-            "║ (☞ﾟヮﾟ)☞ so whats next                             [prompt] ║",
-            "║  (•_•)  InputDock                      [src/ui/input.rs:1] ║",
-            "║  (•_•)  src/ui/intellisense.rs                      [file] ║",
+            "╔ (・ω・) @Mentions [Tab/Enter] Insert  [⇧Tab] Filter ════════╗",
+            "║ (☞ﾟヮﾟ)☞ @InputDock                [struct · input.rs:L1] ║",
+            "║  (•_•)  @src/ui/intellisense.rs               [rs · file] ║",
+            "║  (•_•)  @assets/hero.png                   [png · 1440x900]║",
             "╚════════════════════════════════════════════════════════════╝",
         ],
     },
@@ -702,27 +827,26 @@ pub static MENU_STYLE_SPECS: [MenuStyleSpec; MENU_STYLE_COUNT] = [
         aliases: &["strip", "inline", "borderless", "slim"],
         border_mode: MenuBorderMode::BorderlessCompact,
         trigger_badges: [
-            " Files ",
+            " @Mentions ",
             " Symbols ",
             " Skills ",
             " Args ",
-            " Intellisense ",
+            " Suggestions ",
         ],
-        key_hints: ["[Tab] Complete", "[Tab] Complete"],
+        key_hints: ["[Tab] Complete", "[Tab] Insert  [⇧Tab] Filter"],
         row_prefixes: ["  ", "▎ "],
-        kind_prefixes: ["", "", "", "", "", "", "", ""],
+        kind_prefixes: ["", "", "", "", "", "", "", "", ""],
         detail_wrap: ("· ", ""),
         palette_chrome: (" Commands ", "  ", "▎ "),
         preview: &[
-            "▎ so whats next                                     · prompt ",
-            "  InputDock                            · src/ui/input.rs:L1 ",
-            "  src/ui/intellisense.rs                             · file ",
+            "▎ @InputDock                    · struct · src/ui/input.rs:L1 ",
+            "  @src/ui/intellisense.rs                         · rs · file ",
+            "  @assets/hero.png                    · png · 1440x900 · 48KB ",
         ],
     },
 ];
 
 impl MenuStyle {
-    /// Resolves a `MenuStyle` from any user/config string using the declarative `MENU_STYLE_SPECS` table.
     #[must_use]
     pub fn from_str_loose(raw: &str) -> Self {
         let norm = raw.trim().to_ascii_lowercase().replace('-', "_");
@@ -734,7 +858,6 @@ impl MenuStyle {
             .unwrap_or_default()
     }
 
-    /// Direct `O(1)` lookup into `MENU_STYLE_SPECS`.
     #[must_use]
     pub const fn spec(self) -> &'static MenuStyleSpec {
         &MENU_STYLE_SPECS[self as usize]
@@ -751,28 +874,21 @@ impl MenuStyle {
 pub struct TriggerToken {
     pub kind: TriggerKind,
     pub query: String,
-    /// Character index on the current line where the replacement begins (including `@`, `#`, `$`, or arg start).
     pub replace_start_col: usize,
-    /// Character index of the cursor on the current line.
     pub replace_end_col: usize,
 }
 
-/// A single ranked candidate shown in the floating intellisense popup.
+/// A single ranked candidate shown in the floating intellisense popup or Gboard chip strip.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CompletionCandidate {
-    /// Text inserted into `[replace_start_col..replace_end_col]` when accepted.
     pub insert_text: String,
-    /// Primary label displayed on the left of the popup row.
     pub display_label: String,
-    /// Secondary category/detail badge displayed on the right of the popup row.
     pub detail: String,
-    /// Semantic kind used to index `MenuStyleSpec::kind_prefixes`.
     pub kind: CandidateKind,
     pub score: i32,
 }
 
 impl CompletionCandidate {
-    /// Formats the left-hand label for `style` and `is_selected` via `O(1)` table indexing.
     #[must_use]
     pub fn format_left(&self, style: MenuStyle, is_selected: bool) -> String {
         let spec = style.spec();
@@ -781,12 +897,55 @@ impl CompletionCandidate {
         format!("{row_prefix}{kind_prefix}{}", self.display_label)
     }
 
-    /// Formats the right-hand detail badge for `style` via `O(1)` table indexing.
     #[must_use]
     pub fn format_right(&self, style: MenuStyle) -> String {
         let (left, right) = style.spec().detail_wrap;
         format!("{left}{}{right}", self.detail)
     }
+}
+
+/// Indexed AST symbol definition (function, method, struct, class, trait, interface, enum, type).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AstSymbolEntry {
+    pub name: String,
+    /// Unambiguous `@` token inserted into prompt (`@Symbol` when unique, `@path:Symbol` when overloaded).
+    pub insert_token: String,
+    pub kind_badge: String,
+    pub is_type: bool,
+    pub rel_file: String,
+    pub start_line: usize,
+    pub end_line: usize,
+    pub signature: String,
+    pub centrality_bonus: i32,
+}
+
+/// Indexed project or screenshot image asset available for `@` multimodal mention.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ImageAssetEntry {
+    pub rel_path: String,
+    pub ext: String,
+    pub media_type: String,
+    pub dimensions: Option<(u32, u32)>,
+    pub size_bytes: usize,
+    pub is_raster_vision: bool,
+}
+
+impl ImageAssetEntry {
+    #[must_use]
+    pub fn detail_badge(&self) -> String {
+        let kb = (self.size_bytes.max(1024) / 1024).max(1);
+        match self.dimensions {
+            Some((w, h)) => format!("{} · {}x{} · {}KB", self.ext, w, h, kb),
+            None => format!("{} · {}KB", self.ext, kb),
+        }
+    }
+}
+
+/// Resolved `@` entities extracted from a submitted prompt for automatic vision & AST span grounding.
+#[derive(Debug, Clone, Default)]
+pub struct ResolvedPromptMentions {
+    pub images: Vec<ImageAssetEntry>,
+    pub symbols: Vec<AstSymbolEntry>,
 }
 
 /// Declarative sub-argument completion schema for slash commands (`/cmd <arg>`).
@@ -797,7 +956,6 @@ struct SlashArgSpec {
 }
 
 const SLASH_ARG_TABLE: &[SlashArgSpec] = &[
-    // /caveman
     SlashArgSpec {
         command: "/caveman",
         arg: "lite",
@@ -823,7 +981,6 @@ const SLASH_ARG_TABLE: &[SlashArgSpec] = &[
         arg: "off",
         detail: "Disable Caveman response compression",
     },
-    // /temp
     SlashArgSpec {
         command: "/temp",
         arg: "low",
@@ -839,7 +996,6 @@ const SLASH_ARG_TABLE: &[SlashArgSpec] = &[
         arg: "high",
         detail: "Deep exploration & high effort (temp 0.7)",
     },
-    // /theme
     SlashArgSpec {
         command: "/theme",
         arg: "tokyo-night",
@@ -885,7 +1041,6 @@ const SLASH_ARG_TABLE: &[SlashArgSpec] = &[
         arg: "one-dark",
         detail: "Atom One Dark classic palette",
     },
-    // /fav
     SlashArgSpec {
         command: "/fav",
         arg: "add",
@@ -901,7 +1056,6 @@ const SLASH_ARG_TABLE: &[SlashArgSpec] = &[
         arg: "list",
         detail: "List all saved favorite models",
     },
-    // /copy
     SlashArgSpec {
         command: "/copy",
         arg: "last",
@@ -912,7 +1066,6 @@ const SLASH_ARG_TABLE: &[SlashArgSpec] = &[
         arg: "all",
         detail: "Copy entire session transcript to clipboard",
     },
-    // /goal
     SlashArgSpec {
         command: "/goal",
         arg: "status",
@@ -925,377 +1078,19 @@ const SLASH_ARG_TABLE: &[SlashArgSpec] = &[
     },
 ];
 
-/// Curated AI coding & conversational prompt completions (`TriggerKind::CodePrompt`).
-struct PromptPhraseSpec {
-    phrase: &'static str,
-    detail: &'static str,
-}
-
-const AI_PROMPT_PHRASES: &[PromptPhraseSpec] = &[
-    PromptPhraseSpec {
-        phrase: "so whats next",
-        detail: "prompt",
-    },
-    PromptPhraseSpec {
-        phrase: "so whats happening",
-        detail: "prompt",
-    },
-    PromptPhraseSpec {
-        phrase: "so whats the status",
-        detail: "prompt",
-    },
-    PromptPhraseSpec {
-        phrase: "ok go on",
-        detail: "prompt",
-    },
-    PromptPhraseSpec {
-        phrase: "yes go on",
-        detail: "prompt",
-    },
-    PromptPhraseSpec {
-        phrase: "continue with the next step",
-        detail: "prompt",
-    },
-    PromptPhraseSpec {
-        phrase: "fix the bug in ",
-        detail: "prompt",
-    },
-    PromptPhraseSpec {
-        phrase: "fix all compiler warnings and errors",
-        detail: "prompt",
-    },
-    PromptPhraseSpec {
-        phrase: "refactor this module for clean architecture",
-        detail: "prompt",
-    },
-    PromptPhraseSpec {
-        phrase: "implement the feature for ",
-        detail: "prompt",
-    },
-    PromptPhraseSpec {
-        phrase: "optimize performance and memory usage",
-        detail: "prompt",
-    },
-    PromptPhraseSpec {
-        phrase: "add unit tests for ",
-        detail: "prompt",
-    },
-    PromptPhraseSpec {
-        phrase: "run cargo test and fix any failures",
-        detail: "prompt",
-    },
-    PromptPhraseSpec {
-        phrase: "run cargo clippy and fix warnings",
-        detail: "prompt",
-    },
-    PromptPhraseSpec {
-        phrase: "check compilation and run tests",
-        detail: "prompt",
-    },
-    PromptPhraseSpec {
-        phrase: "review the recent git diff",
-        detail: "prompt",
-    },
-    PromptPhraseSpec {
-        phrase: "debug why this is failing",
-        detail: "prompt",
-    },
-    PromptPhraseSpec {
-        phrase: "explain how this works",
-        detail: "prompt",
-    },
-    PromptPhraseSpec {
-        phrase: "update documentation to match the codebase",
-        detail: "prompt",
-    },
-    PromptPhraseSpec {
-        phrase: "create a modern responsive UI for ",
-        detail: "prompt",
-    },
-];
-
-/// Context-triggered next-word / clause predictions after a specific preceding word or 2-word phrase.
-struct ContextNextSpec {
-    prev_context: &'static str,
-    continuation: &'static str,
-    detail: &'static str,
-    kind: CandidateKind,
-}
-
-const CONTEXT_NEXT_SPECS: &[ContextNextSpec] = &[
-    // "so ..." / "so whats ..."
-    ContextNextSpec {
-        prev_context: "so",
-        continuation: "whats next",
-        detail: "prompt",
-        kind: CandidateKind::Prompt,
-    },
-    ContextNextSpec {
-        prev_context: "so",
-        continuation: "whats happening",
-        detail: "prompt",
-        kind: CandidateKind::Prompt,
-    },
-    ContextNextSpec {
-        prev_context: "so whats",
-        continuation: "next",
-        detail: "prompt",
-        kind: CandidateKind::Prompt,
-    },
-    ContextNextSpec {
-        prev_context: "so whats",
-        continuation: "happening",
-        detail: "prompt",
-        kind: CandidateKind::Prompt,
-    },
-    ContextNextSpec {
-        prev_context: "so whats",
-        continuation: "the status",
-        detail: "prompt",
-        kind: CandidateKind::Prompt,
-    },
-    ContextNextSpec {
-        prev_context: "whats",
-        continuation: "next",
-        detail: "prompt",
-        kind: CandidateKind::Prompt,
-    },
-    ContextNextSpec {
-        prev_context: "whats",
-        continuation: "happening",
-        detail: "prompt",
-        kind: CandidateKind::Prompt,
-    },
-    // "ok ..." / "ok go ..."
-    ContextNextSpec {
-        prev_context: "ok",
-        continuation: "go on",
-        detail: "prompt",
-        kind: CandidateKind::Prompt,
-    },
-    ContextNextSpec {
-        prev_context: "ok go",
-        continuation: "on",
-        detail: "prompt",
-        kind: CandidateKind::Prompt,
-    },
-    ContextNextSpec {
-        prev_context: "yes",
-        continuation: "go on",
-        detail: "prompt",
-        kind: CandidateKind::Prompt,
-    },
-    // "fix ..."
-    ContextNextSpec {
-        prev_context: "fix",
-        continuation: "the bug in ",
-        detail: "prompt",
-        kind: CandidateKind::Prompt,
-    },
-    ContextNextSpec {
-        prev_context: "fix",
-        continuation: "all compiler warnings and errors",
-        detail: "prompt",
-        kind: CandidateKind::Prompt,
-    },
-    ContextNextSpec {
-        prev_context: "fix",
-        continuation: "the failing tests",
-        detail: "prompt",
-        kind: CandidateKind::Prompt,
-    },
-    // "run ..." / "cargo ..." / "git ..."
-    ContextNextSpec {
-        prev_context: "run",
-        continuation: "cargo test",
-        detail: "command",
-        kind: CandidateKind::Command,
-    },
-    ContextNextSpec {
-        prev_context: "run",
-        continuation: "cargo check",
-        detail: "command",
-        kind: CandidateKind::Command,
-    },
-    ContextNextSpec {
-        prev_context: "run",
-        continuation: "cargo clippy -- -D warnings",
-        detail: "command",
-        kind: CandidateKind::Command,
-    },
-    ContextNextSpec {
-        prev_context: "cargo",
-        continuation: "test",
-        detail: "rust",
-        kind: CandidateKind::Command,
-    },
-    ContextNextSpec {
-        prev_context: "cargo",
-        continuation: "check",
-        detail: "rust",
-        kind: CandidateKind::Command,
-    },
-    ContextNextSpec {
-        prev_context: "cargo",
-        continuation: "clippy -- -D warnings",
-        detail: "rust",
-        kind: CandidateKind::Command,
-    },
-    ContextNextSpec {
-        prev_context: "cargo",
-        continuation: "build --release",
-        detail: "rust",
-        kind: CandidateKind::Command,
-    },
-    ContextNextSpec {
-        prev_context: "git",
-        continuation: "status",
-        detail: "git",
-        kind: CandidateKind::Command,
-    },
-    ContextNextSpec {
-        prev_context: "git",
-        continuation: "diff",
-        detail: "git",
-        kind: CandidateKind::Command,
-    },
-    ContextNextSpec {
-        prev_context: "git",
-        continuation: "log --oneline -n 10",
-        detail: "git",
-        kind: CandidateKind::Command,
-    },
-    // Code construct continuations ("pub ...", "async ...", "export ...")
-    ContextNextSpec {
-        prev_context: "pub",
-        continuation: "fn ",
-        detail: "rust",
-        kind: CandidateKind::Symbol,
-    },
-    ContextNextSpec {
-        prev_context: "pub",
-        continuation: "struct ",
-        detail: "rust",
-        kind: CandidateKind::Symbol,
-    },
-    ContextNextSpec {
-        prev_context: "pub",
-        continuation: "enum ",
-        detail: "rust",
-        kind: CandidateKind::Symbol,
-    },
-    ContextNextSpec {
-        prev_context: "pub",
-        continuation: "async fn ",
-        detail: "rust",
-        kind: CandidateKind::Symbol,
-    },
-    ContextNextSpec {
-        prev_context: "async",
-        continuation: "fn ",
-        detail: "rust",
-        kind: CandidateKind::Symbol,
-    },
-    ContextNextSpec {
-        prev_context: "export",
-        continuation: "function ",
-        detail: "typescript",
-        kind: CandidateKind::Symbol,
-    },
-    ContextNextSpec {
-        prev_context: "export",
-        continuation: "interface ",
-        detail: "typescript",
-        kind: CandidateKind::Symbol,
-    },
-];
-
-/// Code keyword & developer CLI completions for IDE-like token intellisense.
-struct CodeKeywordSpec {
-    token: &'static str,
-    detail: &'static str,
-    kind: CandidateKind,
-}
-
-const CODE_KEYWORD_SPECS: &[CodeKeywordSpec] = &[
-    CodeKeywordSpec {
-        token: "async fn ",
-        detail: "rust",
-        kind: CandidateKind::Symbol,
-    },
-    CodeKeywordSpec {
-        token: "pub fn ",
-        detail: "rust",
-        kind: CandidateKind::Symbol,
-    },
-    CodeKeywordSpec {
-        token: "pub struct ",
-        detail: "rust",
-        kind: CandidateKind::Symbol,
-    },
-    CodeKeywordSpec {
-        token: "pub enum ",
-        detail: "rust",
-        kind: CandidateKind::Symbol,
-    },
-    CodeKeywordSpec {
-        token: "pub trait ",
-        detail: "rust",
-        kind: CandidateKind::Symbol,
-    },
-    CodeKeywordSpec {
-        token: "anyhow::Result",
-        detail: "rust",
-        kind: CandidateKind::Symbol,
-    },
-    CodeKeywordSpec {
-        token: "tokio::spawn",
-        detail: "rust",
-        kind: CandidateKind::Symbol,
-    },
-    CodeKeywordSpec {
-        token: "serde::Serialize",
-        detail: "rust",
-        kind: CandidateKind::Symbol,
-    },
-    CodeKeywordSpec {
-        token: "cargo test",
-        detail: "command",
-        kind: CandidateKind::Command,
-    },
-    CodeKeywordSpec {
-        token: "cargo check",
-        detail: "command",
-        kind: CandidateKind::Command,
-    },
-    CodeKeywordSpec {
-        token: "cargo clippy",
-        detail: "command",
-        kind: CandidateKind::Command,
-    },
-    CodeKeywordSpec {
-        token: "export default function ",
-        detail: "typescript",
-        kind: CandidateKind::Symbol,
-    },
-    CodeKeywordSpec {
-        token: "export interface ",
-        detail: "typescript",
-        kind: CandidateKind::Symbol,
-    },
-];
-
-/// Lazy-indexed workspace completion & AI code/prompt intellisense engine.
+/// Unified `@` Multimodal Entity Graph & Pure-Prompt Intellisense Engine.
 #[derive(Debug, Clone, Default)]
 pub struct IntellisenseEngine {
     indexed_root: Option<PathBuf>,
-    pub files: Vec<String>,
-    pub symbols: Vec<(String, String)>,
+    pub files: Vec<(String, bool)>,
+    pub ast_symbols: Vec<AstSymbolEntry>,
+    pub images: Vec<ImageAssetEntry>,
     pub skills: Vec<(String, String)>,
     pub tasks: Vec<String>,
+    pub mention_filter: MentionFilter,
     pub selected_index: usize,
     pub dismissed_for_query: Option<String>,
-    /// True when the user explicitly focused the ambient popup via `Alt+Down`/`Alt+Up` or `Ctrl+N`/`Ctrl+P`.
+    /// True when the user explicitly focused the popup via `Alt+Down`/`Alt+Up` or `Ctrl+Space`.
     pub popup_explicitly_focused: bool,
 }
 
@@ -1305,7 +1100,17 @@ impl IntellisenseEngine {
         Self::default()
     }
 
-    /// Ensures the workspace file, symbol, skill, and active task index is populated for `workspace_root`.
+    pub fn cycle_mention_filter(&mut self, forward: bool) {
+        self.mention_filter = self.mention_filter.cycle(forward);
+        self.selected_index = 0;
+    }
+
+    /// Forces a fresh workspace re-index on next `@` query (e.g. after new files/screenshots appear).
+    pub fn invalidate_index(&mut self) {
+        self.indexed_root = None;
+    }
+
+    /// Populates the unified workspace entity graph (`Files + AST Functions/Types + Images + Tasks + Skills`).
     pub fn ensure_indexed(&mut self, workspace_root: Option<&Path>) {
         if self.skills.is_empty() {
             self.index_builtin_skills();
@@ -1318,12 +1123,41 @@ impl IntellisenseEngine {
         }
         self.indexed_root = Some(root.to_path_buf());
         self.files.clear();
-        self.symbols.clear();
+        self.ast_symbols.clear();
+        self.images.clear();
         self.tasks.clear();
 
         self.index_workspace_tasks(root);
 
-        let mut seen_symbols: HashSet<String> = HashSet::new();
+        // 1. Load cached per-file Tree-sitter AST shards (`.minicode/graph_shards.bin`) and inbound centrality
+        let shard_by_rel: HashMap<String, Vec<SymbolDef>> = GraphStore::load_shards(root)
+            .unwrap_or_default()
+            .into_iter()
+            .map(|(p, shard)| {
+                let rel = p
+                    .strip_prefix(root)
+                    .unwrap_or(&p)
+                    .to_string_lossy()
+                    .replace('\\', "/");
+                (rel, shard.all_symbols)
+            })
+            .collect();
+
+        let mut inbound_degrees: HashMap<String, usize> = HashMap::new();
+        if let Ok(Some(snap)) = GraphStore::load_snapshot(root) {
+            for &(_, target_idx, _) in &snap.edges {
+                if let Some(node) = snap.nodes.get(target_idx) {
+                    *inbound_degrees.entry(node.name.clone()).or_insert(0) += 1;
+                }
+            }
+        }
+
+        let now_secs = current_unix_secs();
+        let mut fallback_extractor: Option<RepoMapExtractor> = None;
+        let mut fallback_parses = 0usize;
+        let mut raw_symbols: Vec<AstSymbolEntry> = Vec::new();
+        let mut seen_symbol_keys: HashSet<(String, String)> = HashSet::new();
+
         let walker = ignore::WalkBuilder::new(root)
             .hidden(false)
             .git_ignore(true)
@@ -1353,31 +1187,128 @@ impl IntellisenseEngine {
                 continue;
             }
 
-            if self.symbols.len() < INTELLISENSE_MAX_SYMBOL_INDEX && is_indexable_source_file(path)
-            {
-                if let Ok(content) = std::fs::read_to_string(path) {
-                    extract_lightweight_symbols(
-                        &content,
-                        &rel_str,
-                        &mut self.symbols,
-                        &mut seen_symbols,
-                    );
+            let meta = entry.metadata().ok();
+            let recently_modified = meta
+                .as_ref()
+                .and_then(|m| m.modified().ok())
+                .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                .is_some_and(|d| now_secs.saturating_sub(d.as_secs()) <= 3_600);
+
+            if self.images.len() < INTELLISENSE_MAX_IMAGE_INDEX {
+                if let Some(img_entry) =
+                    inspect_workspace_image_asset(path, &rel_str, meta.as_ref())
+                {
+                    self.images.push(img_entry);
                 }
             }
 
-            self.files.push(rel_str);
+            if raw_symbols.len() < INTELLISENSE_MAX_SYMBOL_INDEX && is_ast_source_file(path) {
+                let defs: Option<Vec<SymbolDef>> = if let Some(cached) = shard_by_rel.get(&rel_str)
+                {
+                    Some(cached.clone())
+                } else if fallback_parses < 120 {
+                    fallback_parses += 1;
+                    let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
+                    std::fs::read_to_string(path).ok().and_then(|code| {
+                        let ex = fallback_extractor.get_or_insert_with(RepoMapExtractor::new);
+                        ex.extract_symbols_from_str(ext, &code).ok()
+                    })
+                } else {
+                    None
+                };
+
+                if let Some(sym_defs) = defs {
+                    for sym in sym_defs {
+                        if raw_symbols.len() >= INTELLISENSE_MAX_SYMBOL_INDEX {
+                            break;
+                        }
+                        let Some((badge, is_type)) = classify_symbol_kind(&sym.kind) else {
+                            continue;
+                        };
+                        let clean_name = sym.name.trim();
+                        if clean_name.len() < 2
+                            || !seen_symbol_keys.insert((rel_str.clone(), clean_name.to_string()))
+                        {
+                            continue;
+                        }
+                        let deg = inbound_degrees.get(clean_name).copied().unwrap_or(0);
+                        let centrality_bonus = ((1.0 + deg as f64).ln() * 6.0) as i32
+                            + if recently_modified { 8 } else { 0 };
+                        raw_symbols.push(AstSymbolEntry {
+                            name: clean_name.to_string(),
+                            insert_token: String::new(),
+                            kind_badge: badge.to_string(),
+                            is_type,
+                            rel_file: rel_str.clone(),
+                            start_line: sym.line_number.max(1),
+                            end_line: sym.end_line.max(sym.line_number.max(1)),
+                            signature: sym.signature,
+                            centrality_bonus,
+                        });
+                    }
+                }
+            }
+
+            self.files.push((rel_str, recently_modified));
         }
 
-        // Sort files by path depth first, then alphabetically so top-level files appear first on `@`
-        self.files.sort_by(|a, b| {
-            let depth_a = a.bytes().filter(|&ch| ch == b'/').count();
-            let depth_b = b.bytes().filter(|&ch| ch == b'/').count();
-            depth_a.cmp(&depth_b).then_with(|| a.cmp(b))
+        // Also index `.minicode/screenshots` so users can `@`-mention MiniBrowse QA screenshots directly
+        let screenshots_dir = root.join(".minicode").join("screenshots");
+        if screenshots_dir.is_dir() {
+            if let Ok(entries) = std::fs::read_dir(&screenshots_dir) {
+                for entry in entries.flatten() {
+                    if self.images.len() >= INTELLISENSE_MAX_IMAGE_INDEX {
+                        break;
+                    }
+                    let path = entry.path();
+                    if path.is_file() {
+                        if let Ok(rel) = path.strip_prefix(root) {
+                            let rel_str = rel.to_string_lossy().replace('\\', "/");
+                            let meta = entry.metadata().ok();
+                            if let Some(img) =
+                                inspect_workspace_image_asset(&path, &rel_str, meta.as_ref())
+                            {
+                                self.images.push(img);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // Disambiguate symbol insert tokens (`@Name` when globally unique, `@file:Name` when overloaded)
+        let mut name_counts: HashMap<String, usize> = HashMap::new();
+        for sym in &raw_symbols {
+            *name_counts.entry(sym.name.to_lowercase()).or_insert(0) += 1;
+        }
+        for mut sym in raw_symbols {
+            let count = name_counts
+                .get(&sym.name.to_lowercase())
+                .copied()
+                .unwrap_or(1);
+            sym.insert_token = if count == 1 {
+                format!("@{}", sym.name)
+            } else {
+                format!("@{}:{}", sym.rel_file, sym.name)
+            };
+            self.ast_symbols.push(sym);
+        }
+
+        self.files.sort_by(|(a, mod_a), (b, mod_b)| {
+            mod_b
+                .cmp(mod_a)
+                .then_with(|| {
+                    let depth_a = a.bytes().filter(|&ch| ch == b'/').count();
+                    let depth_b = b.bytes().filter(|&ch| ch == b'/').count();
+                    depth_a.cmp(&depth_b)
+                })
+                .then_with(|| a.cmp(b))
         });
     }
 
     fn index_workspace_tasks(&mut self, root: &Path) {
         let candidates = [
+            root.join(".minicode/plan/todo.md"),
             root.join("minikit_docs/core/todo.md"),
             root.join(".minicode/plan/task_plan.md"),
             root.join("TODO.md"),
@@ -1429,9 +1360,112 @@ impl IntellisenseEngine {
             .collect();
     }
 
-    /// Detects if the cursor is currently positioned inside an explicit trigger token
-    /// (`@<file>`, `#<symbol>`, `$<skill>`, `/<cmd> <arg>`) OR an ambient AI Code & Prompt
-    /// Intellisense token (`TriggerKind::CodePrompt`).
+    /// Resolves `@...` mentions inside a submitted prompt into raster `ImageAssetEntry`s
+    /// (for automatic `<attached_images>` vision grounding) and `AstSymbolEntry`s
+    /// (for exact `<mentioned_symbols>` file & line-span grounding).
+    pub fn resolve_prompt_mentions(
+        &mut self,
+        prompt_text: &str,
+        workspace_root: Option<&Path>,
+    ) -> ResolvedPromptMentions {
+        if !prompt_text.contains('@') {
+            return ResolvedPromptMentions::default();
+        }
+        self.ensure_indexed(workspace_root);
+        self.resolve_prompt_mentions_readonly(prompt_text, workspace_root)
+    }
+
+    /// Read-only resolution of `@...` mentions against the current index and filesystem.
+    #[must_use]
+    pub fn resolve_prompt_mentions_readonly(
+        &self,
+        prompt_text: &str,
+        workspace_root: Option<&Path>,
+    ) -> ResolvedPromptMentions {
+        let mut out = ResolvedPromptMentions::default();
+        if !prompt_text.contains('@') {
+            return out;
+        }
+
+        let mut seen_imgs = HashSet::new();
+        let mut seen_syms = HashSet::new();
+        let mut in_fence = false;
+
+        for line in prompt_text.lines() {
+            if line.trim_start().starts_with("```") {
+                in_fence = !in_fence;
+                continue;
+            }
+            if in_fence {
+                continue;
+            }
+            for raw_tok in line.split_whitespace() {
+                let clean = raw_tok.trim_matches(|c: char| {
+                    matches!(
+                        c,
+                        ',' | ';' | '.' | '(' | ')' | '[' | ']' | '"' | '\'' | '`'
+                    )
+                });
+                let Some(mention) = clean.strip_prefix('@') else {
+                    continue;
+                };
+                if mention.is_empty() {
+                    continue;
+                }
+
+                // 1. Check indexed raster images (or direct workspace image path)
+                if let Some(img) = self
+                    .images
+                    .iter()
+                    .find(|i| i.is_raster_vision && i.rel_path.eq_ignore_ascii_case(mention))
+                {
+                    if seen_imgs.insert(img.rel_path.to_lowercase()) {
+                        out.images.push(img.clone());
+                    }
+                    continue;
+                } else if let Some(root) = workspace_root {
+                    let candidate = root.join(mention);
+                    if candidate.is_file() {
+                        if let Some(img) = inspect_workspace_image_asset(
+                            &candidate,
+                            mention,
+                            std::fs::metadata(&candidate).ok().as_ref(),
+                        ) {
+                            if img.is_raster_vision && seen_imgs.insert(img.rel_path.to_lowercase())
+                            {
+                                out.images.push(img);
+                                continue;
+                            }
+                        }
+                    }
+                }
+
+                // 2. Check AST symbols (`@SymbolName` or `@file/path.rs:SymbolName`)
+                let full_at = format!("@{mention}");
+                if let Some(sym) = self
+                    .ast_symbols
+                    .iter()
+                    .find(|s| s.insert_token.eq_ignore_ascii_case(&full_at))
+                    .or_else(|| {
+                        self.ast_symbols
+                            .iter()
+                            .find(|s| s.name.eq_ignore_ascii_case(mention))
+                    })
+                {
+                    let key = format!("{}:{}", sym.rel_file, sym.name).to_lowercase();
+                    if seen_syms.insert(key) {
+                        out.symbols.push(sym.clone());
+                    }
+                }
+            }
+        }
+
+        out
+    }
+
+    /// Detects if the cursor is currently positioned inside an explicit sigil trigger
+    /// (`@<entity>`, `#<symbol>`, `$<skill>`, `/<cmd> <arg>`) OR an ambient conversational
+    /// prompt continuation (`TriggerKind::PromptFlow`).
     #[must_use]
     pub fn extract_trigger(
         line: &str,
@@ -1442,7 +1476,7 @@ impl IntellisenseEngine {
         let col = cursor_col.min(chars.len());
         let prefix: String = chars[..col].iter().collect();
 
-        // 1. Check `/command <arg>` on row 0 when there is a single space after a known command
+        // 1. `/command <arg>` on row 0
         if cursor_row == 0 {
             let trimmed_start = prefix.trim_start();
             if trimmed_start.starts_with('/') {
@@ -1478,7 +1512,7 @@ impl IntellisenseEngine {
                 '@' => {
                     let query: String = chars[token_start + 1..col].iter().collect();
                     return Some(TriggerToken {
-                        kind: TriggerKind::FileMention,
+                        kind: TriggerKind::AtMention,
                         query,
                         replace_start_col: token_start,
                         replace_end_col: col,
@@ -1506,48 +1540,16 @@ impl IntellisenseEngine {
             }
         }
 
-        // 3. Ambient IDE-Style Code & Prompt Intellisense (`TriggerKind::CodePrompt`)
-        let before_token: String = chars[..token_start].iter().collect();
-        let prev_words: Vec<&str> = before_token
-            .split_whitespace()
-            .map(|w| w.trim_matches(|c: char| !c.is_ascii_alphanumeric()))
-            .filter(|w| !w.is_empty())
-            .collect();
-        let prev_word = prev_words
-            .last()
-            .map(|w| w.to_ascii_lowercase())
-            .unwrap_or_default();
-        let prev_two_words = if prev_words.len() >= 2 {
-            format!(
-                "{} {}",
-                prev_words[prev_words.len() - 2].to_ascii_lowercase(),
-                prev_word
-            )
-        } else {
-            prev_word.clone()
-        };
-
+        // 3. Ambient Conversational Prompt Flow (`Omnibox + Gboard Kneser-Ney`, zero raw code noise)
         let query: String = chars[token_start..col].iter().collect();
         let query_char_len = query.chars().count();
+        let has_preceding_context = !chars[..token_start].iter().all(|c| c.is_whitespace());
 
-        // Activate when typing a word token >= INTELLISENSE_MIN_WORD_CHARS (2 chars)
-        // OR right after a space when the preceding word(s) have context continuations
-        let has_space_continuation = query_char_len == 0
-            && col == chars.len()
-            && !prev_word.is_empty()
-            && (CONTEXT_NEXT_SPECS
-                .iter()
-                .any(|s| s.prev_context == prev_word || s.prev_context == prev_two_words)
-                || matches!(
-                    prev_word.as_str(),
-                    "in" | "inspect" | "refactor" | "update" | "check" | "implement"
-                ));
-
-        if query_char_len >= INTELLISENSE_MIN_WORD_CHARS || has_space_continuation {
+        if query_char_len >= INTELLISENSE_MIN_WORD_CHARS
+            || (query_char_len == 0 && col == chars.len() && has_preceding_context)
+        {
             return Some(TriggerToken {
-                kind: TriggerKind::CodePrompt {
-                    prev_word,
-                    prev_two_words,
+                kind: TriggerKind::PromptFlow {
                     line_prefix: prefix,
                 },
                 query,
@@ -1559,7 +1561,6 @@ impl IntellisenseEngine {
         None
     }
 
-    /// Returns up to `INTELLISENSE_MAX_POPUP_ITEMS` ranked completion candidates for `trigger`.
     pub fn query_candidates(
         &mut self,
         trigger: &TriggerToken,
@@ -1568,15 +1569,16 @@ impl IntellisenseEngine {
         self.query_candidates_with_history(trigger, workspace_root, None)
     }
 
-    /// Returns up to `INTELLISENSE_MAX_POPUP_ITEMS` ranked completion candidates for `trigger`,
-    /// incorporating learned user prompt history when `history` is provided.
     pub fn query_candidates_with_history(
         &mut self,
         trigger: &TriggerToken,
         workspace_root: Option<&Path>,
         history: Option<&PromptHistory>,
     ) -> Vec<CompletionCandidate> {
-        let sig = format!("{:?}:{}", trigger.kind, trigger.query);
+        let sig = format!(
+            "{:?}:{}:{:?}",
+            trigger.kind, trigger.query, self.mention_filter
+        );
         if self.dismissed_for_query.as_deref() == Some(sig.as_str()) {
             return Vec::new();
         }
@@ -1606,35 +1608,21 @@ impl IntellisenseEngine {
                     })
                 })
                 .collect(),
-            TriggerKind::FileMention => self
-                .files
-                .iter()
-                .filter_map(|path| {
-                    let score = fuzzy_score(path, &trigger.query)?;
-                    let ext = Path::new(path)
-                        .extension()
-                        .and_then(|e| e.to_str())
-                        .unwrap_or("file");
-                    Some(CompletionCandidate {
-                        insert_text: format!("@{path} "),
-                        display_label: format!("@{path}"),
-                        detail: ext.to_string(),
-                        kind: CandidateKind::File,
-                        score,
-                    })
-                })
-                .collect(),
+            TriggerKind::AtMention => self.rank_at_mention_candidates(&trigger.query),
             TriggerKind::SymbolMention => self
-                .symbols
+                .ast_symbols
                 .iter()
-                .filter_map(|(sym, file_hint)| {
-                    let score = fuzzy_score(sym, &trigger.query)?;
+                .filter_map(|sym| {
+                    let score = fuzzy_score(&sym.name, &trigger.query)?;
                     Some(CompletionCandidate {
-                        insert_text: format!("#{sym} "),
-                        display_label: format!("#{sym}"),
-                        detail: file_hint.clone(),
+                        insert_text: format!("#{} ", sym.name),
+                        display_label: format!("#{}", sym.name),
+                        detail: format!(
+                            "{} · {}:L{}",
+                            sym.kind_badge, sym.rel_file, sym.start_line
+                        ),
                         kind: CandidateKind::Symbol,
-                        score,
+                        score: score + sym.centrality_bonus,
                     })
                 })
                 .collect(),
@@ -1652,17 +1640,9 @@ impl IntellisenseEngine {
                     })
                 })
                 .collect(),
-            TriggerKind::CodePrompt {
-                prev_word,
-                prev_two_words,
-                line_prefix,
-            } => self.rank_code_prompt_candidates(
-                trigger,
-                prev_word,
-                prev_two_words,
-                line_prefix,
-                history,
-            ),
+            TriggerKind::PromptFlow { line_prefix } => {
+                self.rank_prompt_flow_candidates(trigger, line_prefix, history)
+            }
         };
 
         ranked.sort_by(|a, b| {
@@ -1675,164 +1655,90 @@ impl IntellisenseEngine {
         ranked
     }
 
-    fn rank_code_prompt_candidates(
-        &self,
-        trigger: &TriggerToken,
-        prev_word: &str,
-        prev_two_words: &str,
-        line_prefix: &str,
-        history: Option<&PromptHistory>,
-    ) -> Vec<CompletionCandidate> {
-        let mut out: Vec<CompletionCandidate> = Vec::new();
-        let mut seen_labels: HashSet<String> = HashSet::new();
-        let q = trigger.query.as_str();
+    fn rank_at_mention_candidates(&self, raw_query: &str) -> Vec<CompletionCandidate> {
+        let (prefix_override, q) = parse_at_mention_query(raw_query);
+        let active_filter = prefix_override.unwrap_or(self.mention_filter);
+        let mut out = Vec::new();
+        let image_paths: HashSet<&str> = self.images.iter().map(|i| i.rel_path.as_str()).collect();
 
-        // 1. Learned User History Continuations (Full-line prefix + Markov bigrams)
-        if let Some(hist) = history {
-            for (insert_text, display, score) in
-                hist.predict_continuations(line_prefix, trigger.replace_start_col, q, prev_word)
-            {
-                if seen_labels.insert(display.to_ascii_lowercase()) {
+        // 1. Project & Screenshot Images (`@assets/hero.png`, `@.minicode/screenshots/...`)
+        if matches!(active_filter, MentionFilter::All | MentionFilter::Images) {
+            for img in &self.images {
+                if let Some(mut score) = fuzzy_score(&img.rel_path, q) {
+                    let basename = &img.rel_path[img.rel_path.rfind('/').map_or(0, |i| i + 1)..];
+                    if starts_with_ignore_ascii_case(basename, q) && !q.is_empty() {
+                        score += INTELLISENSE_EXACT_TOKEN_PREFIX_BONUS / 2;
+                    }
                     out.push(CompletionCandidate {
-                        insert_text,
-                        display_label: display,
-                        detail: "history".to_string(),
-                        kind: CandidateKind::History,
+                        insert_text: format!("@{} ", img.rel_path),
+                        display_label: format!("@{}", img.rel_path),
+                        detail: img.detail_badge(),
+                        kind: CandidateKind::Image,
                         score,
                     });
                 }
             }
         }
 
-        // 2. Context-Triggered Next-Word / Clause Predictions (`so whats -> next`, `cargo -> test`, etc.)
-        if !prev_word.is_empty() {
-            for (spec_idx, spec) in CONTEXT_NEXT_SPECS.iter().enumerate() {
-                let matched_two = spec.prev_context == prev_two_words;
-                let matched_one = spec.prev_context == prev_word;
-                if !matched_two && !matched_one {
+        // 2. Workspace Files (excluding image paths already surfaced as `CandidateKind::Image`)
+        if matches!(active_filter, MentionFilter::All | MentionFilter::Files) {
+            for (path, recently_mod) in &self.files {
+                if image_paths.contains(path.as_str()) {
                     continue;
                 }
-                if !q.is_empty() && !starts_with_ignore_ascii_case(spec.continuation, q) {
-                    continue;
-                }
-                if spec.continuation.eq_ignore_ascii_case(q) {
-                    continue;
-                }
-                let display = format!("{} {}", spec.prev_context, spec.continuation);
-                if seen_labels.insert(display.to_ascii_lowercase()) {
-                    let context_bonus = if matched_two { 110 } else { 98 };
-                    out.push(CompletionCandidate {
-                        insert_text: spec.continuation.to_string(),
-                        display_label: display,
-                        detail: spec.detail.to_string(),
-                        kind: spec.kind,
-                        score: context_bonus + (q.len() as i32 * 6) - (spec_idx as i32),
-                    });
-                }
-            }
-        }
-
-        // 3. Full-Line AI Prompt Phrase Templates (`so whats next`, `fix the bug in `, etc.)
-        let trimmed_line = line_prefix.trim_start();
-        if !trimmed_line.is_empty() {
-            for (spec_idx, spec) in AI_PROMPT_PHRASES.iter().enumerate() {
-                if spec.phrase.len() > trimmed_line.len()
-                    && starts_with_ignore_ascii_case(spec.phrase, trimmed_line)
-                {
-                    let insert_part = char_slice(spec.phrase, trigger.replace_start_col);
-                    if !insert_part.is_empty()
-                        && seen_labels.insert(spec.phrase.to_ascii_lowercase())
-                    {
-                        out.push(CompletionCandidate {
-                            insert_text: insert_part.to_string(),
-                            display_label: spec.phrase.to_string(),
-                            detail: spec.detail.to_string(),
-                            kind: CandidateKind::Prompt,
-                            score: 92 + (trimmed_line.len() as i32 * 2) - (spec_idx as i32),
-                        });
+                if let Some(mut score) = fuzzy_score(path, q) {
+                    if *recently_mod {
+                        score += 10;
                     }
-                }
-            }
-        }
-
-        // 4. Context-Triggered Active Tasks from `todo.md` (`implement ...`)
-        if matches!(
-            prev_word,
-            "implement" | "complete" | "finish" | "continue" | "task"
-        ) {
-            for task in self.tasks.iter().take(4) {
-                if (q.is_empty() || contains_ignore_ascii_case(task, q))
-                    && seen_labels.insert(task.to_ascii_lowercase())
-                {
+                    let ext = Path::new(path)
+                        .extension()
+                        .and_then(|e| e.to_str())
+                        .unwrap_or("file");
+                    let detail = if *recently_mod {
+                        format!("{ext} · recent")
+                    } else {
+                        format!("{ext} · file")
+                    };
                     out.push(CompletionCandidate {
-                        insert_text: task.clone(),
-                        display_label: task.clone(),
-                        detail: "task".to_string(),
-                        kind: CandidateKind::Task,
-                        score: 84,
-                    });
-                }
-            }
-        }
-
-        // 5. Context-Triggered Workspace Files right after `in `, `inspect `, `refactor `, `check `, `update `
-        if q.is_empty()
-            && matches!(
-                prev_word,
-                "in" | "inspect" | "refactor" | "check" | "update"
-            )
-        {
-            for path in self.files.iter().take(4) {
-                if seen_labels.insert(path.to_ascii_lowercase()) {
-                    out.push(CompletionCandidate {
-                        insert_text: format!("{path} "),
-                        display_label: path.clone(),
-                        detail: "file".to_string(),
+                        insert_text: format!("@{path} "),
+                        display_label: format!("@{path}"),
+                        detail,
                         kind: CandidateKind::File,
-                        score: 76,
+                        score,
                     });
                 }
             }
         }
 
-        if q.len() < INTELLISENSE_MIN_WORD_CHARS {
-            return out;
-        }
-
-        // 6. Code Keywords & CLI Idioms (`async fn`, `pub struct`, `cargo test`, `anyhow::Result`)
-        for kw in CODE_KEYWORD_SPECS {
-            if kw.token.trim().len() > q.len() && starts_with_ignore_ascii_case(kw.token, q) {
-                let label = kw.token.trim().to_string();
-                if seen_labels.insert(label.to_ascii_lowercase()) {
-                    out.push(CompletionCandidate {
-                        insert_text: kw.token.to_string(),
-                        display_label: label,
-                        detail: kw.detail.to_string(),
-                        kind: kw.kind,
-                        score: 78 + (q.len() as i32 * 5),
-                    });
+        // 3. Tree-sitter AST Functions / Methods (`MentionFilter::Functions` | `All`)
+        // 4. Tree-sitter AST Classes / Structs / Traits / Interfaces / Enums (`MentionFilter::Types` | `All`)
+        let include_fns = matches!(active_filter, MentionFilter::All | MentionFilter::Functions);
+        let include_types = matches!(active_filter, MentionFilter::All | MentionFilter::Types);
+        if include_fns || include_types {
+            for sym in &self.ast_symbols {
+                if sym.is_type && !include_types {
+                    continue;
                 }
-            }
-        }
-
-        // 7. Workspace AST Code Symbols (`InputDock`, `IntellisenseEngine`, `fuzzy_score`, etc.)
-        for (sym, file_hint) in &self.symbols {
-            if sym.eq_ignore_ascii_case(q) {
-                continue;
-            }
-            let is_exact_prefix = starts_with_ignore_ascii_case(sym, q);
-            if !is_exact_prefix && q.len() < 3 {
-                continue;
-            }
-            if let Some(mut score) = fuzzy_score(sym, q) {
-                if is_exact_prefix {
-                    score += INTELLISENSE_EXACT_TOKEN_PREFIX_BONUS;
+                if !sym.is_type && !include_fns {
+                    continue;
                 }
-                if score >= 36 && seen_labels.insert(sym.to_ascii_lowercase()) {
+                // Score against both symbol name and `file:symbol` qualified token
+                let best_match = fuzzy_score(&sym.name, q)
+                    .into_iter()
+                    .chain(fuzzy_score(sym.insert_token.trim_start_matches('@'), q))
+                    .max();
+                if let Some(mut score) = best_match {
+                    if !q.is_empty() && starts_with_ignore_ascii_case(&sym.name, q) {
+                        score += INTELLISENSE_EXACT_TOKEN_PREFIX_BONUS / 2;
+                    }
+                    score += sym.centrality_bonus;
                     out.push(CompletionCandidate {
-                        insert_text: format!("{sym} "),
-                        display_label: sym.clone(),
-                        detail: file_hint.clone(),
+                        insert_text: format!("{} ", sym.insert_token),
+                        display_label: sym.insert_token.clone(),
+                        detail: format!(
+                            "{} · {}:L{}",
+                            sym.kind_badge, sym.rel_file, sym.start_line
+                        ),
                         kind: CandidateKind::Symbol,
                         score,
                     });
@@ -1840,29 +1746,61 @@ impl IntellisenseEngine {
             }
         }
 
-        // 8. Workspace Filenames & Paths (`src/ui/intellisense.rs`, `Cargo.toml`, etc.)
-        for path in &self.files {
-            let basename = &path[path.rfind('/').map_or(0, |idx| idx + 1)..];
-            if basename.eq_ignore_ascii_case(q) || path.eq_ignore_ascii_case(q) {
-                continue;
+        out
+    }
+
+    fn rank_prompt_flow_candidates(
+        &self,
+        trigger: &TriggerToken,
+        line_prefix: &str,
+        history: Option<&PromptHistory>,
+    ) -> Vec<CompletionCandidate> {
+        let mut out = Vec::new();
+        let mut seen_labels = HashSet::new();
+        let default_corpus;
+        let corpus = match history {
+            Some(h) => &h.corpus,
+            None => {
+                default_corpus = PromptCorpus::new_in_memory();
+                &default_corpus
             }
-            let is_basename_prefix = starts_with_ignore_ascii_case(basename, q)
-                || starts_with_ignore_ascii_case(path, q);
-            if !is_basename_prefix && q.len() < 3 {
-                continue;
+        };
+
+        for sug in corpus.suggest_completions(
+            line_prefix,
+            trigger.replace_start_col,
+            &trigger.query,
+            INTELLISENSE_MAX_POPUP_ITEMS,
+        ) {
+            if seen_labels.insert(sug.display_label.to_lowercase()) {
+                let kind = if sug.source_badge == "phrase" {
+                    CandidateKind::Prompt
+                } else {
+                    CandidateKind::History
+                };
+                out.push(CompletionCandidate {
+                    insert_text: sug.insert_text,
+                    display_label: sug.display_label,
+                    detail: sug.source_badge.to_string(),
+                    kind,
+                    score: sug.score,
+                });
             }
-            if let Some(mut score) = fuzzy_score(path, q) {
-                if is_basename_prefix {
-                    score += INTELLISENSE_EXACT_TOKEN_PREFIX_BONUS;
-                }
-                if score >= 38 && seen_labels.insert(path.to_ascii_lowercase()) {
-                    out.push(CompletionCandidate {
-                        insert_text: format!("{path} "),
-                        display_label: path.clone(),
-                        detail: "file".to_string(),
-                        kind: CandidateKind::File,
-                        score,
-                    });
+        }
+
+        // Surface active `todo.md` step descriptions when query matches an open task
+        if !trigger.query.is_empty() && trigger.query.len() >= 3 {
+            for task in self.tasks.iter().take(6) {
+                if let Some(score) = fuzzy_score(task, &trigger.query) {
+                    if score >= 32 && seen_labels.insert(task.to_lowercase()) {
+                        out.push(CompletionCandidate {
+                            insert_text: task.clone(),
+                            display_label: task.clone(),
+                            detail: "task".to_string(),
+                            kind: CandidateKind::Task,
+                            score: 70 + score / 2,
+                        });
+                    }
                 }
             }
         }
@@ -1892,61 +1830,52 @@ impl IntellisenseEngine {
                     return Some(cmd[line.len()..].to_string());
                 }
             }
+            return None;
         }
 
-        // 2. Full-line frecency-weighted prompt history prefix completion (highest priority for full lines)
-        if let Some(hist_ghost) = history.suggest_ghost_suffix(line) {
-            return Some(hist_ghost);
-        }
-
-        // 3. Active trigger (`/<cmd> <arg>`, `@file`, `#symbol`, `$skill`, or `CodePrompt`) completion
+        // 2. Explicit sigil trigger (`@entity`, `#symbol`, `$skill`, `/cmd <arg>`) takes priority at cursor
         if let Some(trigger) = Self::extract_trigger(line, cursor_col, cursor_row) {
-            let candidates =
-                self.query_candidates_with_history(&trigger, workspace_root, Some(history));
-            let idx = self.selected_index.min(candidates.len().saturating_sub(1));
-            if let Some(best) = candidates.get(idx).or_else(|| candidates.first()) {
-                let raw_target = match trigger.kind {
-                    TriggerKind::FileMention
-                    | TriggerKind::SymbolMention
-                    | TriggerKind::SkillMention => best
-                        .insert_text
-                        .trim_end()
-                        .trim_start_matches(['@', '#', '$']),
-                    TriggerKind::SlashArg { .. } | TriggerKind::CodePrompt { .. } => {
-                        best.insert_text.trim_end()
+            if trigger.kind.is_explicit() {
+                let candidates =
+                    self.query_candidates_with_history(&trigger, workspace_root, Some(history));
+                let idx = self.selected_index.min(candidates.len().saturating_sub(1));
+                if let Some(best) = candidates.get(idx).or_else(|| candidates.first()) {
+                    let raw_target = match trigger.kind {
+                        TriggerKind::AtMention
+                        | TriggerKind::SymbolMention
+                        | TriggerKind::SkillMention => best
+                            .insert_text
+                            .trim_end()
+                            .trim_start_matches(['@', '#', '$']),
+                        TriggerKind::SlashArg { .. } | TriggerKind::PromptFlow { .. } => {
+                            best.insert_text.trim_end()
+                        }
+                    };
+                    let (_, stripped_q) = if matches!(trigger.kind, TriggerKind::AtMention) {
+                        parse_at_mention_query(&trigger.query)
+                    } else {
+                        (None, trigger.query.as_str())
+                    };
+                    if stripped_q.is_empty() && trigger.query.is_empty() && !raw_target.is_empty() {
+                        return Some(raw_target.to_string());
                     }
-                };
-                if trigger.query.is_empty() && !raw_target.is_empty() {
-                    return Some(raw_target.to_string());
+                    if raw_target.len() > trigger.query.len()
+                        && starts_with_ignore_ascii_case(raw_target, &trigger.query)
+                    {
+                        return Some(raw_target[trigger.query.len()..].to_string());
+                    }
                 }
-                if raw_target.len() > trigger.query.len()
-                    && starts_with_ignore_ascii_case(raw_target, &trigger.query)
-                {
-                    return Some(raw_target[trigger.query.len()..].to_string());
-                }
+                return None;
             }
         }
 
-        None
+        // 3. Omnibox Frecency + Order-4 Kneser-Ney Gboard continuous phrase suffix
+        history.suggest_ghost_suffix(line)
     }
-}
-
-#[inline]
-fn contains_ignore_ascii_case(haystack: &str, needle: &str) -> bool {
-    if needle.is_empty() {
-        return true;
-    }
-    if haystack.len() < needle.len() {
-        return false;
-    }
-    haystack
-        .as_bytes()
-        .windows(needle.len())
-        .any(|w| w.eq_ignore_ascii_case(needle.as_bytes()))
 }
 
 /// Extracts the first word segment from `ghost` (including leading spaces or trailing path separator)
-/// for Fish/Zsh-style single-word acceptance (`Ctrl+Right` / `Alt+Right` / `Alt+F`).
+/// for Fish/Gboard-style single-word acceptance (`Ctrl+Right` / `Alt+Right` / `Alt+F`).
 #[must_use]
 pub fn extract_first_ghost_word(ghost: &str) -> &str {
     if ghost.is_empty() {
@@ -1954,11 +1883,9 @@ pub fn extract_first_ghost_word(ghost: &str) -> &str {
     }
     let bytes = ghost.as_bytes();
     let mut i = 0;
-    // Consume any leading whitespace
     while i < bytes.len() && bytes[i].is_ascii_whitespace() {
         i += 1;
     }
-    // Consume word/identifier characters up to next whitespace or path separator
     while i < bytes.len() && !bytes[i].is_ascii_whitespace() {
         if bytes[i] == b'/' || bytes[i] == b'\\' {
             i += 1;
@@ -1966,78 +1893,99 @@ pub fn extract_first_ghost_word(ghost: &str) -> &str {
         }
         i += 1;
     }
-    // Advance to valid UTF-8 char boundary if needed
     while i < ghost.len() && !ghost.is_char_boundary(i) {
         i += 1;
     }
     &ghost[..i]
 }
 
-fn is_indexable_source_file(path: &Path) -> bool {
+fn is_ast_source_file(path: &Path) -> bool {
     let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
-    matches!(
-        ext,
-        "rs" | "ts" | "tsx" | "js" | "jsx" | "py" | "go" | "dart"
-    )
+    matches!(ext, "rs" | "ts" | "tsx" | "js" | "jsx" | "py")
 }
 
-fn extract_lightweight_symbols(
-    content: &str,
-    rel_file: &str,
-    out: &mut Vec<(String, String)>,
-    seen: &mut HashSet<String>,
-) {
-    const PREFIXES: &[&str] = &[
-        "pub async fn ",
-        "pub fn ",
-        "async fn ",
-        "fn ",
-        "pub struct ",
-        "struct ",
-        "pub enum ",
-        "enum ",
-        "pub trait ",
-        "trait ",
-        "pub type ",
-        "type ",
-        "pub const ",
-        "const ",
-        "pub mod ",
-        "mod ",
-        "export async function ",
-        "export function ",
-        "export default function ",
-        "export class ",
-        "export interface ",
-        "export type ",
-        "def ",
-        "class ",
-    ];
-
-    for line in content.lines().take(600) {
-        if out.len() >= INTELLISENSE_MAX_SYMBOL_INDEX {
-            break;
-        }
-        let trimmed = line.trim_start();
-        for &prefix in PREFIXES {
-            if let Some(rest) = trimmed.strip_prefix(prefix) {
-                let ident: String = rest
-                    .chars()
-                    .take_while(|&c| c.is_ascii_alphanumeric() || c == '_')
-                    .collect();
-                if ident.len() >= 3 && seen.insert(ident.clone()) {
-                    out.push((ident, rel_file.to_string()));
-                }
-                break;
-            }
-        }
+fn classify_symbol_kind(raw_kind: &str) -> Option<(&'static str, bool)> {
+    match raw_kind {
+        "function" => Some(("fn", false)),
+        "method" => Some(("method", false)),
+        "struct" => Some(("struct", true)),
+        "class" => Some(("class", true)),
+        "trait" => Some(("trait", true)),
+        "interface" => Some(("interface", true)),
+        "enum" => Some(("enum", true)),
+        "type_alias" => Some(("type", true)),
+        _ => None,
     }
+}
+
+fn inspect_workspace_image_asset(
+    path: &Path,
+    rel_str: &str,
+    meta: Option<&std::fs::Metadata>,
+) -> Option<ImageAssetEntry> {
+    let ext_lower = path
+        .extension()
+        .and_then(|e| e.to_str())?
+        .to_ascii_lowercase();
+    if !matches!(
+        ext_lower.as_str(),
+        "png" | "jpg" | "jpeg" | "gif" | "webp" | "svg"
+    ) {
+        return None;
+    }
+    let size_bytes = meta
+        .map(|m| m.len() as usize)
+        .or_else(|| std::fs::metadata(path).ok().map(|m| m.len() as usize))
+        .unwrap_or(0);
+
+    if ext_lower == "svg" {
+        return Some(ImageAssetEntry {
+            rel_path: rel_str.to_string(),
+            ext: "svg".to_string(),
+            media_type: "image/svg+xml".to_string(),
+            dimensions: None,
+            size_bytes,
+            is_raster_vision: false,
+        });
+    }
+
+    let mut header = Vec::with_capacity(1024);
+    if let Ok(file) = std::fs::File::open(path) {
+        let _ = file.take(32_768).read_to_end(&mut header);
+    }
+    if let Some((media_type, canon_ext, dims)) = crate::ui::clipboard::inspect_image_bytes(&header)
+    {
+        return Some(ImageAssetEntry {
+            rel_path: rel_str.to_string(),
+            ext: canon_ext.to_string(),
+            media_type: media_type.to_string(),
+            dimensions: dims,
+            size_bytes,
+            is_raster_vision: true,
+        });
+    }
+
+    let media_type = match ext_lower.as_str() {
+        "png" => "image/png",
+        "jpg" | "jpeg" => "image/jpeg",
+        "gif" => "image/gif",
+        "webp" => "image/webp",
+        _ => return None,
+    };
+    Some(ImageAssetEntry {
+        rel_path: rel_str.to_string(),
+        ext: ext_lower,
+        media_type: media_type.to_string(),
+        dimensions: None,
+        size_bytes,
+        is_raster_vision: true,
+    })
 }
 
 fn current_unix_secs() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |d| d.as_secs())
+        .map_or(1, |d| d.as_secs())
 }
 
 #[cfg(test)]
@@ -2059,36 +2007,28 @@ mod tests {
     }
 
     #[test]
-    fn test_prompt_history_up_up_down_boundary_and_prefix_lock() {
+    fn test_prompt_history_up_up_down_boundary_and_slash_command_exclusion() {
         let mut hist = PromptHistory::new();
         hist.seed_prompt("hii");
+        hist.seed_prompt("/settings");
         hist.seed_prompt("so whats");
+        hist.record("/model", None);
+        hist.record("/caveman ultra", None);
 
-        // 1. Exact user scenario: submit "hii", then "so whats".
-        // Up -> "so whats", Up -> "hii", Up again at boundary -> stays "hii", Down -> "so whats", Down -> ""
+        // Slash commands are completely excluded from prompt history!
+        assert_eq!(hist.entries.len(), 2);
         assert_eq!(hist.navigate_up("").as_deref(), Some("so whats"));
         assert_eq!(hist.navigate_up("so whats").as_deref(), Some("hii"));
-        assert_eq!(
-            hist.navigate_up("hii").as_deref(),
-            Some("hii"),
-            "Pressing Up at the oldest entry must clamp at 'hii' without resetting cursor"
-        );
-        assert_eq!(
-            hist.navigate_down().as_deref(),
-            Some("so whats"),
-            "Pressing Down after clamping at oldest entry must step back to newer prompt 'so whats'"
-        );
+        assert_eq!(hist.navigate_up("hii").as_deref(), Some("hii"));
+        assert_eq!(hist.navigate_down().as_deref(), Some("so whats"));
         assert_eq!(hist.navigate_down().as_deref(), Some(""));
 
-        // 2. Unsubmitted draft scenario: user typed "so whats" without pressing Enter, pressed Up to get "hii",
-        // pressed Up again, then pressed Down -> gets back unsubmitted draft "so whats"
         let mut hist2 = PromptHistory::new();
         hist2.seed_prompt("hii");
         assert_eq!(hist2.navigate_up("so whats").as_deref(), Some("hii"));
         assert_eq!(hist2.navigate_up("hii").as_deref(), Some("hii"));
         assert_eq!(hist2.navigate_down().as_deref(), Some("so whats"));
 
-        // 3. Explicit prefix-locked navigation (`Alt+Up` / `navigate_up_prefix`)
         hist.seed_prompt("cargo test --lib");
         hist.seed_prompt("fix the navbar z-index");
         assert_eq!(
@@ -2101,7 +2041,7 @@ mod tests {
     #[test]
     fn test_extract_trigger_and_slash_arg_completion() {
         let t_file = IntellisenseEngine::extract_trigger("inspect @src/ui/in", 18, 0).unwrap();
-        assert_eq!(t_file.kind, TriggerKind::FileMention);
+        assert_eq!(t_file.kind, TriggerKind::AtMention);
         assert_eq!(t_file.query, "src/ui/in");
         assert_eq!(t_file.replace_start_col, 8);
 
@@ -2125,41 +2065,64 @@ mod tests {
     }
 
     #[test]
-    fn test_code_and_prompt_ai_intellisense_predictions() {
+    fn test_pure_prompt_gboard_continuity_and_unified_at_mentions_without_code_pollution() {
         let dir = tempfile::tempdir().unwrap();
         std::fs::create_dir_all(dir.path().join("src/ui")).unwrap();
+        std::fs::create_dir_all(dir.path().join("assets")).unwrap();
         std::fs::write(
             dir.path().join("src/ui/input.rs"),
-            "pub struct InputDock {}\npub fn handle_key() {}\n",
+            "pub struct InputDock {}\npub fn handle_key_event() {}\n",
         )
         .unwrap();
+        let png_bytes: [u8; 24] = [
+            0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A, 0x00, 0x00, 0x00, 0x0D, b'I', b'H',
+            b'D', b'R', 0x00, 0x00, 0x05, 0x00, 0x00, 0x00, 0x02, 0xD0,
+        ];
+        std::fs::write(dir.path().join("assets/mockup.png"), png_bytes).unwrap();
 
         let mut engine = IntellisenseEngine::new();
         let hist = PromptHistory::new();
 
-        // 1. Conversational prompt prediction: "so wh" -> "whats next" (full line: "so whats next")
-        let trig_prompt = IntellisenseEngine::extract_trigger("so wh", 5, 0).unwrap();
-        assert!(!trig_prompt.kind.is_explicit());
-        let cands =
-            engine.query_candidates_with_history(&trig_prompt, Some(dir.path()), Some(&hist));
-        assert!(!cands.is_empty());
-        assert_eq!(cands[0].insert_text, "whats next");
+        // 1. Conversational prompt prediction works cleanly: "so wh" -> "ats next"
         let ghost = engine.compute_ghost_hint("so wh", 5, 0, &hist, Some(dir.path()), None);
         assert_eq!(ghost.as_deref(), Some("ats next"));
 
-        // 2. Next-word prediction after space: "so whats " -> "next"
+        // 2. Next-word continuity after space: "so whats " -> "next"
         let ghost_space =
             engine.compute_ghost_hint("so whats ", 9, 0, &hist, Some(dir.path()), None);
         assert_eq!(ghost_space.as_deref(), Some("next"));
 
-        // 3. Ambient code symbol intellisense without `#`: "refactor InputD" -> "InputDock "
-        let trig_code = IntellisenseEngine::extract_trigger("refactor InputD", 15, 0).unwrap();
-        let code_cands =
-            engine.query_candidates_with_history(&trig_code, Some(dir.path()), Some(&hist));
-        assert!(code_cands.iter().any(|c| c.insert_text == "InputDock "));
-        let code_ghost =
-            engine.compute_ghost_hint("refactor InputD", 15, 0, &hist, Some(dir.path()), None);
-        assert_eq!(code_ghost.as_deref(), Some("ock"));
+        // 3. Bare prose typing WITHOUT `@` NEVER injects raw code symbols (`InputDock`) or Rust keywords (`pub struct`)
+        let trig_prose = IntellisenseEngine::extract_trigger("refactor InputD", 15, 0).unwrap();
+        let prose_cands =
+            engine.query_candidates_with_history(&trig_prose, Some(dir.path()), Some(&hist));
+        assert!(
+            !prose_cands
+                .iter()
+                .any(|c| c.display_label.contains("InputDock")),
+            "Bare prose typing must never pollute prompt flow with unprompted AST code symbols"
+        );
+
+        // 4. Unified `@` mention discovers files, AST structs/classes, AST functions, AND project images!
+        let trig_at_sym = IntellisenseEngine::extract_trigger("refactor @InputD", 16, 0).unwrap();
+        let sym_cands =
+            engine.query_candidates_with_history(&trig_at_sym, Some(dir.path()), Some(&hist));
+        assert!(sym_cands.iter().any(|c| c.insert_text == "@InputDock "));
+
+        let trig_at_fn =
+            IntellisenseEngine::extract_trigger("audit @fn:handle_key", 20, 0).unwrap();
+        let fn_cands =
+            engine.query_candidates_with_history(&trig_at_fn, Some(dir.path()), Some(&hist));
+        assert!(fn_cands
+            .iter()
+            .any(|c| c.insert_text == "@handle_key_event "));
+
+        let trig_at_img = IntellisenseEngine::extract_trigger("match @mockup", 13, 0).unwrap();
+        let img_cands =
+            engine.query_candidates_with_history(&trig_at_img, Some(dir.path()), Some(&hist));
+        assert!(img_cands
+            .iter()
+            .any(|c| c.insert_text == "@assets/mockup.png " && c.kind == CandidateKind::Image));
     }
 
     #[test]
@@ -2191,13 +2154,11 @@ mod tests {
             "  so whats next"
         );
         assert_eq!(sample.format_right(MenuStyle::Minimal), "prompt");
-
         assert_eq!(
             sample.format_left(MenuStyle::Ascii, true),
             " > [PRMPT] so whats next"
         );
         assert_eq!(sample.format_right(MenuStyle::Ascii), "(prompt)");
-
         assert_eq!(
             sample.format_left(MenuStyle::Icons, true),
             " ❯ § so whats next"
@@ -2217,7 +2178,6 @@ mod tests {
         );
         assert_eq!(sample.format_right(MenuStyle::Compact), "· prompt");
 
-        // Verify `/menu <style>` slash argument intellisense derives from MENU_STYLE_SPECS
         let trig_menu = IntellisenseEngine::extract_trigger("/menu ka", 8, 0).unwrap();
         let mut engine = IntellisenseEngine::new();
         let menu_cands = engine.query_candidates(&trig_menu, None);

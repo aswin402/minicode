@@ -1920,11 +1920,25 @@ pub const DEFAULT_MENU_STYLE: &str = "minimal";
 /// Total number of user-selectable TUI intellisense & command menu styles.
 pub const MENU_STYLE_COUNT: usize = 6;
 /// Total number of semantic completion candidate categories indexed in `MenuStyleSpec`.
-pub const CANDIDATE_KIND_COUNT: usize = 8;
+pub const CANDIDATE_KIND_COUNT: usize = 9;
 /// Total number of intellisense trigger categories indexed in `MenuStyleSpec`.
 pub const TRIGGER_KIND_COUNT: usize = 5;
 /// Maximum visible rows when rendering the borderless `compact` intellisense strip.
 pub const COMPACT_MENU_MAX_ROWS: u16 = 4;
+/// Maximum number of image assets indexed per workspace for `@` mention completion.
+pub const INTELLISENSE_MAX_IMAGE_INDEX: usize = 400;
+/// Subdirectory under `~/.local/share/minicode/` storing the global prompt corpus & language model.
+pub const PROMPT_CORPUS_DIR_NAME: &str = "prompts";
+/// Append-only WAL file name for global conversational prompt persistence.
+pub const PROMPT_WAL_FILE_NAME: &str = "prompt_wal.jsonl";
+/// Memory-mapped binary snapshot file name for the global prompt corpus (`bincode` + `memmap2`).
+pub const PROMPT_SNAPSHOT_FILE_NAME: &str = "prompt_lm.bin";
+/// Maximum deduplicated global prompt records retained in the persistent corpus.
+pub const PROMPT_CORPUS_MAX_RECORDS: usize = 2_000;
+/// WAL append count threshold triggering atomic `.tmp` snapshot compaction.
+pub const PROMPT_WAL_COMPACT_THRESHOLD: usize = 64;
+/// Maximum Gboard-style phrase suggestion chips displayed on the input dock ribbon.
+pub const GBOARD_STRIP_MAX_CHIPS: usize = 3;
 
 // === Automated Tool Count Validation ===
 // This test ensures TOTAL_TOOL_COUNT stays in sync with the live registry.

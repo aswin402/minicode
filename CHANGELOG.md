@@ -5,6 +5,29 @@ All notable changes to **minicode** will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.56] — 2026-11-19
+
+### Global Persistent `PromptCorpus` + Order-4 Kneser-Ney `Gboard` Continuity (`prompt_corpus.rs`), Unified `@` Multimodal Entity Graph (`Files + Functions + Types + Images`), Pure `Up`/`Down` Prompt History Isolation, Non-Destructive Theme/Settings Persistence, & Explicit `ponytail:<mode> | caveman:<mode>` Status Badges
+
+#### ⌨️ Pure `Up`/`Down` Prompt Recall, Global `PromptCorpus` & Order-4 Kneser-Ney `Gboard` Recommender (`src/ui/{prompt_corpus,intellisense,input}.rs`, `src/app/mod.rs`)
+- **Strict `/command` vs Conversational Prompt Channel Separation**:
+  - Slash commands (`/settings`, `/model`, `/caveman`, etc.) are structurally gated out of `PromptHistory` and `PromptCorpus` across live submissions, session hydration, and legacy `.minicode/prompt_history.jsonl` migration (tracking `/command` frequency strictly inside `InputDock::slash_usage_counts`), and `has_active_slash_query()` stays suppressed during `Up`/`Down` navigation so prompt recall can never get trapped inside the `/` Command Palette.
+- **Global `memmap2` Snapshot + Append-Only WAL & Order-4 Interpolated Kneser-Ney Continuity (`prompt_corpus.rs`)**:
+  - Added global persistent conversational prompt storage under `~/.local/share/minicode/prompts/` (`prompt_wal.jsonl` + compacted `*b"MCPCORP1"` `prompt_lm.bin` via `memmap2`), stripping fenced code blocks (`pulldown-cmark` AST), collapsed paste placeholders, high-punctuation-density code lines, and `SecretRedactor`-flagged secrets, and removing all hardcoded `CODE_KEYWORD_SPECS` / unprompted bare code-symbol completions.
+  - Built a hybrid **Omnibox Contextual Frecency** (7-day exponential half-life $\times$ workspace & stack priors + multi-token `Alt+Up` recall) + **Order-4 Interpolated Kneser-Ney** language model with Shannon-entropy-bounded phrase rollout and `<@REF>` grammatical slot generalization across `@` mentions, rendered on a non-blocking 1-line **Gboard Suggestion Ribbon** along the `InputDock` top border (`[Tab]` / `Right`, `Ctrl+Right` / `Alt+Right` 1-word chaining, `Alt+1..3` direct chip hotkeys).
+
+#### 🎯 Unified `@` Multimodal Entity Graph (`Files + Functions + Classes/Types + Images`) & Auto-Grounding (`src/ui/{intellisense,input}.rs`, `src/agent/loop_impl/session_state.rs`)
+- **Tree-Sitter AST Shards + Project & Screenshot Image Assets**:
+  - Unified `@` autocomplete across workspace files, Tree-sitter AST functions/methods and classes/structs/traits/interfaces/enums (backed by `.minicode/graph_shards.bin` + `GraphSnapshot` inbound centrality + `RepoMapExtractor` fallback), and project/screenshot images (`.png`, `.jpg`, `.jpeg`, `.gif`, `.webp`, `.svg`, including `.minicode/screenshots/`), with `Shift+Tab` facet filtering (`All | Files | Functions | Types | Images`) and `@fn:` / `@cls:` / `@type:` / `@img:` / `@file:` scope prefixes.
+  - Submitting `@path/to/image.png` automatically attaches `<attached_images>` and multimodal `ImageAttachment` vision bytes (`extract_user_image_attachments` now strips leading `@`), while `@Symbol` attaches `<mentioned_symbols>` with exact file paths, line spans, and signatures.
+
+#### 🛡️ Non-Destructive User Theme/Settings Persistence & Explicit `ponytail:<mode> | caveman:<mode>` Status Badges (`src/config_impl/load_and_merge.rs`, `src/ui/configure.rs`, `src/app/mod.rs`, `src/agent/caveman.rs`)
+- **Protected Global `config.toml` & Stale Workspace Snapshot Immunity**:
+  - Fixed `Config::save(Some(ws))` falling back to `~/.config/minicode/config.toml` from isolated tempdir tests when `ws/.minicode` did not yet exist (isolating `#[cfg(test)]` and `temp_dir` workspaces via `resolve_global_config_dir` and `Config::save_workspace`) and stopped creating accidental `.minicode/config.toml` snapshots merely because `.minicode/sessions/` exists.
+  - Added atomic `.tmp` writes with `merge_config_preserving_existing_maps` (never wiping existing `api_keys` / `custom_endpoints` / `default_models`), restored missing `ui.toast_symbols` deserialization in `RawUiConfig`, and ensured newer global `[ui]` & autonomy updates take precedence over older stale workspace `.minicode/config.toml` files.
+- **Explicit Inline Active Mode Badges for `Ponytail` & `Caveman` (`app/mod.rs`, `caveman.rs`)**:
+  - Added `CavemanLevel::from_str_active` and updated the live TUI status band to always display the exact inline active mode (`· ponytail:full`, `· ponytail:lite`, `· ponytail:ultra`, `· ponytail:off` | `caveman:full`, `caveman:lite`, `caveman:ultra`, `caveman:mega`, `caveman:off`) instead of omitting `:full`.
+
 ## [0.5.55] — 2026-11-19
 
 ### Autonomous Tech-Lead Orchestrator, AST-Grounded Pareto Brainstorm Algebra & Visual Board (`brainstorm_algebra.rs`), Petgraph Topological + Welsh-Powell Write-Boundary `PlanDag` (`task_dag.rs`), Cross-Wave AST/Ruling Relay, Stateful Zone-3 Delta Deduplication, & Post-Swarm Range Review

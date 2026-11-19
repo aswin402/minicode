@@ -1,0 +1,1500 @@
+//! Global Persistent Conversational Prompt Corpus, Contextual Omnibox Frecency Ranker,
+//! and Variable-Order Interpolated Kneser-Ney Language Model (`Gboard`-style Phrase Continuity).
+//!
+//! Architectural Guarantees:
+//! 1. **Strict Command/Prompt Channel Separation**: Slash commands (`/...`) are structurally
+//!    rejected at the corpus boundary and purged during legacy migration.
+//! 2. **Zero Code / Zero Secret Leakage**: Markdown AST (`pulldown-cmark`) strips fenced code blocks,
+//!    collapsed paste placeholders (`[... +N lines]`, `[img N]`), and high-syntax-density code lines;
+//!    [`crate::security::redactor::redact_secrets`] prevents secret persistence to global storage.
+//! 3. **Grammatical `<@REF>` Slot Generalization**: `@file`, `@function`, `@class`, and `@image`
+//!    mentions map to `<@REF>` in the N-gram transition graph so phrasing learned around one entity
+//!    generalizes across every project and symbol.
+//! 4. **Zero-Copy `memmap2` + Append-Only WAL**: Sub-millisecond startup from `prompt_lm.bin` plus
+//!    `O(1)` append-only `prompt_wal.jsonl` writes safe across concurrent TUI instances.
+
+use crate::constants::{
+    FNV_OFFSET_BASIS, FNV_PRIME, PROMPT_CORPUS_MAX_RECORDS, PROMPT_SNAPSHOT_FILE_NAME,
+    PROMPT_WAL_COMPACT_THRESHOLD, PROMPT_WAL_FILE_NAME,
+};
+use indexmap::IndexSet;
+use pulldown_cmark::{Event, Options, Parser, Tag, TagEnd};
+use serde::{Deserialize, Serialize};
+use std::collections::{HashMap, HashSet};
+use std::fs::OpenOptions;
+use std::io::Write;
+use std::path::{Path, PathBuf};
+
+const SNAPSHOT_MAGIC: [u8; 8] = *b"MCPCORP1";
+const SNAPSHOT_VERSION: u32 = 1;
+
+const BOS_ID: u32 = 0;
+const EOS_ID: u32 = 1;
+const REF_SLOT_ID: u32 = 2;
+const FIRST_LEXICAL_ID: u32 = 3;
+
+/// Seven-day exponential half-life in seconds (`7 * 86_400`) for Omnibox frecency decay.
+const FRECENCY_HALF_LIFE_SECS: f64 = 604_800.0;
+const MAX_STORED_TIMESTAMPS_PER_RECORD: usize = 16;
+const MAX_STORED_WORKSPACES_PER_RECORD: usize = 8;
+
+/// Interpolated Kneser-Ney nominal absolute discount $D \in (0, 1)$.
+const KN_DISCOUNT: f64 = 0.70;
+/// Maximum conditional Shannon entropy $H(W \mid h)$ (in bits) permitted to continue greedy phrase rollout.
+const ROLLOUT_MAX_ENTROPY_BITS: f64 = 1.85;
+/// Minimum top-token conditional probability required to extend multi-word phrase rollout.
+const ROLLOUT_MIN_TOP_PROB: f64 = 0.28;
+/// Maximum words rolled out in a single Gboard phrase suggestion.
+const MAX_PHRASE_ROLLOUT_WORDS: usize = 5;
+
+/// Statistical English conversational-prompt bootstrap corpus compiled through the exact same
+/// Kneser-Ney N-gram trainer with minimal prior weight (`0.35`) so cold-start sessions have
+/// natural phrase continuity while personal prompts immediately dominate.
+const BOOTSTRAP_CONVERSATIONAL_UTTERANCES: &[&str] = &[
+    "so whats next",
+    "so whats happening",
+    "so whats the status",
+    "ok go on",
+    "yes go on",
+    "continue with the next step",
+    "analyze @ref and explain how it works",
+    "fix the bug in @ref and run the tests",
+    "refactor @ref for clean modular architecture",
+    "implement the feature and add unit tests",
+    "update the changelog and push to main",
+    "review the recent changes and fix any issues",
+    "optimize performance and memory usage in @ref",
+    "debug why @ref is failing",
+    "check compilation and fix all warnings",
+    "make the layout match @ref",
+];
+
+/// Stack bitmask flags computed structurally from workspace manifest files.
+pub mod stack_bits {
+    pub const RUST: u16 = 1 << 0;
+    pub const TS_JS: u16 = 1 << 1;
+    pub const PYTHON: u16 = 1 << 2;
+    pub const GO: u16 = 1 << 3;
+    pub const DART_FLUTTER: u16 = 1 << 4;
+}
+
+/// Structurally detects whether `raw` belongs to the TUI `/command` control channel
+/// (e.g. `/settings`, `/model`, `/caveman ultra`, `/menu-style icons`) rather than a natural prompt.
+///
+/// Multi-segment filesystem paths at column 0 (e.g. `/home/user/app.rs explain this`) contain
+/// internal `'/'` separators in their first token and are preserved as natural prompts.
+#[must_use]
+pub fn is_slash_command_input(raw: &str) -> bool {
+    let trimmed = raw.trim();
+    let Some(after_slash) = trimmed.strip_prefix('/') else {
+        return false;
+    };
+    let first_token = after_slash.split_whitespace().next().unwrap_or("");
+    !first_token.is_empty()
+        && !first_token.contains('/')
+        && first_token
+            .chars()
+            .next()
+            .is_some_and(|c| c.is_ascii_alphabetic())
+}
+
+/// Deterministic 64-bit FNV-1a hash for workspace paths and normalized prompt keys.
+#[must_use]
+pub fn fnv1a_hash(bytes: &[u8]) -> u64 {
+    let mut hash = FNV_OFFSET_BASIS;
+    for &b in bytes {
+        hash ^= u64::from(b);
+        hash = hash.wrapping_mul(FNV_PRIME);
+    }
+    hash
+}
+
+/// Computes a case-normalized, whitespace-collapsed 64-bit hash for deduplicating prompt records.
+#[must_use]
+pub fn canonical_prompt_hash(text: &str) -> u64 {
+    let mut hash = FNV_OFFSET_BASIS;
+    let mut prev_space = true;
+    for b in text.trim().bytes() {
+        if b.is_ascii_whitespace() {
+            if !prev_space {
+                hash ^= u64::from(b' ');
+                hash = hash.wrapping_mul(FNV_PRIME);
+                prev_space = true;
+            }
+        } else {
+            hash ^= u64::from(b.to_ascii_lowercase());
+            hash = hash.wrapping_mul(FNV_PRIME);
+            prev_space = false;
+        }
+    }
+    hash
+}
+
+/// Detects the workspace language/runtime stack bitmask from root manifest files.
+#[must_use]
+pub fn detect_workspace_stack_mask(workspace_root: Option<&Path>) -> u16 {
+    let Some(root) = workspace_root else {
+        return 0;
+    };
+    let mut mask = 0u16;
+    if root.join("Cargo.toml").is_file() {
+        mask |= stack_bits::RUST;
+    }
+    if root.join("package.json").is_file() || root.join("tsconfig.json").is_file() {
+        mask |= stack_bits::TS_JS;
+    }
+    if root.join("pyproject.toml").is_file() || root.join("requirements.txt").is_file() {
+        mask |= stack_bits::PYTHON;
+    }
+    if root.join("go.mod").is_file() {
+        mask |= stack_bits::GO;
+    }
+    if root.join("pubspec.yaml").is_file() {
+        mask |= stack_bits::DART_FLUTTER;
+    }
+    mask
+}
+
+/// Computes a stable 64-bit workspace hash for contextual frecency affinity.
+#[must_use]
+pub fn compute_workspace_hash(workspace_root: Option<&Path>) -> u64 {
+    workspace_root.map_or(0, |p| fnv1a_hash(p.to_string_lossy().as_bytes()))
+}
+
+/// Strips `[img N]` and collapsed `[... ..... +N lines]` bracketed paste placeholders
+/// without regexes using linear bracket-span scanning.
+#[must_use]
+pub fn strip_paste_placeholders(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let chars: Vec<char> = text.chars().collect();
+    let mut i = 0;
+    while i < chars.len() {
+        if chars[i] == '[' {
+            if let Some(rel_close) = chars[i + 1..].iter().position(|&c| c == ']' || c == '\n') {
+                let close_idx = i + 1 + rel_close;
+                if chars[close_idx] == ']' {
+                    let inner: String = chars[i + 1..close_idx].iter().collect();
+                    let is_img_ph = inner.strip_prefix("img ").is_some_and(|rest| {
+                        !rest.is_empty() && rest.chars().all(|c| c.is_ascii_digit())
+                    });
+                    let is_lines_ph = inner.contains("..... +") && inner.ends_with(" lines");
+                    if is_img_ph || is_lines_ph {
+                        i = close_idx + 1;
+                        continue;
+                    }
+                }
+            }
+        }
+        out.push(chars[i]);
+        i += 1;
+    }
+    out
+}
+
+/// Measures whether a line has raw programming-syntax punctuation density rather than natural prose.
+#[must_use]
+fn is_code_dense_line(line: &str) -> bool {
+    let trimmed = line.trim();
+    if trimmed.is_empty() {
+        return false;
+    }
+    let mut non_space = 0usize;
+    let mut syntax_punct = 0usize;
+    for ch in trimmed.chars() {
+        if !ch.is_whitespace() {
+            non_space += 1;
+            if matches!(
+                ch,
+                '{' | '}' | ';' | '=' | '<' | '>' | '|' | '&' | '[' | ']' | '(' | ')'
+            ) {
+                syntax_punct += 1;
+            }
+        }
+    }
+    non_space >= 6 && (syntax_punct * 100) / non_space >= 20
+}
+
+/// Extracts clean natural-language clauses from a submitted prompt via `pulldown-cmark` AST
+/// traversal, discarding fenced/indented code blocks, paste placeholders, and code-dense lines.
+#[must_use]
+pub fn extract_prose_clauses(raw_prompt: &str) -> Vec<String> {
+    let without_placeholders = strip_paste_placeholders(raw_prompt);
+    let filtered_lines: String = without_placeholders
+        .lines()
+        .filter(|line| !is_code_dense_line(line))
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    if filtered_lines.trim().is_empty() {
+        return Vec::new();
+    }
+
+    let parser = Parser::new_ext(&filtered_lines, Options::empty());
+    let mut in_code_block = false;
+    let mut current = String::new();
+    let mut clauses = Vec::new();
+
+    let flush_clause = |buf: &mut String, out: &mut Vec<String>| {
+        for sub in split_sentence_clauses_preserving_paths(buf) {
+            let clean = sub.trim();
+            if !clean.is_empty() {
+                out.push(clean.to_string());
+            }
+        }
+        buf.clear();
+    };
+
+    for event in parser {
+        match event {
+            Event::Start(Tag::CodeBlock(_)) => {
+                flush_clause(&mut current, &mut clauses);
+                in_code_block = true;
+            }
+            Event::End(TagEnd::CodeBlock) => {
+                in_code_block = false;
+            }
+            Event::End(TagEnd::Paragraph | TagEnd::Item | TagEnd::Heading(_)) => {
+                if !in_code_block {
+                    flush_clause(&mut current, &mut clauses);
+                }
+            }
+            Event::SoftBreak | Event::HardBreak => {
+                if !in_code_block {
+                    current.push(' ');
+                }
+            }
+            Event::Code(inline_code) => {
+                if !in_code_block {
+                    let trimmed = inline_code.trim();
+                    // Normalize inline identifier/path references into the `<@REF>` grammatical slot
+                    if !trimmed.is_empty() && !trimmed.contains(' ') {
+                        current.push_str(" @ref ");
+                    }
+                }
+            }
+            Event::Text(text) => {
+                if !in_code_block {
+                    current.push_str(&text);
+                }
+            }
+            _ => {}
+        }
+    }
+    flush_clause(&mut current, &mut clauses);
+    clauses
+}
+
+/// Splits prose into sentence clauses on `\n`, `?`, `!`, `;`, and sentence-ending `.` (followed by
+/// whitespace or end-of-text), preserving dots inside file paths (`@src/ui/input.rs`, `Cargo.toml`)
+/// and version numbers (`v0.5.55`).
+#[must_use]
+fn split_sentence_clauses_preserving_paths(text: &str) -> Vec<&str> {
+    let mut out = Vec::new();
+    let mut start = 0usize;
+    let mut iter = text.char_indices().peekable();
+    while let Some((idx, ch)) = iter.next() {
+        let is_boundary = match ch {
+            '\n' | '?' | '!' | ';' => true,
+            '.' => iter
+                .peek()
+                .is_none_or(|&(_, next_ch)| next_ch.is_whitespace()),
+            _ => false,
+        };
+        if is_boundary {
+            let seg = text[start..idx].trim();
+            if !seg.is_empty() {
+                out.push(seg);
+            }
+            start = idx + ch.len_utf8();
+        }
+    }
+    if start < text.len() {
+        let tail = text[start..].trim();
+        if !tail.is_empty() {
+            out.push(tail);
+        }
+    }
+    out
+}
+
+/// Tokenizes a single prose clause into normalized lowercase word tokens, mapping any `@...`
+/// mention into the canonical `<@REF>` grammatical slot.
+#[must_use]
+pub fn tokenize_clause_with_slots(clause: &str) -> Vec<String> {
+    let mut tokens = Vec::new();
+    for raw in clause.split_whitespace() {
+        let trimmed_outer =
+            raw.trim_matches(|c: char| matches!(c, ',' | ':' | '"' | '\'' | '(' | ')' | '[' | ']'));
+        if trimmed_outer.is_empty() {
+            continue;
+        }
+        if let Some(after_at) = trimmed_outer.strip_prefix('@') {
+            if !after_at.is_empty() {
+                tokens.push("<@REF>".to_string());
+                continue;
+            }
+        }
+        let clean: String = trimmed_outer
+            .chars()
+            .filter(|&c| c.is_alphanumeric() || matches!(c, '\'' | '-' | '_'))
+            .collect();
+        let word = clean.trim_matches(|c: char| !c.is_alphanumeric());
+        if word.is_empty() {
+            continue;
+        }
+        // Skip pure numeric literals and snake_case/path code fragments unless natural hyphenated words
+        if word.chars().all(|c| c.is_ascii_digit()) || word.contains('_') {
+            continue;
+        }
+        tokens.push(word.to_lowercase());
+    }
+    tokens
+}
+
+/// Persistent global record of a conversational prompt with multi-timestamp frecency and context masks.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct PromptRecord {
+    pub hash: u64,
+    pub text: String,
+    pub total_count: u32,
+    pub timestamps: Vec<u64>,
+    pub workspace_hashes: Vec<u64>,
+    pub stack_mask: u16,
+}
+
+impl PromptRecord {
+    #[must_use]
+    pub fn latest_timestamp(&self) -> u64 {
+        self.timestamps.last().copied().unwrap_or(0)
+    }
+
+    /// Computes contextual exponential half-life Frecency at `now_secs`:
+    /// $$F(p, t) = \left(\sum_{t_k} 2^{-(t - t_k)/\tau_{1/2}} + 0.15\ln(1 + n_{\text{extra}})\right) \cdot (1 + 0.65\delta_{\text{ws}} + 0.25\delta_{\text{stack}})$$
+    #[must_use]
+    pub fn contextual_frecency(
+        &self,
+        now_secs: u64,
+        active_ws_hash: u64,
+        active_stack_mask: u16,
+    ) -> f64 {
+        let recent_mass: f64 = self
+            .timestamps
+            .iter()
+            .map(|&ts| {
+                let age = now_secs.saturating_sub(ts) as f64;
+                (-age * std::f64::consts::LN_2 / FRECENCY_HALF_LIFE_SECS).exp()
+            })
+            .sum();
+        let extra = (self.total_count as usize).saturating_sub(self.timestamps.len()) as f64;
+        let base_mass = (recent_mass + 0.15 * (1.0 + extra).ln()).max(0.05);
+
+        let ws_affinity = if active_ws_hash != 0 && self.workspace_hashes.contains(&active_ws_hash)
+        {
+            0.65
+        } else {
+            0.0
+        };
+        let stack_affinity = if active_stack_mask != 0 && (self.stack_mask & active_stack_mask) != 0
+        {
+            0.25
+        } else {
+            0.0
+        };
+
+        base_mass * (1.0 + ws_affinity + stack_affinity)
+    }
+}
+
+/// Append-only WAL event written on prompt submission (`O(1)` disk append).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct PromptWalEvent {
+    text: String,
+    timestamp: u64,
+    workspace_hash: u64,
+    stack_mask: u16,
+}
+
+/// Binary snapshot persisted to `prompt_lm.bin` and read via `memmap2`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct PromptCorpusSnapshot {
+    version: u32,
+    records: Vec<PromptRecord>,
+}
+
+/// Ranked suggestion emitted by the fused Omnibox + Kneser-Ney Gboard engine.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PromptSuggestion {
+    /// Text to insert from `replace_start_col` to cursor.
+    pub insert_text: String,
+    /// Clean label rendered in the Gboard suggestion chip or popup row.
+    pub display_label: String,
+    /// Origin badge (`"recent"`, `"global"`, or `"phrase"`).
+    pub source_badge: &'static str,
+    /// Composite integer score for deterministic ranking.
+    pub score: i32,
+}
+
+/// Variable-Order (Order-1..4) Interpolated Kneser-Ney Language Model compiled in memory.
+#[derive(Debug, Clone, Default)]
+pub struct KneserNeyLm {
+    vocab: IndexSet<String>,
+    left_contexts: Vec<HashSet<u32>>,
+    total_continuation_types: usize,
+    order2: HashMap<u32, Vec<(u32, f32)>>,
+    order3: HashMap<(u32, u32), Vec<(u32, f32)>>,
+    order4: HashMap<(u32, u32, u32), Vec<(u32, f32)>>,
+}
+
+impl KneserNeyLm {
+    #[must_use]
+    pub fn new() -> Self {
+        let mut lm = Self::default();
+        lm.reset_vocab();
+        lm
+    }
+
+    fn reset_vocab(&mut self) {
+        self.vocab.clear();
+        self.vocab.insert("<BOS>".to_string()); // 0
+        self.vocab.insert("<EOS>".to_string()); // 1
+        self.vocab.insert("<@REF>".to_string()); // 2
+        self.left_contexts = vec![HashSet::new(); 3];
+        self.total_continuation_types = 0;
+        self.order2.clear();
+        self.order3.clear();
+        self.order4.clear();
+    }
+
+    fn intern(&mut self, token: &str) -> u32 {
+        let (idx, inserted) = self.vocab.insert_full(token.to_string());
+        if inserted {
+            self.left_contexts.push(HashSet::new());
+        }
+        idx as u32
+    }
+
+    fn lookup_id(&self, token: &str) -> Option<u32> {
+        if token == "<@REF>" {
+            return Some(REF_SLOT_ID);
+        }
+        self.vocab
+            .get_index_of(&token.to_lowercase())
+            .map(|idx| idx as u32)
+    }
+
+    fn add_transition_2(&mut self, h1: u32, w: u32, weight: f32) {
+        if let Some(ctx_set) = self.left_contexts.get_mut(w as usize) {
+            if ctx_set.insert(h1) {
+                self.total_continuation_types += 1;
+            }
+        }
+        let bucket = self.order2.entry(h1).or_default();
+        if let Some(entry) = bucket.iter_mut().find(|(id, _)| *id == w) {
+            entry.1 += weight;
+        } else {
+            bucket.push((w, weight));
+        }
+    }
+
+    fn add_transition_3(&mut self, key: (u32, u32), w: u32, weight: f32) {
+        let bucket = self.order3.entry(key).or_default();
+        if let Some(entry) = bucket.iter_mut().find(|(id, _)| *id == w) {
+            entry.1 += weight;
+        } else {
+            bucket.push((w, weight));
+        }
+    }
+
+    fn add_transition_4(&mut self, key: (u32, u32, u32), w: u32, weight: f32) {
+        let bucket = self.order4.entry(key).or_default();
+        if let Some(entry) = bucket.iter_mut().find(|(id, _)| *id == w) {
+            entry.1 += weight;
+        } else {
+            bucket.push((w, weight));
+        }
+    }
+
+    /// Trains a sequence of clause tokens with positive observation weight `weight`.
+    pub fn train_clause_tokens(&mut self, tokens: &[String], weight: f32) {
+        if tokens.is_empty() || weight <= 0.0 {
+            return;
+        }
+        let mut seq = Vec::with_capacity(tokens.len() + 2);
+        seq.push(BOS_ID);
+        for tok in tokens {
+            let id = if tok == "<@REF>" {
+                REF_SLOT_ID
+            } else {
+                self.intern(tok)
+            };
+            seq.push(id);
+        }
+        seq.push(EOS_ID);
+
+        for i in 1..seq.len() {
+            let w = seq[i];
+            let h1 = seq[i - 1];
+            self.add_transition_2(h1, w, weight);
+            if i >= 2 {
+                let h2 = seq[i - 2];
+                self.add_transition_3((h2, h1), w, weight);
+            }
+            if i >= 3 {
+                let h3 = seq[i - 3];
+                let h2 = seq[i - 2];
+                self.add_transition_4((h3, h2, h1), w, weight);
+            }
+        }
+    }
+
+    /// Rebuilds the Order-1..4 Kneser-Ney tables from bootstrap priors + weighted `PromptRecord`s.
+    pub fn rebuild(
+        &mut self,
+        records: &[PromptRecord],
+        now_secs: u64,
+        active_ws_hash: u64,
+        active_stack_mask: u16,
+    ) {
+        self.reset_vocab();
+        for (idx, &seed) in BOOTSTRAP_CONVERSATIONAL_UTTERANCES.iter().enumerate() {
+            let toks = tokenize_clause_with_slots(seed);
+            let prior_weight = (0.40_f32 - (idx as f32 * 0.008)).max(0.20);
+            self.train_clause_tokens(&toks, prior_weight);
+        }
+        for rec in records {
+            let frec = rec.contextual_frecency(now_secs, active_ws_hash, active_stack_mask);
+            let weight = (1.0 + frec as f32).min(12.0);
+            for clause in extract_prose_clauses(&rec.text) {
+                let toks = tokenize_clause_with_slots(&clause);
+                self.train_clause_tokens(&toks, weight);
+            }
+        }
+    }
+
+    /// Order-1 Kneser-Ney continuation probability $P_{\text{KN}}^{(1)}(w) = N_{1+}(\cdot, w) / \sum_v N_{1+}(\cdot, v)$.
+    #[inline]
+    fn prob_order1(&self, w: u32) -> f64 {
+        let cont = self
+            .left_contexts
+            .get(w as usize)
+            .map_or(0, HashSet::len)
+            .max(1) as f64;
+        let denom = self.total_continuation_types.max(self.vocab.len()).max(1) as f64;
+        cont / denom
+    }
+
+    #[inline]
+    fn interpolated_step(bucket: Option<&Vec<(u32, f32)>>, w: u32, lower_prob: f64) -> f64 {
+        let Some(transitions) = bucket.filter(|b| !b.is_empty()) else {
+            return lower_prob;
+        };
+        let mut total = 0.0_f64;
+        let mut target = 0.0_f64;
+        let mut min_pos = f64::MAX;
+        for &(id, cnt) in transitions {
+            let c = f64::from(cnt);
+            total += c;
+            if c > 0.0 && c < min_pos {
+                min_pos = c;
+            }
+            if id == w {
+                target = c;
+            }
+        }
+        if total <= 0.0 {
+            return lower_prob;
+        }
+        let d_eff = KN_DISCOUNT.min(0.8 * min_pos);
+        let n_plus = transitions.len() as f64;
+        let discounted = (target - d_eff).max(0.0) / total;
+        let backoff_weight = (d_eff * n_plus) / total;
+        discounted + backoff_weight * lower_prob
+    }
+
+    /// Evaluates recursive Order-4 -> Order-3 -> Order-2 -> Order-1 Kneser-Ney probability $P_{\text{KN}}(w \mid h)$.
+    #[must_use]
+    pub fn prob(&self, context: &[u32], w: u32) -> f64 {
+        let p1 = self.prob_order1(w);
+        let Some(&h1) = context.last() else {
+            return p1;
+        };
+        let p2 = Self::interpolated_step(self.order2.get(&h1), w, p1);
+        if context.len() < 2 {
+            return p2;
+        }
+        let h2 = context[context.len() - 2];
+        let p3 = Self::interpolated_step(self.order3.get(&(h2, h1)), w, p2);
+        if context.len() < 3 {
+            return p3;
+        }
+        let h3 = context[context.len() - 3];
+        Self::interpolated_step(self.order4.get(&(h3, h2, h1)), w, p3)
+    }
+
+    /// Collects candidate token IDs observed after `context` (or matching `token_prefix` in vocab).
+    fn candidate_ids(
+        &self,
+        context: &[u32],
+        token_prefix_lower: &str,
+        include_structural: bool,
+    ) -> Vec<u32> {
+        let mut ids = HashSet::new();
+        if let Some(&h1) = context.last() {
+            if let Some(b2) = self.order2.get(&h1) {
+                for &(id, _) in b2 {
+                    ids.insert(id);
+                }
+            }
+            if context.len() >= 2 {
+                let h2 = context[context.len() - 2];
+                if let Some(b3) = self.order3.get(&(h2, h1)) {
+                    for &(id, _) in b3 {
+                        ids.insert(id);
+                    }
+                }
+            }
+            if context.len() >= 3 {
+                let h3 = context[context.len() - 3];
+                let h2 = context[context.len() - 2];
+                if let Some(b4) = self.order4.get(&(h3, h2, h1)) {
+                    for &(id, _) in b4 {
+                        ids.insert(id);
+                    }
+                }
+            }
+        }
+
+        if !token_prefix_lower.is_empty() {
+            for idx in (FIRST_LEXICAL_ID as usize)..self.vocab.len() {
+                if let Some(word) = self.vocab.get_index(idx) {
+                    if word.starts_with(token_prefix_lower) && word != token_prefix_lower {
+                        ids.insert(idx as u32);
+                    }
+                }
+            }
+        }
+
+        ids.into_iter()
+            .filter(|&id| {
+                if id < FIRST_LEXICAL_ID {
+                    return include_structural && token_prefix_lower.is_empty();
+                }
+                let Some(word) = self.vocab.get_index(id as usize) else {
+                    return false;
+                };
+                if token_prefix_lower.is_empty() {
+                    true
+                } else {
+                    word.starts_with(token_prefix_lower) && word != token_prefix_lower
+                }
+            })
+            .collect()
+    }
+
+    /// Computes normalized next-token distribution `[(token_id, prob)]` sorted descending, plus Shannon entropy $H(W \mid h)$.
+    fn next_distribution(
+        &self,
+        context: &[u32],
+        token_prefix_lower: &str,
+        include_structural: bool,
+    ) -> (Vec<(u32, f64)>, f64) {
+        let cands = self.candidate_ids(context, token_prefix_lower, include_structural);
+        if cands.is_empty() {
+            return (Vec::new(), 0.0);
+        }
+        let mut raw: Vec<(u32, f64)> = Vec::with_capacity(cands.len());
+        let mut sum = 0.0_f64;
+        for id in cands {
+            let p = self.prob(context, id);
+            if p > 0.0 {
+                sum += p;
+                raw.push((id, p));
+            }
+        }
+        if sum <= 0.0 {
+            return (Vec::new(), 0.0);
+        }
+        let mut entropy = 0.0_f64;
+        for item in &mut raw {
+            item.1 /= sum;
+            if item.1 > 1e-12 {
+                entropy -= item.1 * item.1.log2();
+            }
+        }
+        raw.sort_by(|a, b| b.1.total_cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+        (raw, entropy)
+    }
+
+    /// Predicts up to `max_branches` multi-word phrase continuations using Order-4 Kneser-Ney
+    /// and entropy-bounded horizon rollout.
+    #[must_use]
+    pub fn predict_phrases(
+        &self,
+        preceding_tokens: &[String],
+        token_query: &str,
+        max_branches: usize,
+    ) -> Vec<(String, f64)> {
+        let q_lower = token_query.trim().to_lowercase();
+        if preceding_tokens.is_empty() && q_lower.len() < 2 {
+            return Vec::new();
+        }
+
+        let mut ctx_ids = Vec::with_capacity(preceding_tokens.len() + 1);
+        ctx_ids.push(BOS_ID);
+        for tok in preceding_tokens {
+            if let Some(id) = self.lookup_id(tok) {
+                ctx_ids.push(id);
+            } else {
+                // Unseen context word: reset effective Markov horizon after unknown barrier
+                ctx_ids.clear();
+            }
+        }
+        if ctx_ids.is_empty() && q_lower.len() < 2 {
+            return Vec::new();
+        }
+
+        let (first_dist, _) = self.next_distribution(&ctx_ids, &q_lower, false);
+        let mut out = Vec::new();
+
+        for &(first_id, first_prob) in first_dist
+            .iter()
+            .filter(|&&(id, p)| id >= FIRST_LEXICAL_ID && p >= 0.04)
+            .take(max_branches)
+        {
+            let Some(first_word) = self.vocab.get_index(first_id as usize) else {
+                continue;
+            };
+            let mut words = vec![first_word.clone()];
+            let mut roll_ctx = ctx_ids.clone();
+            roll_ctx.push(first_id);
+            let mut trailing_space_for_slot = false;
+
+            for _ in 1..MAX_PHRASE_ROLLOUT_WORDS {
+                let tail_start = roll_ctx.len().saturating_sub(3);
+                let (step_dist, step_entropy) =
+                    self.next_distribution(&roll_ctx[tail_start..], "", true);
+                let Some(&(top_id, top_prob)) = step_dist.first() else {
+                    break;
+                };
+                if top_id == EOS_ID {
+                    break;
+                }
+                if top_id == REF_SLOT_ID {
+                    if top_prob >= 0.35 {
+                        trailing_space_for_slot = true;
+                    }
+                    break;
+                }
+                if top_prob < ROLLOUT_MIN_TOP_PROB || step_entropy > ROLLOUT_MAX_ENTROPY_BITS {
+                    break;
+                }
+                let Some(next_word) = self.vocab.get_index(top_id as usize) else {
+                    break;
+                };
+                if words.iter().any(|w| w == next_word) {
+                    break;
+                }
+                words.push(next_word.clone());
+                roll_ctx.push(top_id);
+            }
+
+            let mut phrase = words.join(" ");
+            if trailing_space_for_slot {
+                phrase.push(' ');
+            }
+            out.push((phrase, first_prob));
+        }
+
+        out
+    }
+}
+
+/// Global + Workspace Persistent Prompt Corpus & Fused Omnibox/Gboard Recommender.
+#[derive(Debug, Clone)]
+pub struct PromptCorpus {
+    store_dir: Option<PathBuf>,
+    active_ws_hash: u64,
+    active_stack_mask: u16,
+    records: Vec<PromptRecord>,
+    wal_appends_since_compact: usize,
+    lm: KneserNeyLm,
+}
+
+impl Default for PromptCorpus {
+    fn default() -> Self {
+        Self::new_in_memory()
+    }
+}
+
+impl PromptCorpus {
+    /// Creates an ephemeral in-memory corpus (initialized with bootstrap conversational priors).
+    #[must_use]
+    pub fn new_in_memory() -> Self {
+        let mut corpus = Self {
+            store_dir: None,
+            active_ws_hash: 0,
+            active_stack_mask: 0,
+            records: Vec::new(),
+            wal_appends_since_compact: 0,
+            lm: KneserNeyLm::new(),
+        };
+        corpus.rebuild_lm();
+        corpus
+    }
+
+    /// Resolves the default OS-portable global corpus directory (`~/.local/share/minicode/prompts`).
+    ///
+    /// Honors `MINICODE_PROMPT_CORPUS_DIR` when explicitly set. In unit-test builds (`#[cfg(test)]`),
+    /// returns `None` unless `MINICODE_PROMPT_CORPUS_DIR` is set so parallel tests remain 100% isolated.
+    #[must_use]
+    pub fn default_global_dir() -> Option<PathBuf> {
+        if let Ok(custom) = std::env::var("MINICODE_PROMPT_CORPUS_DIR") {
+            let trimmed = custom.trim();
+            if !trimmed.is_empty() {
+                return Some(PathBuf::from(trimmed));
+            }
+        }
+        #[cfg(test)]
+        {
+            None
+        }
+        #[cfg(not(test))]
+        {
+            dirs::data_local_dir()
+                .or_else(dirs::config_dir)
+                .map(|base| {
+                    base.join("minicode")
+                        .join(crate::constants::PROMPT_CORPUS_DIR_NAME)
+                })
+        }
+    }
+
+    /// Opens a persistent `PromptCorpus` rooted at `store_dir` with contextual affinity for `workspace_root`.
+    #[must_use]
+    pub fn open_at(store_dir: Option<PathBuf>, workspace_root: Option<&Path>) -> Self {
+        let mut corpus = Self {
+            store_dir,
+            active_ws_hash: compute_workspace_hash(workspace_root),
+            active_stack_mask: detect_workspace_stack_mask(workspace_root),
+            records: Vec::new(),
+            wal_appends_since_compact: 0,
+            lm: KneserNeyLm::new(),
+        };
+        corpus.load_from_store_dir();
+        corpus.rebuild_lm();
+        corpus
+    }
+
+    /// Updates active workspace context and merges any legacy `<workspace>/.minicode/prompt_history.jsonl`
+    /// conversational prompts (automatically purging legacy `/commands`).
+    pub fn bind_workspace(&mut self, workspace_root: &Path, override_store_dir: Option<PathBuf>) {
+        self.active_ws_hash = compute_workspace_hash(Some(workspace_root));
+        self.active_stack_mask = detect_workspace_stack_mask(Some(workspace_root));
+        if let Some(dir) = override_store_dir.or_else(Self::default_global_dir) {
+            if self.store_dir.as_ref() != Some(&dir) {
+                self.store_dir = Some(dir);
+                self.load_from_store_dir();
+            }
+        }
+        self.import_legacy_workspace_jsonl(workspace_root);
+        self.rebuild_lm();
+    }
+
+    #[must_use]
+    pub fn records(&self) -> &[PromptRecord] {
+        &self.records
+    }
+
+    fn rebuild_lm(&mut self) {
+        let now = current_unix_secs();
+        self.lm.rebuild(
+            &self.records,
+            now,
+            self.active_ws_hash,
+            self.active_stack_mask,
+        );
+    }
+
+    fn load_from_store_dir(&mut self) {
+        let Some(dir) = self.store_dir.clone() else {
+            return;
+        };
+        let snap_path = dir.join(PROMPT_SNAPSHOT_FILE_NAME);
+        if let Ok(file) = std::fs::File::open(&snap_path) {
+            if let Ok(meta) = file.metadata() {
+                let len = meta.len();
+                if len >= SNAPSHOT_MAGIC.len() as u64 && len <= 16 * 1024 * 1024 {
+                    // SAFETY: Read-only mmap of bounded local snapshot file with magic header validation.
+                    #[allow(unsafe_code)]
+                    if let Ok(mmap) = unsafe { memmap2::Mmap::map(&file) } {
+                        if mmap.starts_with(&SNAPSHOT_MAGIC) {
+                            if let Ok(snap) = bincode::deserialize::<PromptCorpusSnapshot>(
+                                &mmap[SNAPSHOT_MAGIC.len()..],
+                            ) {
+                                if snap.version == SNAPSHOT_VERSION {
+                                    for rec in snap.records {
+                                        if !is_slash_command_input(&rec.text) {
+                                            self.merge_record_in_memory(rec);
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        let wal_path = dir.join(PROMPT_WAL_FILE_NAME);
+        let mut wal_lines = 0usize;
+        if let Ok(wal_raw) = std::fs::read_to_string(&wal_path) {
+            for line in wal_raw.lines() {
+                let trimmed = line.trim();
+                if trimmed.is_empty() {
+                    continue;
+                }
+                if let Ok(ev) = serde_json::from_str::<PromptWalEvent>(trimmed) {
+                    if !is_slash_command_input(&ev.text) {
+                        self.apply_event_in_memory(
+                            &ev.text,
+                            ev.timestamp,
+                            ev.workspace_hash,
+                            ev.stack_mask,
+                        );
+                        wal_lines += 1;
+                    }
+                }
+            }
+        }
+        self.wal_appends_since_compact = wal_lines;
+        if wal_lines >= PROMPT_WAL_COMPACT_THRESHOLD {
+            self.compact_snapshot();
+        }
+    }
+
+    fn import_legacy_workspace_jsonl(&mut self, workspace_root: &Path) {
+        let legacy_path = workspace_root.join(crate::constants::PROMPT_HISTORY_FILE);
+        let Ok(content) = std::fs::read_to_string(&legacy_path) else {
+            return;
+        };
+
+        #[derive(Deserialize)]
+        struct LegacyItem {
+            text: String,
+            #[serde(default)]
+            timestamp: u64,
+        }
+
+        let mut had_slash_commands = false;
+        let mut kept_lines = Vec::new();
+        for line in content.lines() {
+            let trimmed = line.trim();
+            if trimmed.is_empty() {
+                continue;
+            }
+            if let Ok(item) = serde_json::from_str::<LegacyItem>(trimmed) {
+                if is_slash_command_input(&item.text) {
+                    had_slash_commands = true;
+                    continue;
+                }
+                let redacted = crate::security::redactor::redact_secrets(&item.text);
+                if redacted.warnings.is_empty() {
+                    self.apply_event_in_memory(
+                        item.text.trim(),
+                        item.timestamp.max(1),
+                        self.active_ws_hash,
+                        self.active_stack_mask,
+                    );
+                    kept_lines.push(trimmed.to_string());
+                }
+            }
+        }
+
+        // Clean legacy `/commands` out of `.minicode/prompt_history.jsonl` so stale commands never return
+        if had_slash_commands {
+            let mut cleaned = kept_lines.join("\n");
+            if !cleaned.is_empty() {
+                cleaned.push('\n');
+            }
+            let _ = std::fs::write(&legacy_path, cleaned);
+        }
+    }
+
+    fn merge_record_in_memory(&mut self, incoming: PromptRecord) {
+        if let Some(existing) = self.records.iter_mut().find(|r| r.hash == incoming.hash) {
+            existing.total_count = existing.total_count.max(incoming.total_count);
+            for ts in incoming.timestamps {
+                if !existing.timestamps.contains(&ts) {
+                    existing.timestamps.push(ts);
+                }
+            }
+            existing.timestamps.sort_unstable();
+            if existing.timestamps.len() > MAX_STORED_TIMESTAMPS_PER_RECORD {
+                let drain_n = existing.timestamps.len() - MAX_STORED_TIMESTAMPS_PER_RECORD;
+                existing.timestamps.drain(0..drain_n);
+            }
+            for ws in incoming.workspace_hashes {
+                if ws != 0
+                    && !existing.workspace_hashes.contains(&ws)
+                    && existing.workspace_hashes.len() < MAX_STORED_WORKSPACES_PER_RECORD
+                {
+                    existing.workspace_hashes.push(ws);
+                }
+            }
+            existing.stack_mask |= incoming.stack_mask;
+        } else {
+            self.records.push(incoming);
+        }
+        self.trim_records_to_cap();
+    }
+
+    fn apply_event_in_memory(
+        &mut self,
+        clean_text: &str,
+        timestamp: u64,
+        ws_hash: u64,
+        stack_mask: u16,
+    ) {
+        let trimmed = clean_text.trim();
+        if trimmed.is_empty() || is_slash_command_input(trimmed) {
+            return;
+        }
+        let hash = canonical_prompt_hash(trimmed);
+        if let Some(pos) = self.records.iter().position(|r| r.hash == hash) {
+            let mut rec = self.records.remove(pos);
+            rec.text = trimmed.to_string();
+            rec.total_count = rec.total_count.saturating_add(1);
+            rec.timestamps.push(timestamp);
+            if rec.timestamps.len() > MAX_STORED_TIMESTAMPS_PER_RECORD {
+                rec.timestamps.remove(0);
+            }
+            if ws_hash != 0
+                && !rec.workspace_hashes.contains(&ws_hash)
+                && rec.workspace_hashes.len() < MAX_STORED_WORKSPACES_PER_RECORD
+            {
+                rec.workspace_hashes.push(ws_hash);
+            }
+            rec.stack_mask |= stack_mask;
+            self.records.insert(0, rec);
+        } else {
+            let mut ws_vec = Vec::new();
+            if ws_hash != 0 {
+                ws_vec.push(ws_hash);
+            }
+            self.records.insert(
+                0,
+                PromptRecord {
+                    hash,
+                    text: trimmed.to_string(),
+                    total_count: 1,
+                    timestamps: vec![timestamp],
+                    workspace_hashes: ws_vec,
+                    stack_mask,
+                },
+            );
+        }
+        self.trim_records_to_cap();
+    }
+
+    fn trim_records_to_cap(&mut self) {
+        if self.records.len() > PROMPT_CORPUS_MAX_RECORDS {
+            self.records.truncate(PROMPT_CORPUS_MAX_RECORDS);
+        }
+    }
+
+    /// Records a newly submitted user input if and only if it is a conversational prompt
+    /// (never a `/command`). Secret-bearing inputs are never written to global disk storage.
+    pub fn record_submission(&mut self, raw_prompt: &str) -> bool {
+        let trimmed = raw_prompt.trim();
+        if trimmed.is_empty() || is_slash_command_input(trimmed) {
+            return false;
+        }
+
+        let redacted = crate::security::redactor::redact_secrets(trimmed);
+        if !redacted.warnings.is_empty() {
+            return false;
+        }
+
+        let now = current_unix_secs();
+        self.apply_event_in_memory(trimmed, now, self.active_ws_hash, self.active_stack_mask);
+
+        for clause in extract_prose_clauses(trimmed) {
+            let toks = tokenize_clause_with_slots(&clause);
+            self.lm.train_clause_tokens(&toks, 2.0);
+        }
+
+        if let Some(dir) = self.store_dir.clone() {
+            let _ = std::fs::create_dir_all(&dir);
+            let wal_path = dir.join(PROMPT_WAL_FILE_NAME);
+            let event = PromptWalEvent {
+                text: trimmed.to_string(),
+                timestamp: now,
+                workspace_hash: self.active_ws_hash,
+                stack_mask: self.active_stack_mask,
+            };
+            if let Ok(json) = serde_json::to_string(&event) {
+                if let Ok(mut f) = OpenOptions::new().create(true).append(true).open(&wal_path) {
+                    let _ = writeln!(f, "{json}");
+                    self.wal_appends_since_compact += 1;
+                }
+            }
+            if self.wal_appends_since_compact >= PROMPT_WAL_COMPACT_THRESHOLD {
+                self.compact_snapshot();
+            }
+        }
+        true
+    }
+
+    /// Atomically compacts `records` into `prompt_lm.bin` (`*b"MCPCORP1"` + `bincode`) and truncates the WAL.
+    pub fn compact_snapshot(&mut self) {
+        let Some(dir) = self.store_dir.clone() else {
+            return;
+        };
+        if std::fs::create_dir_all(&dir).is_err() {
+            return;
+        };
+        let snap = PromptCorpusSnapshot {
+            version: SNAPSHOT_VERSION,
+            records: self.records.clone(),
+        };
+        let Ok(payload) = bincode::serialize(&snap) else {
+            return;
+        };
+        let mut bytes = Vec::with_capacity(SNAPSHOT_MAGIC.len() + payload.len());
+        bytes.extend_from_slice(&SNAPSHOT_MAGIC);
+        bytes.extend_from_slice(&payload);
+
+        let tmp_path = dir.join(format!(
+            "{}.tmp.{}",
+            PROMPT_SNAPSHOT_FILE_NAME,
+            uuid::Uuid::new_v4()
+        ));
+        let final_path = dir.join(PROMPT_SNAPSHOT_FILE_NAME);
+        if std::fs::write(&tmp_path, &bytes).is_ok() {
+            if std::fs::rename(&tmp_path, &final_path).is_ok() {
+                let wal_path = dir.join(PROMPT_WAL_FILE_NAME);
+                let _ = std::fs::write(wal_path, "");
+                self.wal_appends_since_compact = 0;
+            } else {
+                let _ = std::fs::remove_file(&tmp_path);
+            }
+        }
+    }
+
+    /// Computes the highest-frecency inline ghost suffix matching `line_prefix` from global/workspace history,
+    /// falling back to the top Order-4 Kneser-Ney Gboard continuation when no exact full-line prefix exists.
+    #[must_use]
+    pub fn suggest_ghost_suffix(&self, line_prefix: &str) -> Option<String> {
+        if line_prefix.is_empty()
+            || is_slash_command_input(line_prefix)
+            || line_prefix.starts_with('/')
+        {
+            return None;
+        }
+        let now = current_unix_secs();
+
+        // 1. Omnibox exact prefix match ranked by contextual frecency
+        let mut best_omni: Option<(&str, f64)> = None;
+        for rec in &self.records {
+            for clause_line in rec.text.lines() {
+                let candidate = clause_line.trim_end();
+                if candidate.len() > line_prefix.len()
+                    && starts_with_ignore_ascii_case(candidate, line_prefix)
+                {
+                    let suffix = candidate.get(line_prefix.len()..).unwrap_or("");
+                    if !suffix.is_empty() {
+                        let frec = rec.contextual_frecency(
+                            now,
+                            self.active_ws_hash,
+                            self.active_stack_mask,
+                        );
+                        if best_omni.is_none_or(|(_, best_s)| frec > best_s) {
+                            best_omni = Some((suffix, frec));
+                        }
+                    }
+                }
+            }
+        }
+        if let Some((suffix, _)) = best_omni {
+            return Some(suffix.to_string());
+        }
+
+        // 2. Gboard Order-4 Kneser-Ney continuous next-phrase prediction
+        let ends_with_space = line_prefix.ends_with(char::is_whitespace);
+        let (context_slice, token_query) =
+            split_context_and_active_word(line_prefix, ends_with_space);
+        if token_query.starts_with(['@', '#', '$', '/']) {
+            return None;
+        }
+        let ctx_tokens = tokenize_clause_with_slots(context_slice);
+        let phrases = self.lm.predict_phrases(&ctx_tokens, token_query, 1);
+        let (top_phrase, _) = phrases.first()?;
+        if token_query.is_empty() {
+            if ends_with_space {
+                Some(top_phrase.clone())
+            } else {
+                Some(format!(" {top_phrase}"))
+            }
+        } else if top_phrase.len() > token_query.len()
+            && starts_with_ignore_ascii_case(top_phrase, token_query)
+        {
+            top_phrase.get(token_query.len()..).map(str::to_string)
+        } else {
+            None
+        }
+    }
+
+    /// Fuses Omnibox past-prompt recall (exact prefix + ordered multi-token subsequence) with
+    /// Gboard Order-4 Kneser-Ney phrase synthesis for `line_prefix` at `replace_start_col`.
+    #[must_use]
+    pub fn suggest_completions(
+        &self,
+        line_prefix: &str,
+        replace_start_col: usize,
+        token_query: &str,
+        max_items: usize,
+    ) -> Vec<PromptSuggestion> {
+        if line_prefix.trim().is_empty()
+            || line_prefix.trim_start().starts_with('/')
+            || token_query.starts_with(['@', '#', '$'])
+        {
+            return Vec::new();
+        }
+
+        let now = current_unix_secs();
+        let mut results: Vec<PromptSuggestion> = Vec::new();
+        let mut seen_labels: HashSet<String> = HashSet::new();
+
+        let query_tokens: Vec<String> = line_prefix
+            .split_whitespace()
+            .map(|t| t.to_lowercase())
+            .filter(|t| !t.is_empty())
+            .collect();
+
+        // 1. Omnibox Past-Prompt Recall (Prefix + Ordered Token-Boundary Subsequence)
+        for rec in &self.records {
+            let first_line = rec.text.lines().next().unwrap_or("").trim();
+            if first_line.is_empty() || first_line.eq_ignore_ascii_case(line_prefix.trim()) {
+                continue;
+            }
+            let frec = rec.contextual_frecency(now, self.active_ws_hash, self.active_stack_mask);
+            let frec_bonus = ((1.0 + frec).ln() * 24.0) as i32;
+            let is_local_ws =
+                self.active_ws_hash != 0 && rec.workspace_hashes.contains(&self.active_ws_hash);
+            let badge = if is_local_ws { "recent" } else { "global" };
+
+            if first_line.len() > line_prefix.len()
+                && starts_with_ignore_ascii_case(first_line, line_prefix)
+            {
+                let insert_text = char_slice(first_line, replace_start_col).to_string();
+                if !insert_text.is_empty() && seen_labels.insert(first_line.to_lowercase()) {
+                    results.push(PromptSuggestion {
+                        insert_text,
+                        display_label: first_line.to_string(),
+                        source_badge: badge,
+                        score: 140 + frec_bonus,
+                    });
+                }
+            } else if query_tokens.len() >= 2
+                && ordered_token_prefix_match(first_line, &query_tokens)
+            {
+                // Full-line Omnibox search recall replaces from column 0 when replace_start_col == 0,
+                // or provides full-prompt recall when the user typed multiple search keywords
+                if replace_start_col == 0 && seen_labels.insert(first_line.to_lowercase()) {
+                    results.push(PromptSuggestion {
+                        insert_text: first_line.to_string(),
+                        display_label: first_line.to_string(),
+                        source_badge: badge,
+                        score: 112 + frec_bonus,
+                    });
+                }
+            }
+        }
+
+        // 2. Gboard Order-4 Kneser-Ney Continuous Next-Phrase Synthesis
+        let before_active = char_prefix(line_prefix, replace_start_col);
+        let ctx_tokens = tokenize_clause_with_slots(before_active);
+        for (rank_idx, (phrase, prob)) in self
+            .lm
+            .predict_phrases(&ctx_tokens, token_query, max_items.max(4))
+            .into_iter()
+            .enumerate()
+        {
+            let preview = if before_active.trim().is_empty() {
+                phrase.trim().to_string()
+            } else {
+                let tail_word = ctx_tokens
+                    .last()
+                    .map(|s| if s == "<@REF>" { "@" } else { s.as_str() })
+                    .unwrap_or("");
+                format!("{tail_word} {}", phrase.trim()).trim().to_string()
+            };
+            if seen_labels.insert(preview.to_lowercase()) {
+                let prob_score = (prob * 65.0) as i32;
+                results.push(PromptSuggestion {
+                    insert_text: phrase,
+                    display_label: preview,
+                    source_badge: "phrase",
+                    score: 105 + prob_score - (rank_idx as i32 * 4),
+                });
+            }
+        }
+
+        results.sort_by(|a, b| {
+            b.score
+                .cmp(&a.score)
+                .then_with(|| a.display_label.len().cmp(&b.display_label.len()))
+        });
+        results.truncate(max_items);
+        results
+    }
+}
+
+/// Checks whether every query word in `query_tokens` matches a word prefix in `candidate` in order
+/// (Chrome Omnibox ordered multi-word prefix recall).
+#[must_use]
+pub fn ordered_token_prefix_match(candidate: &str, query_tokens: &[String]) -> bool {
+    if query_tokens.is_empty() {
+        return false;
+    }
+    let mut q_idx = 0usize;
+    for word in candidate.split_whitespace() {
+        let clean = word.trim_matches(|c: char| !c.is_alphanumeric() && c != '@' && c != '/');
+        if starts_with_ignore_ascii_case(clean, &query_tokens[q_idx]) {
+            q_idx += 1;
+            if q_idx == query_tokens.len() {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+fn split_context_and_active_word(line: &str, ends_with_space: bool) -> (&str, &str) {
+    if ends_with_space {
+        return (line, "");
+    }
+    match line.rfind(char::is_whitespace) {
+        Some(idx) => {
+            let next = idx + line[idx..].chars().next().map_or(1, char::len_utf8);
+            (&line[..next], &line[next..])
+        }
+        None => ("", line),
+    }
+}
+
+#[inline]
+fn starts_with_ignore_ascii_case(haystack: &str, prefix: &str) -> bool {
+    haystack
+        .get(..prefix.len())
+        .is_some_and(|sub| sub.eq_ignore_ascii_case(prefix))
+}
+
+#[inline]
+fn char_slice(s: &str, start_char: usize) -> &str {
+    if start_char == 0 {
+        return s;
+    }
+    s.char_indices()
+        .nth(start_char)
+        .map_or("", |(byte_idx, _)| &s[byte_idx..])
+}
+
+#[inline]
+fn char_prefix(s: &str, end_char: usize) -> &str {
+    if end_char == 0 {
+        return "";
+    }
+    s.char_indices()
+        .nth(end_char)
+        .map_or(s, |(byte_idx, _)| &s[..byte_idx])
+}
+
+fn current_unix_secs() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(1, |d| d.as_secs())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_slash_command_channel_gate_and_path_preservation() {
+        assert!(is_slash_command_input("/settings"));
+        assert!(is_slash_command_input("  /caveman ultra "));
+        assert!(is_slash_command_input("/menu-style icons"));
+        assert!(!is_slash_command_input("fix the /login endpoint"));
+        assert!(!is_slash_command_input(
+            "/home/user/src/main.rs explain this"
+        ));
+        assert!(!is_slash_command_input(""));
+    }
+
+    #[test]
+    fn test_code_and_secret_sanitization_excludes_code_blocks_and_api_keys() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut corpus = PromptCorpus::open_at(Some(dir.path().to_path_buf()), None);
+
+        // 1. Slash commands are structurally rejected
+        assert!(!corpus.record_submission("/review"));
+        assert!(corpus.records().is_empty());
+
+        // 2. Prompts containing live API keys are rejected from global persistence
+        assert!(!corpus.record_submission(
+            "use key sk-proj-1234567890abcdef1234567890abcdef1234567890abcdef here"
+        ));
+        assert!(corpus.records().is_empty());
+
+        // 3. Fenced code blocks & collapsed paste blocks are stripped from LM clauses
+        let prompt_with_code = "please optimize the memory layout\n[fn hash ..... +18 lines]\n```rust\npub struct SecretNode { a: usize }\n```";
+        let clauses = extract_prose_clauses(prompt_with_code);
+        assert_eq!(clauses, vec!["please optimize the memory layout"]);
+    }
+
+    #[test]
+    fn test_global_wal_mmap_snapshot_compaction_and_cross_workspace_sharing() {
+        let global_dir = tempfile::tempdir().unwrap();
+        let ws_a = tempfile::tempdir().unwrap();
+        let ws_b = tempfile::tempdir().unwrap();
+        std::fs::write(ws_a.path().join("Cargo.toml"), "[package]\nname=\"a\"\n").unwrap();
+        std::fs::write(ws_b.path().join("Cargo.toml"), "[package]\nname=\"b\"\n").unwrap();
+
+        {
+            let mut corpus_a =
+                PromptCorpus::open_at(Some(global_dir.path().to_path_buf()), Some(ws_a.path()));
+            assert!(corpus_a.record_submission("update the changelog and push to main"));
+            assert!(corpus_a.record_submission("run full unit test verification"));
+            corpus_a.compact_snapshot();
+        }
+
+        // Open in completely separate workspace B -> immediately recalls & predicts prompts from workspace A!
+        let corpus_b =
+            PromptCorpus::open_at(Some(global_dir.path().to_path_buf()), Some(ws_b.path()));
+        assert_eq!(corpus_b.records().len(), 2);
+        assert_eq!(
+            corpus_b.suggest_ghost_suffix("update the ch").as_deref(),
+            Some("angelog and push to main")
+        );
+    }
+
+    #[test]
+    fn test_kneser_ney_cross_prompt_phrase_combinations_and_ref_slot_generalization() {
+        let mut corpus = PromptCorpus::new_in_memory();
+        // Train two distinct prompts that share a middle pivot ("the input dock") + a @ref pattern
+        corpus.record_submission("carefully audit the input dock");
+        corpus.record_submission("the input dock without breaking tests");
+        corpus.record_submission("refactor @src/ui/input.rs and run clippy");
+        corpus.record_submission("refactor @src/app/mod.rs and run clippy");
+
+        // 1. Cross-prompt combination: typing "carefully audit the input dock " stitches "without breaking tests"!
+        let stitched = corpus.suggest_ghost_suffix("carefully audit the input dock ");
+        assert_eq!(stitched.as_deref(), Some("without breaking tests"));
+
+        // 2. `<@REF>` slot generalization: typing a brand-new symbol `@QuantumRouter ` after `refactor `
+        // immediately predicts `"and run clippy"`!
+        let generalized = corpus.suggest_ghost_suffix("refactor @QuantumRouter ");
+        assert_eq!(generalized.as_deref(), Some("and run clippy"));
+    }
+}

@@ -1573,7 +1573,7 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let mut cfg = crate::config::Config::default();
         cfg.browser.default_engine = Some("firefox".to_string());
-        cfg.save(Some(tmp.path())).unwrap();
+        cfg.save_workspace(tmp.path()).unwrap();
 
         // General browsing honors user's configured `firefox` primary (with MiniBrowse fallback)
         let general_chain = BrowserManager::resolve_priority_chain(

@@ -1,12 +1,14 @@
 use crate::constants::{
     COMMAND_PALETTE_HEIGHT, COMMAND_PALETTE_MAX_WIDTH, COMMAND_PALETTE_MIN_WIDTH,
     COMMAND_PALETTE_WIDTH_PCT, COMPACT_MENU_MAX_ROWS, DEFAULT_INPUT_PLACEHOLDER,
-    INTELLISENSE_MAX_POPUP_ITEMS, INTELLISENSE_POPUP_MAX_WIDTH, INTELLISENSE_POPUP_MIN_WIDTH,
+    GBOARD_STRIP_MAX_CHIPS, INTELLISENSE_MAX_POPUP_ITEMS, INTELLISENSE_POPUP_MAX_WIDTH,
+    INTELLISENSE_POPUP_MIN_WIDTH,
 };
 use crate::ui::intellisense::{
-    extract_first_ghost_word, CompletionCandidate, IntellisenseEngine, MenuStyle, PromptHistory,
-    TriggerKind, TriggerToken,
+    extract_first_ghost_word, parse_at_mention_query, CompletionCandidate, IntellisenseEngine,
+    MentionFilter, MenuStyle, PromptHistory, TriggerKind, TriggerToken,
 };
+use crate::ui::prompt_corpus::is_slash_command_input;
 use crate::ui::theme::Theme;
 use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
@@ -282,6 +284,7 @@ pub struct InputDock<'a> {
     pub intellisense: IntellisenseEngine,
     pub menu_style: MenuStyle,
     pub workspace_root: Option<std::path::PathBuf>,
+    pub slash_usage_counts: std::collections::HashMap<String, u32>,
 }
 
 impl<'a> Default for InputDock<'a> {
@@ -317,6 +320,7 @@ impl<'a> InputDock<'a> {
             intellisense: IntellisenseEngine::new(),
             menu_style: MenuStyle::default(),
             workspace_root: None,
+            slash_usage_counts: std::collections::HashMap::new(),
         }
     }
 
@@ -327,14 +331,31 @@ impl<'a> InputDock<'a> {
         dock
     }
 
-    /// Binds the workspace root and loads `<workspace>/.minicode/prompt_history.jsonl`.
+    /// Initializes the input dock bound to both a workspace root and an explicit global corpus directory.
+    pub fn new_with_global_corpus(
+        workspace_root: &std::path::Path,
+        global_corpus_dir: &std::path::Path,
+    ) -> Self {
+        let mut dock = Self::new();
+        dock.workspace_root = Some(workspace_root.to_path_buf());
+        dock.history
+            .load_with_global_dir(workspace_root, Some(global_corpus_dir.to_path_buf()));
+        dock
+    }
+
+    /// Binds the workspace root and loads workspace + global conversational prompt history.
     pub fn set_workspace_root(&mut self, workspace_root: &std::path::Path) {
         self.workspace_root = Some(workspace_root.to_path_buf());
         self.history.load_from_workspace(workspace_root);
     }
 
-    /// Replaces the textarea contents with `text` and positions the cursor at the end of the text.
+    /// Replaces the textarea contents with `text`, resets history navigation cursor, and positions the cursor at EOL.
     pub fn set_text(&mut self, text: &str) {
+        self.history.reset_navigation();
+        self.set_text_preserving_history_cursor(text);
+    }
+
+    fn set_text_preserving_history_cursor(&mut self, text: &str) {
         let lines: Vec<String> = if text.is_empty() {
             Vec::new()
         } else {
@@ -480,7 +501,9 @@ impl<'a> InputDock<'a> {
         self.textarea = Self::new_configured_textarea(Vec::new());
         self.slash_selected_index = 0;
         self.intellisense.selected_index = 0;
+        self.intellisense.mention_filter = MentionFilter::All;
         self.intellisense.dismissed_for_query = None;
+        self.intellisense.popup_explicitly_focused = false;
         self.history.reset_navigation();
         self.pasted_blocks.clear();
         self.next_block_id = 1;
@@ -716,7 +739,8 @@ impl<'a> InputDock<'a> {
         false
     }
 
-    /// Resolves the typed text against any collapsed paste blocks and attached `[img N]` images.
+    /// Resolves the typed text against any collapsed paste blocks, attached `[img N]` images,
+    /// and `@`-mentioned project images & AST symbols (`<attached_images>` + `<mentioned_symbols>`).
     /// Returns `PromptSubmission { display, full }`.
     pub fn resolve_submission(&self, text: &str) -> PromptSubmission {
         let display = text.trim().to_string();
@@ -728,16 +752,21 @@ impl<'a> InputDock<'a> {
             }
         }
 
-        // Collect all attached images still referenced in the prompt
         let active_images: Vec<&PastedImage> = self
             .pasted_images
             .iter()
             .filter(|img| display.contains(&img.placeholder))
             .collect();
 
-        if !active_images.is_empty() {
+        let resolved_mentions = self
+            .intellisense
+            .resolve_prompt_mentions_readonly(&display, self.workspace_root.as_deref());
+
+        if !active_images.is_empty() || !resolved_mentions.images.is_empty() {
             let mut img_block = String::from("\n\n<attached_images>\n");
+            let mut seen_paths = std::collections::HashSet::new();
             for img in &active_images {
+                seen_paths.insert(img.file_path.to_lowercase());
                 let kb = (img.size_bytes.max(1024) / 1024).max(1);
                 let dim_str = img
                     .dimensions
@@ -748,19 +777,70 @@ impl<'a> InputDock<'a> {
                     img.placeholder, img.file_path, dim_str, img.media_type, kb
                 ));
             }
+            for mentioned_img in &resolved_mentions.images {
+                if seen_paths.insert(mentioned_img.rel_path.to_lowercase()) {
+                    let kb = (mentioned_img.size_bytes.max(1024) / 1024).max(1);
+                    let dim_str = mentioned_img
+                        .dimensions
+                        .map(|(w, h)| format!("{}x{}, ", w, h))
+                        .unwrap_or_default();
+                    img_block.push_str(&format!(
+                        "- @{}: path=\"{}\" ({}{}, {} KB)\n",
+                        mentioned_img.rel_path,
+                        mentioned_img.rel_path,
+                        dim_str,
+                        mentioned_img.media_type,
+                        kb
+                    ));
+                }
+            }
             img_block.push_str("</attached_images>");
             full.push_str(&img_block);
+        }
+
+        if !resolved_mentions.symbols.is_empty() {
+            let mut sym_block = String::from("\n\n<mentioned_symbols>\n");
+            for sym in &resolved_mentions.symbols {
+                let sig_part = if sym.signature.is_empty() {
+                    String::new()
+                } else {
+                    format!(" — `{}`", sym.signature)
+                };
+                sym_block.push_str(&format!(
+                    "- {}: {} in `{}` (lines {}-{}){}\n",
+                    sym.insert_token,
+                    sym.kind_badge,
+                    sym.rel_file,
+                    sym.start_line,
+                    sym.end_line,
+                    sig_part
+                ));
+            }
+            sym_block.push_str("</mentioned_symbols>");
+            full.push_str(&sym_block);
         }
 
         PromptSubmission { display, full }
     }
 
-    /// Checks if the input starts with '/' and is actively triggering the command palette
+    /// Checks if the input starts with '/' and is actively triggering the command palette.
+    ///
+    /// Suppressed whenever the user is navigating prompt history (`self.history.cursor.is_some()`)
+    /// so `Up`/`Down` recall can never be trapped inside the `/` menu.
     pub fn has_active_slash_query(&self) -> bool {
+        if self.history.cursor.is_some() {
+            return false;
+        }
         let lines = self.textarea.lines();
+        if lines.len() > 1 {
+            return false;
+        }
         if let Some(first_line) = lines.first() {
             let trimmed = first_line.trim();
-            trimmed.starts_with('/') && !trimmed.contains(' ')
+            if trimmed == "/" {
+                return true;
+            }
+            is_slash_command_input(trimmed) && !trimmed.contains(' ')
         } else {
             false
         }
@@ -814,7 +894,12 @@ impl<'a> InputDock<'a> {
         if !query.is_empty() {
             results.sort_by_key(|cmd| {
                 let name = cmd.slash_name.trim_start_matches('/');
-                if name.eq_ignore_ascii_case(&query) {
+                let usage = self
+                    .slash_usage_counts
+                    .get(cmd.slash_name)
+                    .copied()
+                    .unwrap_or(0);
+                let tier = if name.eq_ignore_ascii_case(&query) {
                     0
                 } else if starts_with_ascii_case_insensitive(name, &query) {
                     1
@@ -828,7 +913,17 @@ impl<'a> InputDock<'a> {
                     5
                 } else {
                     6
-                }
+                };
+                (tier, std::cmp::Reverse(usage))
+            });
+        } else if !self.slash_usage_counts.is_empty() {
+            results.sort_by_key(|cmd| {
+                std::cmp::Reverse(
+                    self.slash_usage_counts
+                        .get(cmd.slash_name)
+                        .copied()
+                        .unwrap_or(0),
+                )
             });
         }
 
@@ -900,13 +995,31 @@ impl<'a> InputDock<'a> {
         )
     }
 
-    /// Returns `true` if either the `/` command palette or the contextual intellisense popup is open.
+    /// Returns `true` if either the `/` command palette or an explicit/focused intellisense popup is open.
+    ///
+    /// Ambient `PromptFlow` suggestions render non-blockingly on the 1-line Gboard dock strip
+    /// and do NOT count as a modal overlay unless explicitly focused via `Alt+Down`/`Alt+Up`/`Ctrl+Space`.
     pub fn has_any_overlay_open(&mut self) -> bool {
-        self.has_active_slash_query() || !self.matching_intellisense_candidates().is_empty()
+        if self.has_active_slash_query() {
+            return true;
+        }
+        let Some(trig) = self.active_intellisense_trigger() else {
+            return false;
+        };
+        if !trig.kind.is_explicit() && !self.intellisense.popup_explicitly_focused {
+            return false;
+        }
+        !self.matching_intellisense_candidates().is_empty()
     }
 
     /// Replaces the trigger token under the cursor with the currently selected intellisense candidate.
     pub fn accept_selected_intellisense(&mut self) -> Option<TriggerKind> {
+        let idx = self.intellisense.selected_index;
+        self.accept_intellisense_at(idx)
+    }
+
+    /// Replaces the trigger token under the cursor with the candidate at `target_index` (e.g. `Alt+1..3` Gboard chip).
+    pub fn accept_intellisense_at(&mut self, target_index: usize) -> Option<TriggerKind> {
         let trigger = self.active_intellisense_trigger()?;
         let candidates = self.intellisense.query_candidates_with_history(
             &trigger,
@@ -916,10 +1029,7 @@ impl<'a> InputDock<'a> {
         if candidates.is_empty() {
             return None;
         }
-        let idx = self
-            .intellisense
-            .selected_index
-            .min(candidates.len().saturating_sub(1));
+        let idx = target_index.min(candidates.len().saturating_sub(1));
         let chosen = &candidates[idx];
 
         let (row, _) = self.textarea.cursor();
@@ -1030,7 +1140,7 @@ impl<'a> InputDock<'a> {
             }
         }
 
-        // Handle Contextual & AI Code/Prompt Intellisense Popup (`@file`, `#symbol`, `$skill`, `/cmd <arg>`, `CodePrompt`)
+        // Handle Explicit (`@`, `#`, `$`, `/cmd <arg>`) & Ambient Gboard (`PromptFlow`) Intellisense
         let active_trig = self.active_intellisense_trigger();
         let intellisense_cands = if !is_slash_open && active_trig.is_some() {
             self.matching_intellisense_candidates()
@@ -1039,6 +1149,7 @@ impl<'a> InputDock<'a> {
         };
         if let (Some(trig), false) = (active_trig.as_ref(), intellisense_cands.is_empty()) {
             let is_explicit = trig.kind.is_explicit();
+            let popup_open = is_explicit || self.intellisense.popup_explicitly_focused;
             let cand_len = intellisense_cands.len();
             let move_popup_up = |st: &mut crate::ui::intellisense::IntellisenseEngine| {
                 st.popup_explicitly_focused = true;
@@ -1053,27 +1164,59 @@ impl<'a> InputDock<'a> {
                 st.selected_index = (st.selected_index + 1) % cand_len;
             };
             match (key.code, key.modifiers) {
-                (KeyCode::Esc, _) => {
-                    self.intellisense.dismissed_for_query =
-                        Some(format!("{:?}:{}", trig.kind, trig.query));
+                (KeyCode::Esc, _) if popup_open => {
+                    self.intellisense.dismissed_for_query = Some(format!(
+                        "{:?}:{}:{:?}",
+                        trig.kind, trig.query, self.intellisense.mention_filter
+                    ));
                     self.intellisense.popup_explicitly_focused = false;
+                    return None;
+                }
+                // `Shift+Tab` (`BackTab`) inside `@` mentions cycles `All -> Files -> Functions -> Types -> Images`
+                (KeyCode::BackTab, _) if matches!(trig.kind, TriggerKind::AtMention) => {
+                    self.intellisense.cycle_mention_filter(true);
+                    return None;
+                }
+                // Gboard Ribbon Direct Chip Hotkeys (`Alt+1`, `Alt+2`, `Alt+3`)
+                (KeyCode::Char(ch @ ('1' | '2' | '3')), m) if m.contains(KeyModifiers::ALT) => {
+                    let chip_idx = (ch as usize) - ('1' as usize);
+                    if chip_idx < cand_len {
+                        self.accept_intellisense_at(chip_idx);
+                    }
+                    return None;
+                }
+                // `Ctrl+Space` explicitly opens/focuses the suggestion popup
+                (KeyCode::Char(' '), KeyModifiers::CONTROL) => {
+                    self.intellisense.popup_explicitly_focused = true;
                     return None;
                 }
                 (KeyCode::Up, m)
                     if m.contains(KeyModifiers::ALT) || m.contains(KeyModifiers::CONTROL) =>
                 {
-                    move_popup_up(&mut self.intellisense);
+                    if self.intellisense.popup_explicitly_focused || is_explicit {
+                        move_popup_up(&mut self.intellisense);
+                    } else {
+                        self.intellisense.popup_explicitly_focused = true;
+                        self.intellisense.selected_index = cand_len.saturating_sub(1);
+                    }
                     return None;
                 }
                 (KeyCode::Down, m)
                     if m.contains(KeyModifiers::ALT) || m.contains(KeyModifiers::CONTROL) =>
                 {
-                    move_popup_down(&mut self.intellisense);
+                    if self.intellisense.popup_explicitly_focused || is_explicit {
+                        move_popup_down(&mut self.intellisense);
+                    } else {
+                        self.intellisense.popup_explicitly_focused = true;
+                        self.intellisense.selected_index = usize::from(cand_len > 1);
+                    }
                     return None;
                 }
                 (KeyCode::Char('p') | KeyCode::Char('P'), KeyModifiers::CONTROL)
                 | (KeyCode::Char('k') | KeyCode::Char('K'), KeyModifiers::ALT)
-                | (KeyCode::BackTab, _) => {
+                | (KeyCode::BackTab, _)
+                    if popup_open =>
+                {
                     move_popup_up(&mut self.intellisense);
                     return None;
                 }
@@ -1082,35 +1225,22 @@ impl<'a> InputDock<'a> {
                     move_popup_down(&mut self.intellisense);
                     return None;
                 }
-                // Plain Up navigates the popup for explicit sigil triggers (`@`, `#`, `$`, `/cmd <arg>`),
-                // when the user focused the popup, or when no prompt history exists yet.
-                (KeyCode::Up, KeyModifiers::NONE)
-                    if is_explicit
-                        || self.intellisense.popup_explicitly_focused
-                        || self.history.entries.is_empty() =>
-                {
+                // Plain Up/Down ONLY navigate when an explicit (`@`, `#`, `$`, `/arg`) or `Alt`-focused popup is open!
+                // Ambient `PromptFlow` NEVER hijacks plain Up/Down from prompt history!
+                (KeyCode::Up, KeyModifiers::NONE) if popup_open => {
                     move_popup_up(&mut self.intellisense);
                     return None;
                 }
-                // Plain Down navigates the popup for explicit sigils, when focused, or whenever not mid-recall in prompt history.
-                (KeyCode::Down, KeyModifiers::NONE)
-                    if is_explicit
-                        || self.intellisense.popup_explicitly_focused
-                        || self.history.cursor.is_none() =>
-                {
+                (KeyCode::Down, KeyModifiers::NONE) if popup_open => {
                     move_popup_down(&mut self.intellisense);
                     return None;
                 }
-                (KeyCode::Tab, KeyModifiers::NONE) => {
+                (KeyCode::Tab, KeyModifiers::NONE) if popup_open => {
                     self.accept_selected_intellisense();
                     return None;
                 }
-                (KeyCode::Enter, KeyModifiers::NONE)
-                    if is_explicit || self.intellisense.popup_explicitly_focused =>
-                {
+                (KeyCode::Enter, KeyModifiers::NONE) if popup_open => {
                     if let Some(kind) = self.accept_selected_intellisense() {
-                        // For `@file`, `#symbol`, `$skill`, and focused `CodePrompt`, Enter inserts the token without premature submit.
-                        // For `/cmd <arg>`, Enter completes the argument and submits the command immediately.
                         if !matches!(kind, TriggerKind::SlashArg { .. }) {
                             return None;
                         }
@@ -1118,6 +1248,19 @@ impl<'a> InputDock<'a> {
                 }
                 _ => {}
             }
+        }
+
+        // Prefix/Omnibox-filtered history recall via `Alt+Up` when no popup consumed it
+        if !is_slash_open
+            && key.code == KeyCode::Up
+            && key.modifiers.contains(KeyModifiers::ALT)
+            && !self.history.entries.is_empty()
+        {
+            let current = self.get_text();
+            if let Some(recalled) = self.history.navigate_up_prefix(&current) {
+                self.set_text_preserving_history_cursor(&recalled);
+            }
+            return None;
         }
 
         // Handle Inline Ghost-Text Acceptance (`Tab`, `Right` at EOL, `Ctrl+Right`/`Alt+Right`/`Alt+F` 1-word)
@@ -1169,7 +1312,7 @@ impl<'a> InputDock<'a> {
         {
             let current = self.get_text();
             if let Some(recalled) = self.history.navigate_up(&current) {
-                self.set_text(&recalled);
+                self.set_text_preserving_history_cursor(&recalled);
             }
             return None;
         }
@@ -1179,7 +1322,7 @@ impl<'a> InputDock<'a> {
             && self.history.cursor.is_some()
         {
             if let Some(recalled) = self.history.navigate_down() {
-                self.set_text(&recalled);
+                self.set_text_preserving_history_cursor(&recalled);
             }
             return None;
         }
@@ -1268,16 +1411,27 @@ impl<'a> InputDock<'a> {
                 };
 
                 if !final_prompt.is_empty() {
-                    let submission = if is_slash_open {
+                    let ws = self.workspace_root.clone();
+                    let is_cmd = is_slash_open || is_slash_command_input(&final_prompt);
+                    let submission = if is_cmd {
+                        let cmd_key = final_prompt
+                            .split_whitespace()
+                            .next()
+                            .unwrap_or(&final_prompt)
+                            .to_string();
+                        *self.slash_usage_counts.entry(cmd_key).or_insert(0) += 1;
                         PromptSubmission {
                             display: final_prompt.clone(),
                             full: final_prompt,
                         }
                     } else {
-                        self.resolve_submission(&final_prompt)
+                        if final_prompt.contains('@') {
+                            self.intellisense.ensure_indexed(ws.as_deref());
+                        }
+                        let sub = self.resolve_submission(&final_prompt);
+                        self.history.record(&sub.display, ws.as_deref());
+                        sub
                     };
-                    let ws = self.workspace_root.clone();
-                    self.history.record(&submission.display, ws.as_deref());
                     self.reset();
                     Some(submission)
                 } else {
@@ -1310,11 +1464,37 @@ impl<'a> InputDock<'a> {
 
     pub fn render(&mut self, frame: &mut Frame, area: Rect, theme: &Theme) {
         self.last_render_area.set(Some(area));
-        let block = Block::default()
+
+        // Build non-intrusive 1-line Gboard suggestion ribbon on the dock top border during ambient `PromptFlow`
+        let gboard_title = if !self.has_active_slash_query()
+            && !self.intellisense.popup_explicitly_focused
+        {
+            if let Some(trig) = self.active_intellisense_trigger() {
+                if matches!(trig.kind, TriggerKind::PromptFlow { .. }) {
+                    let cands = self.intellisense.query_candidates_with_history(
+                        &trig,
+                        self.workspace_root.as_deref(),
+                        Some(&self.history),
+                    );
+                    build_gboard_ribbon_title(&cands, area.width.saturating_sub(4) as usize, theme)
+                } else {
+                    None
+                }
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+
+        let mut block = Block::default()
             .borders(Borders::ALL)
             .border_type(ratatui::widgets::BorderType::Rounded)
             .border_style(Style::default().fg(theme.border).bg(theme.bg_input))
             .style(Style::default().bg(theme.bg_input));
+        if let Some(ribbon_line) = gboard_title {
+            block = block.title(ribbon_line);
+        }
 
         let inner_area = block.inner(area);
         frame.render_widget(block, area);
@@ -1436,6 +1616,9 @@ impl<'a> InputDock<'a> {
         let Some(trigger) = self.active_intellisense_trigger() else {
             return;
         };
+        if !trigger.kind.is_explicit() && !self.intellisense.popup_explicitly_focused {
+            return;
+        }
         let candidates = self.intellisense.query_candidates_with_history(
             &trigger,
             self.workspace_root.as_deref(),
@@ -1471,15 +1654,35 @@ impl<'a> InputDock<'a> {
         frame.render_widget(Clear, popup_area);
 
         let hint_text = spec.key_hints[usize::from(trigger.kind.is_explicit())];
-        let title_spans = vec![
-            Span::styled(
-                trigger.kind.badge_for(self.menu_style),
-                Style::default()
-                    .fg(theme.brand_accent)
-                    .add_modifier(Modifier::BOLD),
-            ),
-            Span::styled(hint_text, Style::default().fg(theme.muted)),
-        ];
+        let mut title_spans = vec![Span::styled(
+            trigger.kind.badge_for(self.menu_style),
+            Style::default()
+                .fg(theme.brand_accent)
+                .add_modifier(Modifier::BOLD),
+        )];
+        if matches!(trigger.kind, TriggerKind::AtMention) {
+            let (scoped_override, _) = parse_at_mention_query(&trigger.query);
+            let active_f = scoped_override.unwrap_or(self.intellisense.mention_filter);
+            for facet in MentionFilter::all() {
+                let is_active = *facet == active_f;
+                let pill = if is_active {
+                    format!("◉ {} ", facet.label())
+                } else {
+                    format!("○ {} ", facet.label())
+                };
+                let style = if is_active {
+                    Style::default()
+                        .fg(theme.brand_accent)
+                        .add_modifier(Modifier::BOLD)
+                } else {
+                    Style::default().fg(theme.muted)
+                };
+                title_spans.push(Span::styled(pill, style));
+            }
+            title_spans.push(Span::styled("[⇧Tab] ", Style::default().fg(theme.muted)));
+        } else {
+            title_spans.push(Span::styled(hint_text, Style::default().fg(theme.muted)));
+        }
 
         let outer_block = Block::default()
             .title(Line::from(title_spans))
@@ -1735,6 +1938,71 @@ fn contains_ascii_case_insensitive(haystack: &str, needle_lower: &str) -> bool {
         .as_bytes()
         .windows(needle_lower.len())
         .any(|w| w.eq_ignore_ascii_case(needle_lower.as_bytes()))
+}
+
+/// Builds a width-bounded 1-line Gboard-style suggestion ribbon for the `InputDock` top border.
+fn build_gboard_ribbon_title<'a>(
+    candidates: &[CompletionCandidate],
+    max_cols: usize,
+    theme: &Theme,
+) -> Option<Line<'a>> {
+    if candidates.is_empty() || max_cols < 20 {
+        return None;
+    }
+    const SHORTCUTS: [&str; 3] = ["[Tab]", "[Alt+2]", "[Alt+3]"];
+    let mut spans: Vec<Span<'a>> = Vec::new();
+    let mut used_cols = 0usize;
+
+    for (idx, cand) in candidates.iter().take(GBOARD_STRIP_MAX_CHIPS).enumerate() {
+        let label_raw = cand.insert_text.trim();
+        if label_raw.is_empty() {
+            continue;
+        }
+        let max_chip_chars = if idx == 0 { 32 } else { 22 };
+        let short_label: String = if label_raw.chars().count() > max_chip_chars {
+            let head: String = label_raw
+                .chars()
+                .take(max_chip_chars.saturating_sub(1))
+                .collect();
+            format!("{}…", head.trim_end())
+        } else {
+            label_raw.to_string()
+        };
+
+        let key_badge = SHORTCUTS.get(idx).copied().unwrap_or("");
+        let sep = if spans.is_empty() { " " } else { " · " };
+        let seg_width = UnicodeWidthStr::width(sep)
+            + UnicodeWidthStr::width(short_label.as_str())
+            + 1
+            + UnicodeWidthStr::width(key_badge)
+            + 1;
+        if used_cols + seg_width > max_cols {
+            break;
+        }
+        used_cols += seg_width;
+
+        spans.push(Span::styled(sep, Style::default().fg(theme.muted)));
+        spans.push(Span::styled(
+            short_label,
+            if idx == 0 {
+                Style::default()
+                    .fg(theme.brand_accent)
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(theme.text_primary)
+            },
+        ));
+        spans.push(Span::styled(
+            format!(" {key_badge}"),
+            Style::default().fg(theme.muted),
+        ));
+    }
+
+    if spans.is_empty() {
+        return None;
+    }
+    spans.push(Span::raw(" "));
+    Some(Line::from(spans))
 }
 
 #[cfg(test)]
@@ -2034,7 +2302,7 @@ fn calculate_hash(data: &[u8]) -> u64 {
         std::fs::create_dir_all(dir.path().join("src")).unwrap();
         std::fs::write(
             dir.path().join("src/engine.rs"),
-            "pub struct QuantumRouter {}\n",
+            "pub struct QuantumRouter {}\npub fn route_packet() {}\n",
         )
         .unwrap();
 
@@ -2046,26 +2314,37 @@ fn calculate_hash(data: &[u8]) -> u64 {
         dock.handle_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
         assert_eq!(dock.get_text(), "inspect @src/engine.rs ");
 
-        // 2. `#Quantum` -> Enter completes `#QuantumRouter ` without submitting
-        dock.set_text("refactor #Quantum");
+        // 2. Unified `@Quantum` -> Enter completes `@QuantumRouter ` without prematurely submitting
+        dock.set_text("refactor @Quantum");
+        assert!(dock.has_any_overlay_open());
         let sub = dock.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
         assert!(sub.is_none());
+        assert_eq!(dock.get_text(), "refactor @QuantumRouter ");
+
+        // 3. `#Quantum` backward-compatible alias -> Enter completes `#QuantumRouter `
+        dock.set_text("refactor #Quantum");
+        let sub_hash = dock.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        assert!(sub_hash.is_none());
         assert_eq!(dock.get_text(), "refactor #QuantumRouter ");
 
-        // 3. `/caveman ul` -> Tab completes `/caveman ultra`
+        // 4. `/caveman ul` -> Tab completes `/caveman ultra`
         dock.set_text("/caveman ul");
         dock.handle_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
         assert_eq!(dock.get_text(), "/caveman ultra");
 
-        // 4. Ambient Code & Prompt AI Intellisense (`TriggerKind::CodePrompt`) without `@` or `#`
+        // 5. Ambient `PromptFlow`: renders non-blockingly (`has_any_overlay_open() == false`) while
+        // `Tab` completes the Gboard/Omnibox inline ghost continuation (`"so whats next"`),
+        // and bare prose NEVER injects raw code symbols (`QuantumRouter`) without `@`!
         dock.set_text("so wh");
-        assert!(dock.has_any_overlay_open());
+        assert!(!dock.has_any_overlay_open());
         dock.handle_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
         assert_eq!(dock.get_text(), "so whats next");
 
         dock.set_text("refactor Quantum");
-        dock.handle_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
-        assert_eq!(dock.get_text(), "refactor QuantumRouter ");
+        assert!(!dock
+            .matching_intellisense_candidates()
+            .iter()
+            .any(|c| c.insert_text.contains("QuantumRouter")));
     }
 
     #[test]
@@ -2149,14 +2428,15 @@ fn calculate_hash(data: &[u8]) -> u64 {
     fn test_alt_up_down_and_plain_down_intellisense_navigation() {
         let dir = tempfile::tempdir().unwrap();
         let mut dock = InputDock::new_with_workspace(dir.path());
-        dock.set_text("cargo ");
+        dock.set_text("so whats ");
 
         let cands = dock.matching_intellisense_candidates();
         assert!(cands.len() >= 2);
         assert_eq!(dock.intellisense.selected_index, 0);
 
-        // Alt+Down moves to index 1
+        // Alt+Down focuses popup and moves to index 1
         dock.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::ALT));
+        assert!(dock.intellisense.popup_explicitly_focused);
         assert_eq!(dock.intellisense.selected_index, 1);
 
         // Alt+Up moves back to index 0
@@ -2171,11 +2451,126 @@ fn calculate_hash(data: &[u8]) -> u64 {
         dock.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::ALT));
         assert_eq!(dock.intellisense.selected_index, 0);
 
-        // Plain Down also moves to index 1 and Tab completes candidate[1]
+        // Once explicitly focused via Alt, Plain Down moves to index 1 and Tab completes candidate[1]
         dock.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
         assert_eq!(dock.intellisense.selected_index, 1);
         let expected_token = cands[1].insert_text.clone();
         dock.handle_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
         assert!(dock.get_text().contains(expected_token.trim()));
+    }
+
+    #[test]
+    fn test_slash_commands_never_pollute_or_trap_up_down_prompt_history() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut dock = InputDock::new_with_workspace(dir.path());
+
+        // 1. User submits a real conversational prompt
+        dock.set_text("analyze our tui input box system");
+        let sub_prompt = dock
+            .handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE))
+            .expect("submit prompt");
+        assert_eq!(sub_prompt.display, "analyze our tui input box system");
+
+        // 2. User runs `/settings` and `/caveman ultra` afterwards
+        dock.set_text("/settings");
+        let sub_cmd1 = dock
+            .handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE))
+            .expect("submit /settings");
+        assert_eq!(sub_cmd1.full, "/settings");
+
+        dock.set_text("/caveman ultra");
+        let sub_cmd2 = dock
+            .handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE))
+            .expect("submit /caveman ultra");
+        assert_eq!(sub_cmd2.full, "/caveman ultra");
+
+        // 3. User presses Up once -> immediately gets "analyze our tui input box system" (never "/settings"!)
+        dock.handle_key(KeyEvent::new(KeyCode::Up, KeyModifiers::NONE));
+        assert_eq!(dock.get_text(), "analyze our tui input box system");
+        assert!(!dock.has_active_slash_query());
+
+        // 4. Even while typing mid-sentence with ambient Gboard suggestions active, pressing Up recalls history!
+        dock.set_text("update the ");
+        assert!(!dock.matching_intellisense_candidates().is_empty());
+        dock.handle_key(KeyEvent::new(KeyCode::Up, KeyModifiers::NONE));
+        assert_eq!(dock.get_text(), "analyze our tui input box system");
+        dock.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+        assert_eq!(dock.get_text(), "update the ");
+    }
+
+    #[test]
+    fn test_unified_at_mentions_files_functions_types_images_and_auto_grounding() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("src")).unwrap();
+        std::fs::create_dir_all(dir.path().join("public")).unwrap();
+        std::fs::write(
+            dir.path().join("src/auth.ts"),
+            "export class SessionGuard {\n  validateToken(): boolean { return true; }\n}\nexport function verifyHeader(): boolean {\n  return true;\n}\n",
+        )
+        .unwrap();
+        let png_bytes: [u8; 32] = [
+            0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A, 0x00, 0x00, 0x00, 0x0D, b'I', b'H',
+            b'D', b'R', 0x00, 0x00, 0x05, 0xA0, // 1440
+            0x00, 0x00, 0x03, 0x84, // 900
+            0x08, 0x06, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        ];
+        std::fs::write(dir.path().join("public/banner.png"), png_bytes).unwrap();
+
+        let mut dock = InputDock::new_with_workspace(dir.path());
+
+        // 1. Shift+Tab (`BackTab`) inside `@` cycles `All -> Files -> Functions -> Types -> Images`
+        dock.set_text("check @");
+        assert_eq!(dock.intellisense.mention_filter, MentionFilter::All);
+        dock.handle_key(KeyEvent::new(KeyCode::BackTab, KeyModifiers::SHIFT));
+        assert_eq!(dock.intellisense.mention_filter, MentionFilter::Files);
+        dock.handle_key(KeyEvent::new(KeyCode::BackTab, KeyModifiers::SHIFT));
+        assert_eq!(dock.intellisense.mention_filter, MentionFilter::Functions);
+        let fn_cands = dock.matching_intellisense_candidates();
+        assert!(fn_cands.iter().any(|c| c.insert_text == "@verifyHeader "));
+
+        // 2. Submitting a prompt mentioning `@SessionGuard`, `@verifyHeader`, and `@public/banner.png`
+        // keeps `display` clean while auto-attaching `<attached_images>` + `<mentioned_symbols>`!
+        dock.set_text("align @SessionGuard and @verifyHeader with @public/banner.png");
+        let sub = dock
+            .handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE))
+            .expect("submit @ mentions");
+        assert_eq!(
+            sub.display,
+            "align @SessionGuard and @verifyHeader with @public/banner.png"
+        );
+        assert!(sub.full.contains("<attached_images>"));
+        assert!(sub
+            .full
+            .contains("- @public/banner.png: path=\"public/banner.png\" (1440x900, image/png,"));
+        assert!(sub.full.contains("<mentioned_symbols>"));
+        assert!(sub.full.contains("@SessionGuard: class in `src/auth.ts`"));
+        assert!(sub.full.contains("@verifyHeader: fn in `src/auth.ts`"));
+    }
+
+    #[test]
+    fn test_global_corpus_gboard_continuity_and_chip_hotkeys() {
+        let global_dir = tempfile::tempdir().unwrap();
+        let ws1 = tempfile::tempdir().unwrap();
+        let ws2 = tempfile::tempdir().unwrap();
+
+        // Record prompts in Workspace 1
+        {
+            let mut dock1 = InputDock::new_with_global_corpus(ws1.path(), global_dir.path());
+            dock1.set_text("update the changelog and push to main");
+            let _ = dock1.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+            dock1.set_text("update the documentation and run tests");
+            let _ = dock1.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        }
+
+        // Open fresh Workspace 2 -> global Gboard continuity + `Alt+2` chip selection work immediately!
+        let mut dock2 = InputDock::new_with_global_corpus(ws2.path(), global_dir.path());
+        dock2.set_text("update the ");
+        let cands = dock2.matching_intellisense_candidates();
+        assert!(cands.len() >= 2);
+
+        // `Alt+2` selects the second Gboard ribbon chip directly
+        let second_insert = cands[1].insert_text.clone();
+        dock2.handle_key(KeyEvent::new(KeyCode::Char('2'), KeyModifiers::ALT));
+        assert!(dock2.get_text().contains(second_insert.trim()));
     }
 }

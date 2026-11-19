@@ -598,13 +598,9 @@ impl<'a> App<'a> {
                             &self.config.agent.ponytail_level,
                         );
                         let ponytail_label = if ponytail_active {
-                            match ponytail_lvl {
-                                crate::agent::ponytail::PonytailLevel::Lite => "· ponytail:lite",
-                                crate::agent::ponytail::PonytailLevel::Ultra => "· ponytail:ultra",
-                                _ => "· ponytail",
-                            }
+                            format!("· ponytail:{}", ponytail_lvl.as_str())
                         } else {
-                            "· ponytail"
+                            "· ponytail:off".to_string()
                         };
                         let ponytail_style = if ponytail_active {
                             Style::default()
@@ -615,18 +611,13 @@ impl<'a> App<'a> {
                         };
 
                         let caveman_active = self.config.agent.caveman_mode;
-                        let caveman_lvl = crate::agent::caveman::CavemanLevel::from_str_loose(
+                        let caveman_lvl = crate::agent::caveman::CavemanLevel::from_str_active(
                             &self.config.agent.caveman_level,
                         );
                         let caveman_label = if caveman_active {
-                            match caveman_lvl {
-                                crate::agent::caveman::CavemanLevel::Lite => "caveman:lite",
-                                crate::agent::caveman::CavemanLevel::Ultra => "caveman:ultra",
-                                crate::agent::caveman::CavemanLevel::Mega => "caveman:mega",
-                                _ => "caveman",
-                            }
+                            format!("caveman:{}", caveman_lvl.as_str())
                         } else {
-                            "caveman"
+                            "caveman:off".to_string()
                         };
                         let caveman_style = if caveman_active {
                             Style::default()
@@ -1825,7 +1816,8 @@ impl<'a> App<'a> {
                                 }
                                 if (key_event.code == KeyCode::Up)
                                     && (key_event.modifiers.contains(KeyModifiers::SHIFT)
-                                        || (!has_overlay_open
+                                        || (is_input_empty
+                                            && !has_overlay_open
                                             && (key_event.modifiers.contains(KeyModifiers::CONTROL)
                                                 || key_event.modifiers.contains(KeyModifiers::ALT))))
                                 {
@@ -1834,7 +1826,8 @@ impl<'a> App<'a> {
                                 }
                                 if (key_event.code == KeyCode::Down)
                                     && (key_event.modifiers.contains(KeyModifiers::SHIFT)
-                                        || (!has_overlay_open
+                                        || (is_input_empty
+                                            && !has_overlay_open
                                             && (key_event.modifiers.contains(KeyModifiers::CONTROL)
                                                 || key_event.modifiers.contains(KeyModifiers::ALT))))
                                 {

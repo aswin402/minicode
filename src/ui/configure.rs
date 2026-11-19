@@ -78,7 +78,9 @@ fn merge_toml_values(target: &mut toml::Value, source: &toml::Value) {
                         | ("todo_style", Some("tree"))
                         | ("swarm_style", Some("stylish"))
                         | ("toast_style", Some("opencode"))
+                        | ("toast_symbols", Some("ascii"))
                         | ("activity_style", Some("action_detail"))
+                        | ("menu_style", Some("minimal"))
                         | ("default", Some(""))
                         | ("model", Some(""))
                 );

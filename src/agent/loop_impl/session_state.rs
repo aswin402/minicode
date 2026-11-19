@@ -781,16 +781,18 @@ impl AgentLoop {
         let mut seen = std::collections::HashSet::new();
 
         for token in user_prompt.split_whitespace() {
-            // Match `path="..."` from `<attached_images>` or direct `.png/.jpg/.jpeg/.gif/.webp` paths
+            // Match `path="..."` from `<attached_images>` or direct/`@`-mentioned `.png/.jpg/.jpeg/.gif/.webp` paths
             let raw = if let Some(rest) = token.strip_prefix("path=\"") {
                 rest.trim_end_matches('"')
             } else {
-                token.trim_matches(|c: char| {
-                    matches!(
-                        c,
-                        '`' | '\'' | '"' | '(' | ')' | '[' | ']' | ',' | ';' | ':' | '<' | '>'
-                    )
-                })
+                token
+                    .trim_matches(|c: char| {
+                        matches!(
+                            c,
+                            '`' | '\'' | '"' | '(' | ')' | '[' | ']' | ',' | ';' | ':' | '<' | '>'
+                        )
+                    })
+                    .trim_start_matches('@')
             };
 
             if raw.is_empty() {
