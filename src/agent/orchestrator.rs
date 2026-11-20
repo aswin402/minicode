@@ -868,7 +868,7 @@ impl WorkflowRouter {
                     }
                 }
             }
-            out.push_str("  Invariants: Keep dev servers & GUI browsers running across turns (NEVER stop a dev server at turn end unless requested); close headless browsers via `browser_close` when inspection finishes; use `minitask(action=\"resources\"|\"status\"|\"stop\"|\"kill_all\")` internally instead of raw `ps`/`top`/`kill`/`pkill`, and never tell the human user to invoke internal `minitask(...)` syntax in final responses.\n");
+            out.push_str("  Invariants: Clean up temporary QA dev servers & browsers once verification completes (minicode automatically reaps ephemeral webdev servers and spawned browsers at turn end unless the user explicitly asked to keep a live preview running); use `minitask(action=\"resources\"|\"status\"|\"stop\"|\"kill_all\")` internally instead of raw `ps`/`top`/`kill`/`pkill`, and never tell the human user to invoke internal `minitask(...)` syntax in final responses.\n");
         }
         out.push_str("</active_dev_services>");
         Some(out)

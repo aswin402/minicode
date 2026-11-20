@@ -3,8 +3,8 @@ use crate::agent::provider::{CompletionOptions, Provider, StreamChunk};
 use crate::agent::types::{AgentEvent, ApprovalDecision, Message, ToolCall, Turn};
 use crate::config::Config;
 use crate::constants::{
-    DEFAULT_MAX_RETRIES, MCP_TOOL_PREFIX, RETRY_BACKOFF_SECS, TURN_STATUS_CANCELLED,
-    TURN_STATUS_CIRCUIT_TRIPPED, TURN_STATUS_COMPLETE, TURN_STATUS_ITERATION_LIMIT,
+    DEFAULT_MAX_RETRIES, MCP_TOOL_PREFIX, TURN_STATUS_CANCELLED, TURN_STATUS_CIRCUIT_TRIPPED,
+    TURN_STATUS_COMPLETE, TURN_STATUS_ITERATION_LIMIT,
 };
 use crate::error::Result;
 use crate::mcp::McpClientManager;
@@ -76,6 +76,9 @@ pub struct AgentLoop {
     last_emitted_plan_sig: std::sync::Mutex<Option<String>>,
     /// Per-turn workspace file `(len, mtime_nanos, content_hash)` snapshot used to track scaffolded/shell-mutated files.
     turn_workspace_fingerprints: HashMap<String, (u64, u128, u64)>,
+    /// Files modified during earlier errored/cancelled turns that have not yet been git-committed,
+    /// carried forward so the next completing turn's auto-commit produces a complete atomic commit.
+    pub(super) pending_uncommitted_files: Vec<String>,
     /// Tool categories dynamically activated during this session (persisted across multi-turn continuations).
     session_active_categories: std::collections::HashSet<crate::tools::category::ToolCategory>,
     /// MCP servers dynamically activated during this session.
@@ -203,6 +206,7 @@ impl AgentLoop {
             baseline_static_skills: None,
             last_emitted_plan_sig: std::sync::Mutex::new(None),
             turn_workspace_fingerprints: HashMap::new(),
+            pending_uncommitted_files: Vec::new(),
             session_active_categories: std::collections::HashSet::new(),
             session_active_mcp_servers: std::collections::HashSet::new(),
             session_active_tool_names: std::collections::HashSet::new(),
@@ -219,6 +223,70 @@ impl AgentLoop {
     /// are running (enabled in Interactive TUI mode where `App::run` wakes reactively on completion).
     pub fn set_async_idle_wakeup_enabled(&mut self, enabled: bool) {
         self.async_idle_wakeup_enabled = enabled;
+    }
+
+    fn record_pending_uncommitted_files(&mut self, files: &[String]) {
+        for f in files {
+            if !f.is_empty() && !self.pending_uncommitted_files.iter().any(|x| x == f) {
+                self.pending_uncommitted_files.push(f.clone());
+            }
+        }
+    }
+
+    /// Commits/closes the active turn transaction (preventing dangling `active_tx.json` locks
+    /// after errored or cancelled turns) and returns any tracked file paths so they can be
+    /// preserved for the next complete auto-commit.
+    fn finalize_turn_transaction(&self, turn_tx_id: Option<&str>) -> Vec<String> {
+        let Some(tx_id) = turn_tx_id else {
+            return Vec::new();
+        };
+        let Ok(Some(active)) =
+            crate::session::transaction::TransactionManager::get_active(&self.workspace_root)
+        else {
+            return Vec::new();
+        };
+        if active.tx_id != tx_id {
+            return Vec::new();
+        }
+        let tracked_files: Vec<String> = active
+            .files
+            .iter()
+            .map(|f| f.relative_path.clone())
+            .filter(|p| !p.is_empty())
+            .collect();
+        let _ = crate::session::transaction::TransactionManager::commit(
+            &self.workspace_root,
+            Some(tx_id),
+        );
+        tracked_files
+    }
+
+    /// Reaps background resources (MiniPub workers, webdev/backend/script daemons, stray tasks,
+    /// and spawned browsers) once a turn finishes or aborts so completed work never leaves
+    /// orphaned processes occupying CPU/RAM/ports.
+    async fn cleanup_turn_background_resources(
+        &self,
+        preserve_persistent_preview: bool,
+        kill_subagents: bool,
+    ) {
+        let dev_reg = crate::dev::registry::get_global_dev_registry();
+        if kill_subagents {
+            if let Some(pool) = crate::agent::subagent::try_get_global_subagent_pool() {
+                pool.kill_all().await;
+            }
+            let _ = dev_reg.stop_active_non_daemon_tasks().await;
+        }
+        let stopped = dev_reg
+            .cleanup_after_turn_completion(preserve_persistent_preview)
+            .await;
+        if stopped > 0 {
+            tracing::info!(
+                stopped,
+                preserve_persistent_preview,
+                kill_subagents,
+                "Cleaned up background minitask / browser / webdev resources at turn boundary"
+            );
+        }
     }
 
     /// Executes a single interactive or autonomous turn with the ReAct tool-use loop.
@@ -342,10 +410,12 @@ impl AgentLoop {
             }
         }
 
-        // Initialize or refresh intent ledger only from substantive goal prompts (or recovered initial spec on continuation)
+        // Initialize or refresh intent ledger only from substantive mutating goal prompts
+        // (never from read-only status/epistemic questions like "so is we completed all todos").
         if self.config.agent.intent.enabled
             && self.config.agent.intent.auto_extract
             && prompt_signal.has_actionable_task_intent()
+            && !prompt_signal.is_epistemic_question
         {
             let persistence_path = self
                 .workspace_root
@@ -933,6 +1003,7 @@ impl AgentLoop {
         let mut plan_continuation_nudges: usize = initial_boulder
             .continuation_count
             .min(max_boulder_nudges.saturating_sub(1));
+        let mut thought_only_nudges: usize = 0;
         let mut was_cancelled = false;
         let mut circuit_tripped = false;
         let mut hit_iteration_limit = false;
@@ -957,6 +1028,7 @@ impl AgentLoop {
             thinking_budget: effective_thinking_budget,
             reasoning_effort: self.config.provider.reasoning_effort.clone(),
             prompt_cache_key: Some(format!("minicode:session:{}", self.session_id)),
+            stream: self.config.agent.streaming,
         };
 
         let max_retries = DEFAULT_MAX_RETRIES;
@@ -1015,9 +1087,7 @@ impl AgentLoop {
                             self.speculative_executor.cancel_all().await;
                             if retry_count < max_retries && e.is_retryable_provider_error() {
                                 retry_count += 1;
-                                let backoff_shift = retry_count.saturating_sub(1).min(4) as u32;
-                                let delay_secs =
-                                    RETRY_BACKOFF_SECS.saturating_mul(1u64 << backoff_shift);
+                                let delay_secs = e.retry_backoff_secs(retry_count);
                                 let retry_msg = format!(
                                     "⚠ Provider connection error. Retrying in {}s (attempt {}/{})...",
                                     delay_secs, retry_count, max_retries
@@ -1074,8 +1144,10 @@ impl AgentLoop {
                                 .session_store
                                 .append_event(&self.session_id, &end_event);
                             let _ = event_sender.send(end_event);
-                            let _ =
-                                crate::tools::browser::BrowserManager::shutdown_live_engine().await;
+                            let tx_files = self.finalize_turn_transaction(turn_tx_id.as_deref());
+                            self.record_pending_uncommitted_files(&tx_files);
+                            self.record_pending_uncommitted_files(&turn_files_modified);
+                            self.cleanup_turn_background_resources(false, true).await;
                             return Err(e);
                         }
                     };
@@ -1253,9 +1325,7 @@ impl AgentLoop {
                             );
                         } else if retry_count < max_retries && err.is_retryable_provider_error() {
                             retry_count += 1;
-                            let backoff_shift = retry_count.saturating_sub(1).min(4) as u32;
-                            let delay_secs =
-                                RETRY_BACKOFF_SECS.saturating_mul(1u64 << backoff_shift);
+                            let delay_secs = err.retry_backoff_secs(retry_count);
                             let retry_msg = format!(
                                 "⚠ Rate limit or network error. Retrying in {}s (attempt {}/{})...",
                                 delay_secs, retry_count, max_retries
@@ -1312,8 +1382,10 @@ impl AgentLoop {
                                 .session_store
                                 .append_event(&self.session_id, &end_event);
                             let _ = event_sender.send(end_event);
-                            let _ =
-                                crate::tools::browser::BrowserManager::shutdown_live_engine().await;
+                            let tx_files = self.finalize_turn_transaction(turn_tx_id.as_deref());
+                            self.record_pending_uncommitted_files(&tx_files);
+                            self.record_pending_uncommitted_files(&turn_files_modified);
+                            self.cleanup_turn_background_resources(false, true).await;
                             return Err(err);
                         }
                     }
@@ -1358,9 +1430,7 @@ impl AgentLoop {
                         Err(e) => {
                             if retry_count < max_retries && e.is_retryable_provider_error() {
                                 retry_count += 1;
-                                let backoff_shift = retry_count.saturating_sub(1).min(4) as u32;
-                                let delay_secs =
-                                    RETRY_BACKOFF_SECS.saturating_mul(1u64 << backoff_shift);
+                                let delay_secs = e.retry_backoff_secs(retry_count);
                                 let retry_msg = format!(
                                     "Provider connection error. Retrying in {}s (attempt {}/{})...",
                                     delay_secs, retry_count, max_retries
@@ -1414,8 +1484,10 @@ impl AgentLoop {
                                 .session_store
                                 .append_event(&self.session_id, &end_event);
                             let _ = event_sender.send(end_event);
-                            let _ =
-                                crate::tools::browser::BrowserManager::shutdown_live_engine().await;
+                            let tx_files = self.finalize_turn_transaction(turn_tx_id.as_deref());
+                            self.record_pending_uncommitted_files(&tx_files);
+                            self.record_pending_uncommitted_files(&turn_files_modified);
+                            self.cleanup_turn_background_resources(false, true).await;
                             return Err(e);
                         }
                     }
@@ -2289,6 +2361,28 @@ impl AgentLoop {
                 }
 
                 let clean_text = crate::agent::prompt::strip_thought_blocks(&iteration_text);
+
+                // Thought-only truncation recovery: when a reasoning model exhausts `max_tokens`
+                // inside `<thought>`/`<think>` blocks and emits zero visible content and zero tool
+                // calls, inject a concise nudge (up to 2 times per turn) instead of exiting blank.
+                if clean_text.trim().is_empty()
+                    && !iteration_text.trim().is_empty()
+                    && thought_only_nudges < 2
+                {
+                    thought_only_nudges += 1;
+                    tracing::warn!(
+                        turn_id,
+                        nudge = thought_only_nudges,
+                        raw_len = iteration_text.len(),
+                        "Model emitted thought-only output with zero visible content or tool calls; nudging to act concisely"
+                    );
+                    self.messages.push(Message::user(
+                        "[SYSTEM]: Your previous response contained only internal reasoning with no visible reply or tool calls (likely hit the output token limit while thinking). Keep your reasoning very brief and immediately execute the next tool call or output your concise final response."
+                            .to_string(),
+                    ));
+                    continue;
+                }
+
                 let any_cancelled_tool = turn_tool_results.iter().any(|r| {
                     r.output.contains("cancelled") || r.output.contains("rejected by user")
                 });
@@ -2874,18 +2968,8 @@ impl AgentLoop {
         // Finalize transaction if one was initiated for this turn and is still active.
         // Always commit the transaction so created/modified files are preserved on disk
         // (while the pre-turn backup snapshot remains available for manual `/tx rollback` or `/undo`).
-        if let Some(ref tx_id) = turn_tx_id {
-            if let Ok(Some(active)) =
-                crate::session::transaction::TransactionManager::get_active(&self.workspace_root)
-            {
-                if active.tx_id == *tx_id {
-                    let _ = crate::session::transaction::TransactionManager::commit(
-                        &self.workspace_root,
-                        Some(tx_id),
-                    );
-                }
-            }
-        }
+        let finalized_tx_files = self.finalize_turn_transaction(turn_tx_id.as_deref());
+        self.record_pending_uncommitted_files(&finalized_tx_files);
 
         // Re-sync after end-of-turn `archive_plan` / `TransactionManager::commit` so any synced
         // docs (`README.md`, `minikit_docs/core/*.md`, `.gitignore`) are included in `turn_files_modified`
@@ -2895,8 +2979,12 @@ impl AgentLoop {
             self.reconcile_net_turn_mutations(&turn_start_fingerprints, &mut turn_files_modified);
         }
 
+        if was_cancelled || circuit_tripped || background_still_in_flight {
+            self.record_pending_uncommitted_files(&turn_files_modified);
+        }
+
         let mut turn_tokens_used = last_prompt_tokens + cumulative_completion_tokens;
-        if turn_tokens_used == 0 {
+        if turn_tokens_used == 0 && !was_cancelled {
             turn_tokens_used = self.count_current_context_tokens();
         }
         self.cumulative_tokens_used = self.cumulative_tokens_used.saturating_add(turn_tokens_used);
@@ -2947,8 +3035,15 @@ impl AgentLoop {
             );
         }
 
-        // Autonomous Git Auto-Commit if files were modified during this turn
-        if !turn_files_modified.is_empty()
+        // Autonomous Git Auto-Commit if files were modified during this turn (or carried forward
+        // from earlier errored/cancelled turns so we never produce broken partial commits).
+        let mut commit_candidate_files = self.pending_uncommitted_files.clone();
+        for f in &turn_files_modified {
+            if !commit_candidate_files.iter().any(|x| x == f) {
+                commit_candidate_files.push(f.clone());
+            }
+        }
+        if !commit_candidate_files.is_empty()
             && self.config.git.auto_commit
             && !was_cancelled
             && !circuit_tripped
@@ -2956,10 +3051,29 @@ impl AgentLoop {
         {
             let git = crate::git::GitService::new(self.workspace_root.clone());
             if git.is_git_repo().await {
+                // If minicode's `ensure_gitignore()` created `.gitignore` before the turn
+                // fingerprint baseline was captured (common in freshly initialized repos), stage
+                // the untracked `.gitignore` alongside the turn's edits so `git status` stays clean.
+                let gitignore_path = self.workspace_root.join(".gitignore");
+                if !commit_candidate_files.iter().any(|x| x == ".gitignore")
+                    && gitignore_path.is_file()
+                    && std::fs::read_to_string(&gitignore_path)
+                        .ok()
+                        .is_some_and(|c| c.contains(".minicode/"))
+                {
+                    if let Ok(porcelain) = git
+                        .run_git(&["status", "--porcelain", "--", ".gitignore"])
+                        .await
+                    {
+                        if porcelain.lines().any(|l| l.starts_with("?? ")) {
+                            commit_candidate_files.push(".gitignore".to_string());
+                        }
+                    }
+                }
                 let commit_svc = crate::git::GitCommitService::new(&git)
                     .with_stage_all(self.config.git.dirty_commit);
                 match commit_svc
-                    .stage_and_list_staged_files(Some(&turn_files_modified))
+                    .stage_and_list_staged_files(Some(&commit_candidate_files))
                     .await
                 {
                     Ok(staged_files) if !staged_files.is_empty() => {
@@ -3032,9 +3146,11 @@ impl AgentLoop {
                                 if let Err(e) = event_sender.send(git_event) {
                                     tracing::debug!(error = %e, "Failed to send git commit event");
                                 }
+                                self.pending_uncommitted_files.clear();
                                 crate::ui::status::StatusWidgets::invalidate_git_cache();
                             }
                             Ok(None) => {
+                                self.pending_uncommitted_files.clear();
                                 tracing::debug!(
                                     turn_id,
                                     "Auto-commit skipped: working tree clean after staging"
@@ -3066,8 +3182,15 @@ impl AgentLoop {
             );
         }
 
-        if !background_still_in_flight {
-            let _ = crate::tools::browser::BrowserManager::shutdown_live_engine().await;
+        if was_cancelled || circuit_tripped {
+            self.cleanup_turn_background_resources(false, true).await;
+        } else if !background_still_in_flight {
+            let preserve_preview =
+                crate::dev::registry::MiniDevRegistry::user_prompt_requests_persistent_preview(
+                    user_prompt,
+                );
+            self.cleanup_turn_background_resources(preserve_preview, false)
+                .await;
         }
 
         let end_event = AgentEvent::TurnEnd {

@@ -1214,7 +1214,7 @@ impl AutoCompactor {
 
         if hard_pressure || capc_profitable {
             *kv_watermark_idx = 0;
-            if let Some(mut metrics) = self.compact(messages, current_turn) {
+            if let Some(mut metrics) = self.compact_inner(messages, current_turn, hard_pressure) {
                 metrics.tokens_before = initial_tokens;
                 metrics.savings_percent =
                     if initial_tokens > 0 && metrics.tokens_after < initial_tokens {
@@ -1238,6 +1238,15 @@ impl AutoCompactor {
         &mut self,
         messages: &mut Vec<Message>,
         current_turn: usize,
+    ) -> Option<CompactionMetrics> {
+        self.compact_inner(messages, current_turn, false)
+    }
+
+    fn compact_inner(
+        &mut self,
+        messages: &mut Vec<Message>,
+        current_turn: usize,
+        require_headroom_after_kv_reset: bool,
     ) -> Option<CompactionMetrics> {
         // Strip older reasoning blocks and stale workspace snapshots across multi-turn sessions
         Self::strip_older_reasoning(messages);
@@ -1308,7 +1317,16 @@ impl AutoCompactor {
         }
 
         let tokens_after_tier1 = self.compressor.count_messages_tokens(messages);
-        if tokens_after_tier1 <= tier2_threshold && tokens_after_tier1 < initial_tokens {
+        // Hysteresis after KV-prefix reset: once we paid the cost of invalidating the cached prefix
+        // because hard pressure exceeded `tier2_threshold`, require Tier 1 to reclaim meaningful
+        // headroom (<= 80% of `tier2_threshold`) instead of hovering at 219.5K and thrashing the
+        // KV cache on every subsequent tool call.
+        let tier1_sufficient_ceiling = if require_headroom_after_kv_reset {
+            tier1_threshold.max((tier2_threshold.saturating_mul(4)) / 5)
+        } else {
+            tier2_threshold
+        };
+        if tokens_after_tier1 <= tier1_sufficient_ceiling && tokens_after_tier1 < initial_tokens {
             return Some(Self::build_metrics(
                 1,
                 0,
@@ -1318,7 +1336,7 @@ impl AutoCompactor {
         }
 
         // --- TIER 2: Turn Group Summarization ---
-        if tokens_after_tier1 > tier2_threshold && cutoff >= 2 {
+        if tokens_after_tier1 > tier1_sufficient_ceiling && cutoff >= 2 {
             let turn_start = 1;
             let turn_end = current_turn.saturating_sub(1).max(1);
 
@@ -1347,12 +1365,15 @@ impl AutoCompactor {
             }
         }
 
-        // --- TIER 3: Aggressive Anchor Synthesis & Message Pruning ---
+        // --- TIER 3: Aggressive Anchor Synthesis, Message Pruning & Hard Window Clamp ---
         let mut current_tokens = self.compressor.count_messages_tokens(messages);
-        if current_tokens > tier3_threshold && messages.len() > 4 {
+        if current_tokens > tier3_threshold && !messages.is_empty() {
             let mut pruned_count = 0;
 
-            while messages.len() > 4 && current_tokens > tier3_threshold {
+            // Phase 3a: Prune older messages down to 4 (or down to 2 when still far over limit,
+            // e.g., after switching a long session to a small 4K-context model).
+            let min_retained = if current_tokens > limit { 2 } else { 4 };
+            while messages.len() > min_retained && current_tokens > tier3_threshold {
                 // If message 0 is a system summary, remove message 1 instead of removing the summary
                 let remove_idx = if messages[0].role == Role::System && messages.len() > 2 {
                     1
@@ -1413,13 +1434,50 @@ impl AutoCompactor {
                 }
             }
 
+            // Phase 3b: Hard context-window guard. If remaining 1..=4 messages STILL exceed
+            // `tier3_threshold` (e.g., 13K tokens on a 4K model), drop any leading summary and
+            // truncate oversized message payloads so we never send guaranteed-400 oversized context.
+            current_tokens = self.compressor.count_messages_tokens(messages);
+            if current_tokens > tier3_threshold {
+                let target_budget = (tier3_threshold * 3) / 4;
+                // First shrink older / non-final messages aggressively, then clamp the final
+                // message only if it alone exceeds `target_budget`.
+                let msg_count = messages.len();
+                let per_msg_budget = (target_budget / msg_count.max(1)).max(128);
+                let max_bytes = per_msg_budget.saturating_mul(3);
+                for msg in messages.iter_mut() {
+                    if msg.content.len() > max_bytes {
+                        let keep_head = msg.content.floor_char_boundary((max_bytes * 2) / 3);
+                        let tail_budget = max_bytes / 4;
+                        let tail_start = msg
+                            .content
+                            .ceil_char_boundary(msg.content.len().saturating_sub(tail_budget));
+                        if tail_start > keep_head {
+                            let head = &msg.content[..keep_head];
+                            let tail = &msg.content[tail_start..];
+                            msg.content = format!(
+                                "{}\n\n[... truncated for model context window ({} tokens) ...]\n\n{}",
+                                head, limit, tail
+                            );
+                        } else {
+                            let cut = msg.content.floor_char_boundary(max_bytes);
+                            msg.content.truncate(cut);
+                            msg.content
+                                .push_str("\n[... truncated for model context window ...]");
+                        }
+                    }
+                }
+            }
+
             let final_tokens = self.compressor.count_messages_tokens(messages);
-            return Some(Self::build_metrics(
-                3,
-                pruned_count,
-                initial_tokens,
-                final_tokens,
-            ));
+            if final_tokens < initial_tokens || pruned_count > 0 {
+                return Some(Self::build_metrics(
+                    3,
+                    pruned_count,
+                    initial_tokens,
+                    final_tokens,
+                ));
+            }
         }
 
         None
@@ -1658,5 +1716,73 @@ mod tests {
             "Expected practical Tier-1 ceiling to compact >140K history on 1M-window model"
         );
         assert!(compactor.count_tokens(&msgs) < before);
+    }
+
+    #[test]
+    fn test_tier3_hard_clamps_small_4k_context_window() {
+        let mut compactor = AutoCompactor::new("allam-2-7b")
+            .unwrap_or_else(|_| AutoCompactor::default_safe())
+            .with_custom_limit(4096);
+
+        // Simulate switching a long session to a 4096-token model with just 3 bulky messages (~15K tokens)
+        let bulky = "detailed architecture specification and build output line\n".repeat(600);
+        let mut msgs = vec![
+            Message::system(format!("Previous summary:\n{bulky}")),
+            Message::user(format!("continue fixing issues:\n{bulky}")),
+            Message::assistant(format!("working on fixes:\n{bulky}")),
+        ];
+
+        let before = compactor.count_tokens(&msgs);
+        assert!(
+            before > 10_000,
+            "Expected >10K initial tokens, got {before}"
+        );
+
+        let metrics = compactor
+            .compact(&mut msgs, 16)
+            .expect("Tier-3 hard clamp must run on 4K model");
+        assert_eq!(metrics.tier, 3);
+        let after = compactor.count_tokens(&msgs);
+        assert!(
+            after <= 4096,
+            "Tier-3 hard clamp must bring tokens <= 4096 model limit, got {after}"
+        );
+    }
+
+    #[test]
+    fn test_kv_reset_hard_pressure_requires_headroom_no_220k_thrashing() {
+        let mut compactor = AutoCompactor::new("gemini-2.0-flash")
+            .unwrap_or_else(|_| AutoCompactor::default_safe());
+
+        // Build >220K conversation (above practical Tier-2 ceiling) where Tier 1 alone
+        // cannot shrink below 80% of Tier-2 threshold (176K), forcing clean Tier-2 headroom.
+        let medium_user = "architectural requirement paragraph describing component behavior and state invariants.\n".repeat(2_000);
+        let mut msgs = Vec::new();
+        for i in 0..8 {
+            msgs.push(Message::user(format!("Turn {i}:\n{medium_user}")));
+            msgs.push(Message::assistant(format!("Implemented turn {i} changes.")));
+        }
+
+        let before = compactor.count_tokens(&msgs);
+        assert!(
+            before > crate::constants::COMPACT_PRACTICAL_TIER2_CEILING_TOKENS,
+            "Expected >220K tokens, got {before}"
+        );
+
+        let mut kv_wm = msgs.len().saturating_sub(2);
+        let metrics = compactor
+            .compact_with_kv_watermark(&mut msgs, 8, &mut kv_wm)
+            .expect("hard pressure above 220K must compact");
+        assert_eq!(kv_wm, 0);
+        assert!(
+            metrics.tier >= 2,
+            "Expected Tier >= 2 after KV reset under hard pressure to avoid 220K thrashing, got tier {}",
+            metrics.tier
+        );
+        let after = compactor.count_tokens(&msgs);
+        assert!(
+            after <= (crate::constants::COMPACT_PRACTICAL_TIER2_CEILING_TOKENS * 4) / 5,
+            "Expected substantial headroom <= 176K after KV reset, got {after}"
+        );
     }
 }

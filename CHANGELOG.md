@@ -5,6 +5,34 @@ All notable changes to **minicode** will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.57] — 2026-11-20
+
+### Low-RAM Release Builds & Updater, Multi-Provider Network/Regional Failover & Live Model Discovery, Deterministic `minitask` / Browser / Subagent Process Cleanup, Subagent Turn-Cap & Context-Amnesia Fixes, & `minitest72` Forensic Hardening
+
+#### ⚙️ Low-RAM Compilation & Safe Global Updater (`Cargo.toml`, `localupdate.sh`)
+- **Memory-Bounded Release Profile & Throttled Local Installer**:
+  - Tuned `[profile.release]` (`lto = "thin"`, single codegen unit, memory-conscious linking/opt settings) and hardened `localupdate.sh` with RAM-aware `nice -n 19` / `-j 1` build throttling and `--clean` artifact purging so desktop machines never lag or OOM during updates.
+
+#### 🌐 Multi-Provider Network Resilience, Regional Failover & Accurate Model Discovery (`src/agent/{models,providers/{mod,openai,anthropic,gemini,factory}}.rs`, `src/error.rs`, `src/app/{modals,commands}.rs`, `src/ui/{modals,setup/wizard}.rs`, `src/tools/registry/agent_tools/config_tools.rs`)
+- **IPv4 Fallback, Regional Failover & Self-Healing Provider Budgets**:
+  - Added automatic IPv4-only socket fallback on transport errors, multi-region endpoint failover (`api.minimax.io` / `api.minimaxi.com`, `api.z.ai` / `open.bigmodel.cn`, `api.moonshot.ai` / `api.moonshot.cn`), and `select_regional_failure_error` so a fallback region's `401`/`403` auth mismatch never overwrites an earlier retryable transport/5xx error.
+  - Added `Retry-After`-honoring backoff (`MinicodeError::retry_backoff_secs`), small-context `max_tokens` clamping with self-healing HTTP `400` cap recovery, and accurate provider-scoped model catalogs & live model discovery across `/model`, `/settings`, and the setup wizard.
+
+#### 🧹 Deterministic `minitask` / Browser / Webdev / Subagent Lifecycle & Browser Recovery (`src/dev/{process,registry,registry_impl/lifecycle_and_telemetry}.rs`, `src/tools/browser/{manager,mod,driver,engine}.rs`, `src/agent/{loop,orchestrator,prompt,subagent/{fanout,pool,worker}}.rs`, `src/app/mod.rs`, `src/vault/builtin.rs`)
+- **Zero-Leak Process Group & Browser Teardown**:
+  - Swept completed finite `minitask` process groups (`-final_pgid`) via `terminate_process_group()` before untracking, registered spawned browser PIDs in `active_pgids`, reaped child/descendant trees cleanly (`kill_engine_process_tree` + `waitpid`), replaced stale `Degraded` states on failed/OOM/terminated workers with terminal statuses (`Exited`/`Killed`/`Stopped`), and constrained `list_filtered()` to strictly alive processes.
+  - Added automatic turn-end cleanup of ephemeral webdev servers and spawned headless browsers (`cleanup_after_turn_completion`, preserving explicit persistent previews and GUI windows), unconditional teardown on `shutdown_for_exit()`, and full background cleanup on `Ctrl+C` interrupts, `circuit_tripped`, and fatal turn errors.
+- **Fast Browser Failover & Stale CDP Channel Recovery**:
+  - Enabled multi-engine fallback behind `default_engine` with a 1-hour session `failed_engines` cooldown, added 1-shot stale-engine eviction and relaunch on dead CDP channels (`channel closed` / `Page.reload` timeout) in both `browser_navigate` and `browser_batch`, and tightened liveness/preflight/hydration timeouts (`2s`–`5s`) to eliminate 30s–40s dead-socket hangs.
+
+#### 🤖 `MiniPub` Subagent Precision, `power_review` Bounds & Real-World Edge-Case Hardening (`src/agent/{loop,loop_impl/session_state,subagent/{worker,pool,types}}.rs`, `src/tools/registry/{agent_tools/subagents,minipower_tools}.rs`, `src/config_impl/load_and_merge.rs`, `src/context/{ast/syntax_guard,budget/auto_compact,search/intent_filter}.rs`, `src/git/commit.rs`, `src/ui/{input,intellisense,prompt_corpus}.rs`)
+- **Eliminated Subagent Context-Amnesia Loops, Turn-Cap Blowouts & Endless Review Cycles**:
+  - Gated `MiniPub` per-tool observation masking on `>= 24K` token pressure so small read-only reviews no longer evict files they just read, disabled elastic extensions on `explicit_max_turns` and `"quick"` workers, rejected duplicate multi-step read cycles in `is_making_forward_progress`, pinned explicit caps (`8`/`5`/`4` turns) and stripped `browser_*` tools on `power_review` / `Architect` subagents, and stopped `power_review` from spawning endless subagents once static checks pass `0` blocking findings on `fix_round >= 2`.
+  - Fixed `delegate_task` to prioritize explicit `role` over `category` and fixed `SubagentPool::resolve_worker_isolation` so `isolate_branch: false` / `workspace_mode: "shared"` is strictly respected without attempting `git worktree add`.
+- **Workspace Config Isolation, Thought-Only Recovery, Auto-Commit Polish & `minitest72` Fixes**:
+  - Allowed real CLI binaries running in `/tmp/...` workspaces to load global `~/.config/minicode/config.toml` & `.env` while keeping Cargo unit/integration tests strictly isolated (`exe_looks_like_cargo_test_binary`), and stripped/scrubbed plaintext `[provider.api_keys]` from project-local `.minicode/config.toml`.
+  - Added thought-only `max_tokens` truncation nudge recovery in `AgentLoop`, raw NUL-byte (`\u0000`) JSON-escape guidance in `SyntaxGuard`, cross-turn `pending_uncommitted_files` persistence across failed/cancelled turns, automatic staging of minicode-created untracked `.gitignore` files, balanced delimiter trimming in synthesized Conventional Commit subjects, KV-cache compaction hysteresis at `220K` + Tier-3 context clamp, auxiliary-interrogative `intent_anchor` protection, `0`-token cancelled turn accounting, clean entry-boundary truncation in `session_wisdom.md`, and clean prompt history capture without `[SYSTEM ...]` wakeups or collapsed paste chips.
+
 ## [0.5.56] — 2026-11-19
 
 ### Global Persistent `PromptCorpus` + Order-4 Kneser-Ney `Gboard` Continuity (`prompt_corpus.rs`), Unified `@` Multimodal Entity Graph (`Files + Functions + Types + Images`), Pure `Up`/`Down` Prompt History Isolation, Non-Destructive Theme/Settings Persistence, & Explicit `ponytail:<mode> | caveman:<mode>` Status Badges

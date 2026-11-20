@@ -1435,8 +1435,8 @@ always_apply: false
 
 ## 2. Background Dev Servers & Daemons (`is_daemon: true`)
 - Never run long-lived servers (`npm run dev`, `vite`, `cargo watch`, `uvicorn`, `next dev`) inside synchronous blocking `exec_cmd`.
-- Start them as persistent daemons via `minitask(action="start", command="...", name="dev-server")` (or `exec_cmd(command="...", is_daemon=true)`).
-- Keep dev servers running across turns after verification; NEVER call `minitask(action="stop")` on an active dev server at turn end unless freeing a port or explicitly asked by the user.
+- Start them as background dev servers via `minitask(action="start", command="...", name="dev-server")` (or `exec_cmd(command="...", is_daemon=true)`).
+- Stop temporary QA dev servers and headless browsers once verification finishes (minicode automatically tears down ephemeral webdev servers and browsers at turn end unless the user explicitly requested a persistent live preview — never claim a server was left running unless the user explicitly asked for a live preview).
 - Monitor readiness, logs, and CPU/RAM telemetry via `minitask(action="status")`, `minitask(action="logs", id="...")`, and `minitask(action="resources")`.
 
 ## 3. Timers & Cron Schedules

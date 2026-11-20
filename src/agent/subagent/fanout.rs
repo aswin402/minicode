@@ -289,8 +289,19 @@ impl FanoutOrchestrator {
             let sem = Arc::clone(&semaphore);
             let token = cancel_token.clone();
             let cfg = Arc::clone(&app_cfg);
+            let stagger_ms = if total_tasks > 1 && idx > 0 {
+                (idx as u64).saturating_mul(350).min(1_500)
+            } else {
+                0
+            };
 
             join_set.spawn(async move {
+                if stagger_ms > 0 {
+                    tokio::select! {
+                        _ = token.cancelled() => {}
+                        _ = tokio::time::sleep(std::time::Duration::from_millis(stagger_ms)) => {}
+                    }
+                }
                 let res =
                     Self::run_single_worker_with_config(&root, task_item, sem, token, &cfg).await;
                 (idx, res)
@@ -685,7 +696,7 @@ impl FanoutOrchestrator {
                     .append_log(format!("[{}] MiniPub {}: {}", agent_id, log_label, msg))
                     .await;
                 dev_handle
-                    .update_status(crate::dev::models::DevProcessStatus::Degraded(msg.clone()))
+                    .update_status(crate::dev::models::DevProcessStatus::Exited(Some(1)))
                     .await;
 
                 Ok(WorkerResult::failed(

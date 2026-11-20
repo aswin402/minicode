@@ -864,6 +864,11 @@ impl SyntaxGuard {
         guidance.push(
             "Correct the syntax (check for missing or unclosed braces, quotes, or tags) and retry.",
         );
+        if new_content.contains('\0') {
+            guidance.push(
+                "Detected raw NUL byte (0x00) in the proposed file content! In JSON tool arguments, '\\u0000' decodes to a literal NUL byte — double-escape it as '\\\\u0000' in JSON (or use a plain ASCII token/delimiter instead of NUL bytes).",
+            );
+        }
         if has_edit_imbalance || !location_suffix.is_empty() {
             guidance.push(
                 "Each 'patch_file' call validates the entire file immediately. You cannot insert an opening tag or delimiter (e.g. '<div>' or '{') in one 'patch_file' call and its closing counterpart ('</div>' or '}') in a later call — include BOTH the opening and closing tags/delimiters in the same edit (or use 'write_file').",
@@ -1070,5 +1075,18 @@ mod tests {
 
         let broken_rs = "pub fn load(raw: String) -> Option<u32> {\n    Some(raw).and_then(|raw| serde_json::from_str::<u32>(&raw)\n}\n";
         assert!(SyntaxGuard::check_syntax(&path, broken_rs).is_some());
+    }
+
+    #[test]
+    fn test_js_raw_nul_byte_emits_json_escape_guidance() {
+        let path = PathBuf::from("app.js");
+        let orig = "function f(s) {\n  return s;\n}\n";
+        let with_nul = "function f(s) {\n  return '\0' + s + '\0';\n}\n";
+        let err = SyntaxGuard::check_syntax_barrier(&path, orig, with_nul)
+            .expect_err("raw NUL byte in JS string literal must be rejected by AST barrier");
+        assert!(
+            err.contains("raw NUL byte (0x00)") && err.contains("\\\\u0000"),
+            "Expected raw NUL byte JSON escape hint, got:\n{err}"
+        );
     }
 }

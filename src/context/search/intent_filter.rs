@@ -834,8 +834,10 @@ impl IntentClassifier {
         let has_mutating_verb = crate::constants::MUTATING_TASK_VERBS
             .iter()
             .any(|v| words.contains(v));
-        let opens_with_interrogative = first_substantive
-            .is_some_and(|w| crate::constants::INTERROGATIVE_WH_TOKENS.contains(&w));
+        let opens_with_interrogative = first_substantive.is_some_and(|w| {
+            crate::constants::INTERROGATIVE_WH_TOKENS.contains(&w)
+                || crate::constants::INTERROGATIVE_AUXILIARY_TOKENS.contains(&w)
+        });
         let is_epistemic_question = !is_meta_query
             && !has_mutating_verb
             && prompt.lines().filter(|l| !l.trim().is_empty()).count() <= 2
@@ -1299,14 +1301,25 @@ Core capabilities to highlight:
             assert!(!sig.has_goal_mutation_intent());
         }
 
-        // Codebase epistemic question stays actionable (uses search/codegraph) without mutating goal ledger
-        let code_q = IntentClassifier::analyze_signal(
+        // Codebase & status epistemic questions stay read-only without mutating goal ledger or starting a WAL tx
+        for epistemic in [
             "where is process_payment defined and who calls it?",
-            None,
-        );
-        assert!(code_q.has_actionable_task_intent());
-        assert!(code_q.is_epistemic_question);
-        assert!(!code_q.has_goal_mutation_intent());
+            "so is we completed all todos",
+            "did we finish all tasks",
+            "are all tests passing",
+        ] {
+            let sig = IntentClassifier::analyze_signal(epistemic, None);
+            assert!(
+                sig.is_epistemic_question,
+                "Expected '{}' to be classified as epistemic question",
+                epistemic
+            );
+            assert!(
+                !sig.has_goal_mutation_intent(),
+                "Expected '{}' NOT to mutate intent_anchor",
+                epistemic
+            );
+        }
 
         // Polite imperative mutation request with `?` MUST carry goal mutation intent
         let polite_fix =

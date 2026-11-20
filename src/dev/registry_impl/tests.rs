@@ -448,3 +448,111 @@ async fn test_exec_managed_background_task_detaches_on_steering_and_fast_kill_al
         "kill_all_sync() must be instantaneous when no background processes remain alive"
     );
 }
+
+#[tokio::test]
+async fn test_completed_task_reaps_grandchild_and_turn_cleanup_stops_ephemeral_webdev() {
+    let registry = MiniDevRegistry::new();
+    let temp = tempdir().expect("tempdir");
+
+    // 1. Spawn a finite non-daemon task that forks a long-lived grandchild (`sleep 120 &`) and exits immediately.
+    let marker_file = temp.path().join("grandchild.pid");
+    let grandchild_req = SpawnDevRequest {
+        command: format!(
+            "sh -c 'sleep 120 </dev/null >/dev/null 2>&1 & echo $! > {}; echo parent_exited'",
+            marker_file.display()
+        ),
+        name: Some("grandchild-reap-test".to_string()),
+        process_type: DevProcessType::Script,
+        working_dir: None,
+        extra_env: HashMap::new(),
+        port_hint: None,
+        max_memory_mb: None,
+        port_policy: None,
+        restart_policy: Some(crate::dev::models::RestartPolicy::Never),
+    };
+    let (_sum, _h) = registry
+        .spawn_with_options(temp.path(), grandchild_req, false)
+        .await
+        .expect("spawn grandchild task");
+    registry
+        .wait_until_active_tasks_settle(Duration::from_secs(4))
+        .await;
+    // Allow monitor task to finish process-group sweep
+    tokio::time::sleep(Duration::from_millis(180)).await;
+
+    let grandchild_pid: u32 = std::fs::read_to_string(&marker_file)
+        .expect("grandchild pid recorded")
+        .trim()
+        .parse()
+        .expect("valid pid");
+    assert!(
+        !crate::dev::ports::is_process_running(grandchild_pid),
+        "Completed non-daemon minitask must reap lingering grandchild PID {} in its process group",
+        grandchild_pid
+    );
+
+    // 2. Spawn an ephemeral frontend webdev daemon, then run post-turn cleanup (non-preview task).
+    let webdev_req = SpawnDevRequest {
+        command: "sleep 120".to_string(),
+        name: Some("ephemeral-webdev".to_string()),
+        process_type: DevProcessType::Frontend,
+        working_dir: None,
+        extra_env: HashMap::new(),
+        port_hint: None,
+        max_memory_mb: None,
+        port_policy: None,
+        restart_policy: Some(crate::dev::models::RestartPolicy::Never),
+    };
+    let (web_sum, web_handle) = registry
+        .spawn_with_options(temp.path(), webdev_req, true)
+        .await
+        .expect("spawn webdev daemon");
+    let web_pid = web_handle.pid();
+    assert!(crate::dev::ports::is_process_running(web_pid));
+
+    // Verify persistent-preview prompt classification
+    assert!(!MiniDevRegistry::user_prompt_requests_persistent_preview(
+        "Build and verify the landing page with Vite and browser QA"
+    ));
+    assert!(MiniDevRegistry::user_prompt_requests_persistent_preview(
+        "start the dev server and open it in browser"
+    ));
+    assert!(MiniDevRegistry::user_prompt_requests_persistent_preview(
+        "fix the hero bug and keep the dev server running"
+    ));
+
+    let stopped = registry.cleanup_after_turn_completion(false).await;
+    assert!(
+        stopped >= 1,
+        "Expected ephemeral webdev daemon to be stopped"
+    );
+    assert!(
+        !crate::dev::ports::is_process_running(web_pid),
+        "Webdev daemon PID {} must be killed after turn completion",
+        web_pid
+    );
+    let after = registry.get(&web_sum.id).await.expect("summary");
+    assert_eq!(after.status, DevProcessStatus::Stopped);
+
+    // 3. Verify Degraded handle transitions cleanly to Stopped on terminate()
+    let deg_handle = registry
+        .register_worker(
+            DevProcessId::from("worker-degraded-test"),
+            "Degraded Worker".to_string(),
+            "test".to_string(),
+            temp.path().to_path_buf(),
+            std::process::id(),
+            0,
+            None,
+        )
+        .await;
+    deg_handle
+        .update_status(DevProcessStatus::Degraded("temporary glitch".to_string()))
+        .await;
+    deg_handle.terminate().await.expect("terminate degraded");
+    assert_eq!(
+        *deg_handle.status.read().await,
+        DevProcessStatus::Stopped,
+        "terminate() must always clear Degraded status to Stopped"
+    );
+}

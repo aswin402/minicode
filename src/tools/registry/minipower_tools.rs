@@ -513,6 +513,7 @@ async fn run_reviewer_subagent(
     workspace_root: &Path,
     stage: &str,
     staged_only: bool,
+    is_rereview: bool,
     static_report: &str,
     target_files: &[String],
 ) -> String {
@@ -550,19 +551,27 @@ async fn run_reviewer_subagent(
         "1. NOTE: This workspace has NO `.git` repository — do **NOT** call `git_diff` or git commands. Use `batch_read` / `read_file` directly on the workspace source files listed below.".to_string()
     };
     let static_excerpt: String = static_report.chars().take(4000).collect();
+    let scoped_rereview_note = if is_rereview {
+        "\n- SCOPED RE-REVIEW ONLY: Inspect ONLY the listed prior findings and verify whether the fix diff introduced any regression. Do NOT invent new refactoring or test-extraction requests outside the listed findings; finish in <= 4 tool calls."
+    } else {
+        ""
+    };
+    let tool_budget_hint = if is_rereview { 4 } else { 8 };
     let prompt = format!(
         "You are the dedicated read-only code reviewer for this workspace. Review stage: `{stage}`.\n\
          {step_one}\n\
          2. Check them against the spec (`{spec}`, if it exists) and `.minicode/decisions.md`.\n\
          3. Verify the static audit findings below are real; do not repeat false positives, and do NOT re-run slow build suites.\n\
-         4. Complete your inspection concisely within <= 8 tool calls and report only concrete problems (correctness, missing edge cases, security, spec gaps) with file:line, \
-            most severe first. Do not modify any files.\n\
+         4. Complete your inspection concisely within <= {tool_budget_hint} tool calls and report only concrete problems (correctness, missing edge cases, security, spec gaps) with file:line, \
+            most severe first. Do not modify any files.{scoped_rereview_note}\n\
          End with a line `STATUS: DONE` if the changes are acceptable, otherwise `STATUS: DONE_WITH_CONCERNS`.\n\
          {files_hint}\n\
          ### Static audit (context)\n{static_excerpt}",
         stage = stage,
         step_one = step_one,
         spec = spec_rel,
+        tool_budget_hint = tool_budget_hint,
+        scoped_rereview_note = scoped_rereview_note,
         files_hint = files_hint,
         static_excerpt = static_excerpt
     );
@@ -571,7 +580,16 @@ async fn run_reviewer_subagent(
         SubagentRole::Reviewer,
         &app_cfg.agent.minipub,
     );
-    config.max_turns = config.max_turns.min(10);
+    // Pin explicit turn cap so dynamic scope scaling and elastic extensions cannot blow a concise
+    // code review out to 20-30 turns, and strip browser_* tools so code reviewers never clobber
+    // the parent session's pooled browser instance.
+    let turn_cap = if is_rereview {
+        config.max_turns.min(5)
+    } else {
+        config.max_turns.min(8)
+    };
+    config = config.with_explicit_max_turns(Some(turn_cap));
+    config.tool_whitelist.retain(|t| !t.starts_with("browser_"));
     match crate::agent::orchestrator::MultiAgentOrchestrator::delegate_with_config(
         workspace_root,
         &prompt,
@@ -586,6 +604,27 @@ async fn run_reviewer_subagent(
             crate::agent::orchestrator::MultiAgentOrchestrator::format_result(&result)
         ),
         Err(e) => format!("\n! Reviewer subagent could not run: {}\n", e),
+    }
+}
+
+/// Decides whether `power_review` should dispatch a Reviewer MiniPub subagent.
+/// Prevents endless multi-round perfection loops once static review passes with 0 blocking
+/// findings on fix round >= 2 (unless the caller explicitly passed `subagent_review: true`).
+fn should_spawn_power_review_subagent(
+    explicit: Option<bool>,
+    files_audited: usize,
+    actionable_count: usize,
+    is_rereview: bool,
+    fix_round: u8,
+    has_live_runtime: bool,
+) -> bool {
+    match explicit {
+        Some(b) => b,
+        None => {
+            has_live_runtime
+                && files_audited >= 3
+                && !(is_rereview && actionable_count == 0 && fix_round >= 2)
+        }
     }
 }
 
@@ -614,11 +653,12 @@ async fn run_architect_gap_subagent(
          {spec_block}",
     );
     let app_cfg = crate::config::Config::load_for_workspace(workspace_root);
-    let mut config = crate::agent::subagent::SubagentConfig::for_role_with_minipub_config(
+    let config = crate::agent::subagent::SubagentConfig::for_role_with_minipub_config(
         SubagentRole::Architect,
         &app_cfg.agent.minipub,
     );
-    config.max_turns = config.max_turns.min(4);
+    let cap = config.max_turns.min(4);
+    let config = config.with_explicit_max_turns(Some(cap));
     match crate::agent::orchestrator::MultiAgentOrchestrator::delegate_with_config(
         workspace_root,
         &prompt,
@@ -1376,14 +1416,16 @@ pub async fn dispatch(
                     serde_json::to_string_pretty(&review_state).unwrap_or_default(),
                 );
 
-                let should_run_subagent_review =
-                    match args.get("subagent_review").and_then(|v| v.as_bool()) {
-                        Some(explicit) => explicit,
-                        None => {
-                            report.files_audited >= 3
-                                && crate::agent::subagent::has_live_non_mock_runtime()
-                        }
-                    };
+                let explicit_subagent = args.get("subagent_review").and_then(|v| v.as_bool());
+                let has_live_runtime = crate::agent::subagent::has_live_non_mock_runtime();
+                let should_run_subagent_review = should_spawn_power_review_subagent(
+                    explicit_subagent,
+                    report.files_audited,
+                    actionable_count,
+                    is_rereview,
+                    fix_round,
+                    has_live_runtime,
+                );
                 if should_run_subagent_review {
                     let subagent_payload = if formatted.contains(&reviewer_rubric) {
                         formatted.clone()
@@ -1395,11 +1437,22 @@ pub async fn dispatch(
                             workspace_root,
                             &stage_arg,
                             staged_only,
+                            is_rereview,
                             &subagent_payload,
                             &mp_task.target_files,
                         )
                         .await,
                     );
+                } else if explicit_subagent.is_none()
+                    && has_live_runtime
+                    && report.files_audited >= 3
+                    && is_rereview
+                    && actionable_count == 0
+                    && fix_round >= 2
+                {
+                    formatted.push_str(&format!(
+                        "\n✔ **Re-Review Gate Complete (fix_round={fix_round})**: Static audit passed with 0 HIGH/MEDIUM findings — skipping another Reviewer subagent pass to prevent endless nitpick loops (pass `subagent_review=true` to force). Proceed directly to `power_verify` / `archive_plan`.\n"
+                    ));
                 }
                 let reviewer_still_running = should_run_subagent_review
                     && crate::agent::subagent::try_get_global_subagent_pool()
@@ -2027,5 +2080,44 @@ mod tests {
             review_out
         );
         assert!(review_out.contains("Two-Stage Review Gate"));
+    }
+
+    #[test]
+    fn test_power_review_subagent_gate_prevents_endless_rereview_loops() {
+        // Initial review on >= 3 files runs subagent when live runtime is available
+        assert!(should_spawn_power_review_subagent(
+            None, 5, 1, false, 0, true
+        ));
+        // Re-review fix_round 1 still runs one concise scoped re-review
+        assert!(should_spawn_power_review_subagent(
+            None, 5, 0, true, 1, true
+        ));
+        // Re-review fix_round >= 2 with 0 actionable static findings skips spawning another subagent
+        assert!(!should_spawn_power_review_subagent(
+            None, 5, 0, true, 2, true
+        ));
+        assert!(!should_spawn_power_review_subagent(
+            None, 5, 0, true, 3, true
+        ));
+        // Still runs if actionable static findings remain or if explicitly requested
+        assert!(should_spawn_power_review_subagent(
+            None, 5, 1, true, 2, true
+        ));
+        assert!(should_spawn_power_review_subagent(
+            Some(true),
+            5,
+            0,
+            true,
+            3,
+            true
+        ));
+        assert!(!should_spawn_power_review_subagent(
+            Some(false),
+            5,
+            2,
+            false,
+            0,
+            true
+        ));
     }
 }

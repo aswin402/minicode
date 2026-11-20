@@ -280,9 +280,7 @@ impl DevProcessHandle {
         if current_pgid > 0 && current_pgid != std::process::id() {
             terminate_process_group(current_pgid).await?;
         }
-        if !matches!(*status_lock, DevProcessStatus::Degraded(_)) {
-            *status_lock = DevProcessStatus::Stopped;
-        }
+        *status_lock = DevProcessStatus::Stopped;
         drop(status_lock);
         let _ = self.finished_elapsed_secs.compare_exchange(
             u64::MAX,
@@ -673,10 +671,7 @@ pub async fn spawn_process_group_with_options(
                     exit_code
                 );
                 push_ring_log(&logs_clone, msg).await;
-                *status_clone.write().await = DevProcessStatus::Degraded(format!(
-                    "Crash loop detected ({} rapid failures)",
-                    crate::constants::DEFAULT_WATCHDOG_RAPID_CRASH_LIMIT
-                ));
+                *status_clone.write().await = DevProcessStatus::Exited(exit_code.or(Some(1)));
                 break;
             }
 
@@ -739,17 +734,14 @@ pub async fn spawn_process_group_with_options(
                             push_ring_log(&logs_clone, restart_msg).await;
                             continue;
                         } else {
-                            *status_clone.write().await = DevProcessStatus::Degraded(
-                                "Failed to acquire new PID during restart".to_string(),
-                            );
+                            *status_clone.write().await = DevProcessStatus::Exited(Some(1));
                             break;
                         }
                     }
                     Err(e) => {
                         let err_msg = format!("[WATCHDOG] Failed to respawn process: {}", e);
                         push_ring_log(&logs_clone, err_msg).await;
-                        *status_clone.write().await =
-                            DevProcessStatus::Degraded(format!("Restart spawn failed: {}", e));
+                        *status_clone.write().await = DevProcessStatus::Exited(Some(1));
                         break;
                     }
                 }
@@ -779,11 +771,15 @@ pub async fn spawn_process_group_with_options(
             Ordering::SeqCst,
             Ordering::Relaxed,
         );
+        let final_pid = pid_clone.load(Ordering::SeqCst);
+        let final_pgid = pgid_clone.load(Ordering::SeqCst);
+        // Sweep any lingering grandchild processes still alive inside this task's process group
+        // BEFORE untracking `final_pgid` so completed commands/scripts never leave permanent OS orphans.
+        if final_pgid > 1 && final_pgid != std::process::id() {
+            let _ = terminate_process_group(final_pgid).await;
+        }
         let registry = crate::dev::registry::get_global_dev_registry();
-        registry.untrack_process_ids(
-            pid_clone.load(Ordering::SeqCst),
-            pgid_clone.load(Ordering::SeqCst),
-        );
+        registry.untrack_process_ids(final_pid, final_pgid);
         completion_notify_clone.notify_waiters();
         registry.notify_task_completed(&dev_id_clone);
         registry.trigger_background_telemetry_refresh();

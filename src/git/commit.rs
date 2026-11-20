@@ -547,14 +547,12 @@ impl<'a> GitCommitService<'a> {
 
         let subject = if let Some(candidate) = raw_candidate {
             let imperative = Self::ensure_imperative_lowercase_subject(&candidate, commit_type);
-            if imperative.chars().count() > max_subject_chars {
+            let bounded = if imperative.chars().count() > max_subject_chars {
                 crate::utils::strings::truncate_words(&imperative, max_subject_chars)
-                    .trim_end_matches(['.', ',', ';', ':', '…'])
-                    .trim()
-                    .to_string()
             } else {
                 imperative
-            }
+            };
+            Self::strip_unbalanced_trailing_delimiters(&bounded)
         } else if files_modified.len() == 1 {
             format!("update {}", files_modified[0])
         } else if files_modified.is_empty() {
@@ -570,6 +568,59 @@ impl<'a> GitCommitService<'a> {
         } else {
             format!("{header}\n\n{body}")
         }
+    }
+
+    fn has_unbalanced_delimiters(s: &str) -> bool {
+        let mut parens = 0i32;
+        let mut brackets = 0i32;
+        let mut backticks = 0usize;
+        for ch in s.chars() {
+            match ch {
+                '(' => parens += 1,
+                ')' => parens -= 1,
+                '[' => brackets += 1,
+                ']' => brackets -= 1,
+                '`' => backticks += 1,
+                _ => {}
+            }
+        }
+        parens != 0 || brackets != 0 || !backticks.is_multiple_of(2)
+    }
+
+    fn strip_unbalanced_trailing_delimiters(s: &str) -> String {
+        let mut out = s
+            .trim_end_matches(['.', ',', ';', ':', '…', '-', '—'])
+            .trim()
+            .to_string();
+        for (open, close) in [('(', ')'), ('[', ']')] {
+            loop {
+                let opens = out.chars().filter(|&c| c == open).count();
+                let closes = out.chars().filter(|&c| c == close).count();
+                if opens > closes {
+                    if let Some(pos) = out.rfind(open) {
+                        let prefix = out[..pos]
+                            .trim_end_matches(['.', ',', ';', ':', '…', '-', '—'])
+                            .trim();
+                        if !prefix.is_empty() {
+                            out = prefix.to_string();
+                            continue;
+                        }
+                    }
+                }
+                break;
+            }
+        }
+        if !out.chars().filter(|&c| c == '`').count().is_multiple_of(2) {
+            if let Some(pos) = out.rfind('`') {
+                let prefix = out[..pos]
+                    .trim_end_matches(['.', ',', ';', ':', '…', '-', '—'])
+                    .trim();
+                if !prefix.is_empty() {
+                    out = prefix.to_string();
+                }
+            }
+        }
+        out
     }
 
     fn trim_at_natural_clause(text: &str, max_chars: usize) -> String {
@@ -598,6 +649,9 @@ impl<'a> GitCommitService<'a> {
         for sep in [", ", " — ", " - ", " (", "; ", " built ", " featuring "] {
             for (idx, _) in cleaned.match_indices(sep) {
                 let left_trim = cleaned[..idx].trim_end_matches(['.', ',', ';', ':']).trim();
+                if Self::has_unbalanced_delimiters(left_trim) {
+                    continue;
+                }
                 let char_len = left_trim.chars().count();
                 let words = left_trim.split_whitespace().count();
                 if words >= 4
@@ -1054,5 +1108,44 @@ mod tests {
         assert!(staged.contains(&".gitignore".to_string()));
         assert!(staged.contains(&"src/App.tsx".to_string()));
         assert!(!staged.contains(&"minikit_docs/core/todo.md".to_string()));
+    }
+
+    #[test]
+    fn test_synthesize_commit_message_avoids_unbalanced_parentheses() {
+        let files = vec![
+            "index.html".to_string(),
+            "style.css".to_string(),
+            "app.js".to_string(),
+        ];
+        let msg = GitCommitService::synthesize_turn_commit_message(
+            &files,
+            None,
+            Some("Build a minimal dark-themed Pomodoro timer web app (index.html, style.css, app.js) with 25/5 presets, keyboard shortcuts, and visual state."),
+        );
+        let subject = msg.lines().next().unwrap();
+        assert_eq!(
+            subject,
+            "feat(ui): build a minimal dark-themed Pomodoro timer web app"
+        );
+        assert_eq!(
+            subject.chars().filter(|&c| c == '(').count(),
+            subject.chars().filter(|&c| c == ')').count()
+        );
+
+        // Also verify direct fallback stripping when truncation lands inside brackets or backticks
+        assert_eq!(
+            GitCommitService::strip_unbalanced_trailing_delimiters(
+                "add telemetry dashboard (metrics"
+            ),
+            "add telemetry dashboard"
+        );
+        assert_eq!(
+            GitCommitService::strip_unbalanced_trailing_delimiters("fix parser [edge case"),
+            "fix parser"
+        );
+        assert_eq!(
+            GitCommitService::strip_unbalanced_trailing_delimiters("update `config.toml"),
+            "update"
+        );
     }
 }

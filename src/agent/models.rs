@@ -2,7 +2,6 @@ use crate::error::{ProviderError, Result};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::PathBuf;
-use std::time::Duration;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ModelInfo {
@@ -359,7 +358,6 @@ static MODELS_DEV_OUTPUT_MAP: std::sync::OnceLock<std::sync::RwLock<HashMap<Stri
     std::sync::OnceLock::new();
 static DISK_MODELS_CACHE: std::sync::OnceLock<std::sync::RwLock<Option<ModelsCache>>> =
     std::sync::OnceLock::new();
-static MODEL_FETCH_HTTP_CLIENT: std::sync::OnceLock<reqwest::Client> = std::sync::OnceLock::new();
 
 fn models_dev_provider_lock() -> &'static std::sync::RwLock<Option<ProviderModelMap>> {
     MODELS_DEV_PROVIDER_MAP.get_or_init(|| std::sync::RwLock::new(None))
@@ -601,14 +599,19 @@ pub fn get_model_context_limit(model: &str) -> usize {
     }
 }
 
+const MODELS_CACHE_SCHEMA_VERSION: u32 = 2;
+
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 struct ModelsCache {
+    #[serde(default)]
+    cache_version: u32,
     providers: HashMap<String, Vec<ModelInfo>>,
     last_updated: HashMap<String, String>,
 }
 
 pub struct ModelFetcher {
     client: reqwest::Client,
+    ipv4_client: reqwest::Client,
     cache_path: PathBuf,
 }
 
@@ -620,16 +623,8 @@ impl Default for ModelFetcher {
 
 impl ModelFetcher {
     pub fn new() -> Self {
-        let client = MODEL_FETCH_HTTP_CLIENT
-            .get_or_init(|| {
-                reqwest::Client::builder()
-                    .timeout(Duration::from_secs(
-                        crate::constants::MODEL_FETCH_TIMEOUT_SECS,
-                    ))
-                    .build()
-                    .unwrap_or_default()
-            })
-            .clone();
+        let client = crate::agent::providers::shared_model_fetch_http_client(false);
+        let ipv4_client = crate::agent::providers::shared_model_fetch_http_client(true);
 
         let cache_path = if let Some(config_dir) = dirs::config_dir() {
             config_dir
@@ -640,22 +635,57 @@ impl ModelFetcher {
                 .join(crate::constants::MODELS_CACHE_FILE)
         };
 
-        Self { client, cache_path }
+        Self {
+            client,
+            ipv4_client,
+            cache_path,
+        }
+    }
+
+    /// Executes an HTTP request for model discovery with automatic dual-stack -> IPv4 fallback.
+    async fn send_fetch_request<F>(
+        &self,
+        url: &str,
+        build_req: F,
+    ) -> std::result::Result<reqwest::Response, reqwest::Error>
+    where
+        F: Fn(&reqwest::Client) -> reqwest::RequestBuilder,
+    {
+        crate::agent::providers::send_request_with_ipv4_fallback(
+            url,
+            &self.client,
+            &self.ipv4_client,
+            build_req,
+        )
+        .await
     }
 
     /// Returns cached models for a provider if available
     pub fn get_cached_models(&self, provider: &str) -> Option<Vec<ModelInfo>> {
-        let norm = provider.to_lowercase();
-        self.with_cache(|cache| cache.providers.get(&norm).cloned())
+        let canon = crate::agent::providers::canonical_provider_key(provider);
+        let raw = provider.to_lowercase();
+        self.with_cache(|cache| {
+            cache
+                .providers
+                .get(&canon)
+                .or_else(|| cache.providers.get(&raw))
+                .cloned()
+        })
     }
 
     /// Removes a model from disk cache when an API returns 404 (model not found / deprecated)
     #[allow(dead_code)]
     pub fn invalidate_model(&self, provider: &str, model_id: &str) {
         let mut cache = self.load_cache();
-        let norm = provider.to_lowercase();
-        if let Some(list) = cache.providers.get_mut(&norm) {
+        let canon = crate::agent::providers::canonical_provider_key(provider);
+        if let Some(list) = cache.providers.get_mut(&canon) {
             list.retain(|m| m.id != model_id && !m.id.ends_with(model_id));
+        }
+        let raw = provider.to_lowercase();
+        if raw != canon {
+            if let Some(list) = cache.providers.get_mut(&raw) {
+                list.retain(|m| m.id != model_id && !m.id.ends_with(model_id));
+            }
         }
         self.save_cache(&cache);
     }
@@ -682,24 +712,43 @@ impl ModelFetcher {
 
         let loaded = match std::fs::read_to_string(&self.cache_path) {
             Ok(content) => match serde_json::from_str::<ModelsCache>(&content) {
-                Ok(cache) => cache,
+                Ok(cache) if cache.cache_version == MODELS_CACHE_SCHEMA_VERSION => cache,
+                Ok(_) => {
+                    tracing::info!(
+                        path = %self.cache_path.display(),
+                        "Resetting outdated model cache schema so providers fetch accurate live models"
+                    );
+                    ModelsCache {
+                        cache_version: MODELS_CACHE_SCHEMA_VERSION,
+                        ..Default::default()
+                    }
+                }
                 Err(e) => {
                     tracing::warn!(
                         path = %self.cache_path.display(),
                         error = %e,
                         "Corrupted model cache file, falling back to defaults"
                     );
-                    ModelsCache::default()
+                    ModelsCache {
+                        cache_version: MODELS_CACHE_SCHEMA_VERSION,
+                        ..Default::default()
+                    }
                 }
             },
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => ModelsCache::default(),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => ModelsCache {
+                cache_version: MODELS_CACHE_SCHEMA_VERSION,
+                ..Default::default()
+            },
             Err(e) => {
                 tracing::warn!(
                     path = %self.cache_path.display(),
                     error = %e,
                     "Failed to read model cache file"
                 );
-                ModelsCache::default()
+                ModelsCache {
+                    cache_version: MODELS_CACHE_SCHEMA_VERSION,
+                    ..Default::default()
+                }
             }
         };
 
@@ -711,8 +760,10 @@ impl ModelFetcher {
 
     /// Saves updated model cache to in-memory cache and disk
     fn save_cache(&self, cache: &ModelsCache) {
+        let mut versioned = cache.clone();
+        versioned.cache_version = MODELS_CACHE_SCHEMA_VERSION;
         if let Ok(mut guard) = disk_models_cache_lock().write() {
-            *guard = Some(cache.clone());
+            *guard = Some(versioned.clone());
         }
         if let Some(parent) = self.cache_path.parent() {
             if let Err(e) = std::fs::create_dir_all(parent) {
@@ -724,7 +775,7 @@ impl ModelFetcher {
                 return;
             }
         }
-        match serde_json::to_string_pretty(cache) {
+        match serde_json::to_string_pretty(&versioned) {
             Ok(json) => {
                 if let Err(e) = std::fs::write(&self.cache_path, json) {
                     tracing::warn!(
@@ -750,9 +801,9 @@ impl ModelFetcher {
         let provider_lower = provider.to_lowercase();
 
         match provider_lower.as_str() {
-            "anthropic" | "claude" => self.fetch_anthropic_models(api_key).await,
-            "openrouter" => self.fetch_openrouter_models(api_key).await,
-            "gemini" | "google" => self.fetch_gemini_models(api_key).await,
+            "anthropic" | "claude" => self.fetch_anthropic_models(api_key, custom_base_url).await,
+            "openrouter" => self.fetch_openrouter_models(api_key, custom_base_url).await,
+            "gemini" | "google" => self.fetch_gemini_models(api_key, custom_base_url).await,
             "openai" => {
                 let url = custom_base_url.unwrap_or(crate::constants::OPENAI_DEFAULT_BASE_URL);
                 self.fetch_openai_compatible_models(url, api_key).await
@@ -770,14 +821,24 @@ impl ModelFetcher {
                 self.fetch_openai_compatible_models(url, api_key).await
             }
             "minimax" => {
-                let url = custom_base_url.unwrap_or(crate::constants::MINIMAX_BASE_URL);
-                self.fetch_openai_compatible_models(url, api_key).await
-            }
-            "z.ai" | "z_ai" | "zhipu" | "glm" | "bigmodel" => {
                 if let Some(url) = custom_base_url {
                     self.fetch_openai_compatible_models(url, api_key).await
                 } else {
-                    self.fetch_zai_models(api_key).await
+                    self.fetch_minimax_models(api_key).await
+                }
+            }
+            "z.ai" | "z_ai" => {
+                if let Some(url) = custom_base_url {
+                    self.fetch_openai_compatible_models(url, api_key).await
+                } else {
+                    self.fetch_zai_models("z.ai", api_key).await
+                }
+            }
+            "zhipu" | "glm" | "bigmodel" => {
+                if let Some(url) = custom_base_url {
+                    self.fetch_openai_compatible_models(url, api_key).await
+                } else {
+                    self.fetch_zai_models("zhipu", api_key).await
                 }
             }
             "mistral" => {
@@ -831,7 +892,7 @@ impl ModelFetcher {
             }
             "ollama" => {
                 let url = custom_base_url.unwrap_or(crate::constants::OLLAMA_DEFAULT_BASE_URL);
-                self.fetch_openai_compatible_models(url, api_key).await
+                self.fetch_ollama_models(url, api_key).await
             }
             "lmstudio" | "lm-studio" => {
                 let url = custom_base_url.unwrap_or(crate::constants::LMSTUDIO_DEFAULT_BASE_URL);
@@ -859,8 +920,9 @@ impl ModelFetcher {
         }
     }
 
-    /// Fetches all available models dynamically from the provider API and enriches/supplements
-    /// with live `models.dev` catalog metadata (exact max context window, free status, and full model catalog).
+    /// Fetches all available models dynamically from the provider API and enriches live models
+    /// with `models.dev` metadata (exact context window / free badge) without injecting unverified
+    /// models that the active endpoint did not report.
     pub async fn fetch_models(
         &self,
         provider: &str,
@@ -868,6 +930,7 @@ impl ModelFetcher {
         custom_base_url: Option<&str>,
     ) -> Result<Vec<ModelInfo>> {
         let provider_lower = provider.to_lowercase();
+        let cache_key = crate::agent::providers::canonical_provider_key(&provider_lower);
         let is_local = matches!(
             provider_lower.as_str(),
             "ollama"
@@ -881,15 +944,16 @@ impl ModelFetcher {
                 | "llamacpp"
                 | "jan"
         );
+        let has_explicit_custom_url = !is_local && custom_base_url.is_some();
 
         // 1. Try direct live endpoint first
         let direct_res = self
             .fetch_live_models_strict(provider, api_key, custom_base_url)
             .await;
 
-        // 2. For cloud providers, also fetch/cache the `models.dev` catalog for this provider
-        //    so we can enrich missing context windows and supplement incomplete `/models` endpoints.
-        let catalog_models = if !is_local {
+        // 2. For built-in cloud providers (without a custom proxy URL), fetch `models.dev` metadata
+        //    to enrich missing context windows (or serve as fallback ONLY when `/models` fails/empty).
+        let catalog_models = if !is_local && !has_explicit_custom_url {
             self.fetch_models_from_models_dev(&provider_lower)
                 .await
                 .unwrap_or_default()
@@ -898,8 +962,9 @@ impl ModelFetcher {
         };
 
         let merged_res: Result<Vec<ModelInfo>> = match (direct_res, catalog_models.is_empty()) {
-            (Ok(mut live_models), false) => {
-                // Build lookup map from catalog_models by lowercase ID
+            (Ok(mut live_models), false) if !live_models.is_empty() => {
+                // Build lookup map from catalog_models by lowercase ID for metadata enrichment ONLY.
+                // Never append unverified models from `models.dev` onto a working live `/models` list.
                 let mut cat_map: HashMap<String, &ModelInfo> =
                     HashMap::with_capacity(catalog_models.len() * 2);
                 for cm in &catalog_models {
@@ -910,7 +975,6 @@ impl ModelFetcher {
                     }
                 }
 
-                // Enrich every live model with exact context_length / name / is_free from models.dev if missing
                 for m in &mut live_models {
                     let key = m.id.to_lowercase();
                     let short_key = key.rsplit_once('/').map(|(_, s)| s).unwrap_or(&key);
@@ -930,86 +994,60 @@ impl ModelFetcher {
                     }
                 }
 
-                // For providers where the direct `/models` endpoint is regional or omits newer models
-                // (e.g. z.ai/glm, kimi/moonshot, minimax, cerebras, agnes, opencode), merge catalog models too!
-                let should_merge_catalog = matches!(
-                    provider_lower.as_str(),
-                    "z.ai"
-                        | "z_ai"
-                        | "zhipu"
-                        | "glm"
-                        | "bigmodel"
-                        | "kimi"
-                        | "moonshot"
-                        | "moonshotai"
-                        | "minimax"
-                        | "cerebras"
-                        | "agnes"
-                        | "agnes-ai"
-                        | "opencode"
-                        | "opencode-zen"
-                        | "zen"
-                        | "deepseek"
-                        | "anthropic"
-                        | "claude"
-                ) || live_models.len() < 5;
-
-                if should_merge_catalog {
-                    for cm in catalog_models {
-                        let exists = live_models
-                            .iter()
-                            .any(|existing| existing.id.eq_ignore_ascii_case(&cm.id));
-                        if !exists {
-                            live_models.push(cm);
-                        }
-                    }
-                }
-
                 sort_models_free_first(&mut live_models);
                 Ok(live_models)
             }
-            (Ok(mut live_models), true) => {
+            (Ok(mut live_models), _) if !live_models.is_empty() => {
                 for m in &mut live_models {
                     if m.context_length.is_none() {
                         m.context_length = lookup_models_dev_context(&m.id)
                             .or_else(|| parse_context_window_from_name(&m.id));
                     }
                 }
+                sort_models_free_first(&mut live_models);
                 Ok(live_models)
             }
-            (Err(_), false) => {
-                // Direct endpoint failed (e.g. no API key configured yet or `/models` not exposed),
-                // use the full live `models.dev` catalog for this provider!
+            (Ok(_), false) | (Err(_), false) => {
+                // Direct `/models` returned empty or failed (e.g. provider does not expose `/models`,
+                // such as MiniMax on some plans, or API key not yet set): use the exact single
+                // `models.dev` catalog bucket for this provider.
                 Ok(catalog_models)
             }
+            (Ok(empty), true) => Ok(empty),
             (Err(e), true) => Err(e),
         };
 
         match merged_res {
             Ok(models) if !models.is_empty() => {
-                // Update cache
-                let mut cache = self.load_cache();
-                cache
-                    .providers
-                    .insert(provider_lower.clone(), models.clone());
-                cache
-                    .last_updated
-                    .insert(provider_lower, chrono::Utc::now().to_rfc3339());
-                self.save_cache(&cache);
+                // Only cache when using built-in endpoints (don't pollute global provider cache with custom proxies)
+                if !has_explicit_custom_url {
+                    let mut cache = self.load_cache();
+                    cache.providers.insert(cache_key.clone(), models.clone());
+                    cache
+                        .last_updated
+                        .insert(cache_key, chrono::Utc::now().to_rfc3339());
+                    self.save_cache(&cache);
+                }
                 Ok(models)
             }
             Ok(models) => Ok(models),
             Err(e) => {
-                // Fallback to cache if available
-                let cache = self.load_cache();
-                if let Some(cached_models) = cache.providers.get(&provider_lower) {
-                    if !cached_models.is_empty() {
-                        tracing::warn!(
-                            "Failed to fetch live models from {}, using {} cached models",
-                            provider,
-                            cached_models.len()
-                        );
-                        return Ok(cached_models.clone());
+                // Fallback to cache if available (and not overriding with a custom endpoint)
+                if !has_explicit_custom_url {
+                    let cache = self.load_cache();
+                    if let Some(cached_models) = cache
+                        .providers
+                        .get(&cache_key)
+                        .or_else(|| cache.providers.get(&provider_lower))
+                    {
+                        if !cached_models.is_empty() {
+                            tracing::warn!(
+                                "Failed to fetch live models from {}, using {} cached models",
+                                provider,
+                                cached_models.len()
+                            );
+                            return Ok(cached_models.clone());
+                        }
                     }
                 }
 
@@ -1067,7 +1105,9 @@ impl ModelFetcher {
         }
     }
 
-    /// Maps a minicode provider name to the corresponding provider keys in `https://models.dev/api.json`.
+    /// Maps a minicode provider name to its primary `models.dev/api.json` provider key(s),
+    /// ordered by preference. `fetch_models_from_models_dev` stops at the FIRST non-empty bucket
+    /// so coding-plan / regional / unrelated provider catalogs are never mixed together.
     fn models_dev_keys_for_provider(provider: &str) -> &'static [&'static str] {
         match provider {
             "anthropic" | "claude" => &["anthropic"],
@@ -1077,25 +1117,21 @@ impl ModelFetcher {
             "deepseek" => &["deepseek"],
             "groq" => &["groq"],
             "mistral" => &["mistral"],
-            "together" => &["togetherai"],
-            "minimax" => &["minimax", "minimax-coding-plan", "minimax-cn"],
-            "z.ai" | "z_ai" | "zhipu" | "glm" | "bigmodel" => {
-                &["zai", "zai-coding-plan", "zhipuai", "zhipuai-coding-plan"]
-            }
+            "together" => &["togetherai", "together"],
+            "minimax" => &["minimax", "minimax-cn"],
+            "z.ai" | "z_ai" => &["zai", "zhipuai"],
+            "zhipu" | "glm" | "bigmodel" => &["zhipuai", "zai"],
             "huggingface" | "hf" => &["huggingface"],
             "nvidia" | "nim" | "nvidia-nim" => &["nvidia"],
-            "opencode" | "opencode-zen" | "zen" => &["opencode", "opencode-go"],
+            "opencode" | "opencode-zen" | "zen" => &["opencode"],
             "cerebras" => &["cerebras"],
             "agnes" | "agnes-ai" => &["agnes"],
             "ofox" | "ofoxai" => &["ofox"],
             "aihubmix" => &["aihubmix"],
-            "kimi" | "moonshot" | "moonshotai" => &[
-                "moonshotai",
-                "kimi-code-plan-global",
-                "moonshotai-cn",
-                "kimi-code-plan-cn",
-            ],
-            "nara" | "nararouter" | "bynara" => &["openrouter"],
+            "kimi" | "moonshot" | "moonshotai" => &["moonshotai", "moonshotai-cn"],
+            // NaraRouter exposes its own curated model list at router.bynara.id/v1/models;
+            // never pollute it with OpenRouter's catalog.
+            "nara" | "nararouter" | "bynara" => &[],
             _ => &[],
         }
     }
@@ -1110,10 +1146,10 @@ impl ModelFetcher {
         }
 
         let resp = self
-            .client
-            .get(crate::constants::MODELS_DEV_CATALOG_URL)
-            .header("User-Agent", "minicode/0.1")
-            .send()
+            .send_fetch_request(crate::constants::MODELS_DEV_CATALOG_URL, |c| {
+                c.get(crate::constants::MODELS_DEV_CATALOG_URL)
+                    .header("User-Agent", crate::constants::WEB_USER_AGENT)
+            })
             .await?;
 
         if !resp.status().is_success() {
@@ -1227,6 +1263,8 @@ impl ModelFetcher {
     }
 
     /// Extracts dynamic models and exact max context windows for a provider from `models.dev/api.json`.
+    /// Stops at the FIRST non-empty matching provider bucket so regional / coding-plan buckets
+    /// are never concatenated into one misleading list.
     pub async fn fetch_models_from_models_dev(&self, provider: &str) -> Result<Vec<ModelInfo>> {
         let norm = provider.to_lowercase();
         let keys = Self::models_dev_keys_for_provider(&norm);
@@ -1247,10 +1285,16 @@ impl ModelFetcher {
                     let Some(prov_models) = provider_map.get(prov_key) else {
                         continue;
                     };
+                    if prov_models.is_empty() {
+                        continue;
+                    }
                     for item in prov_models {
                         if seen.insert(item.id.to_lowercase()) {
                             models.push(item.clone());
                         }
+                    }
+                    if !models.is_empty() {
+                        break;
                     }
                 }
             }
@@ -1261,56 +1305,83 @@ impl ModelFetcher {
         Ok(models)
     }
 
-    /// Queries multiple OpenAI-compatible regional endpoints, deduplicating models case-insensitively.
-    async fn fetch_multi_endpoint_openai_models(
+    /// Queries regional OpenAI-compatible endpoints in priority order and returns the models from
+    /// the FIRST working endpoint, recording that working base URL so chat completions route to
+    /// the exact same region.
+    async fn fetch_first_working_openai_models(
         &self,
+        provider: &str,
         urls: &[&str],
         api_key: &str,
     ) -> Result<Vec<ModelInfo>> {
-        let mut combined = Vec::new();
         let mut last_err = None;
+        let ordered = if let Some(&primary) = urls.first() {
+            crate::agent::providers::candidate_base_urls_for_provider(provider, primary)
+        } else {
+            Vec::new()
+        };
 
-        for &url in urls {
+        for url in &ordered {
             match self.fetch_openai_compatible_models(url, api_key).await {
-                Ok(list) => {
-                    for m in list {
-                        if !combined
-                            .iter()
-                            .any(|existing: &ModelInfo| existing.id.eq_ignore_ascii_case(&m.id))
-                        {
-                            combined.push(m);
-                        }
-                    }
+                Ok(mut list) if !list.is_empty() => {
+                    crate::agent::providers::record_working_provider_base_url(provider, url);
+                    sort_models_free_first(&mut list);
+                    return Ok(list);
                 }
+                Ok(_) => {}
                 Err(e) => last_err = Some(e),
             }
         }
 
-        if !combined.is_empty() {
-            combined.sort_by(|a, b| a.id.cmp(&b.id));
-            Ok(combined)
-        } else if let Some(e) = last_err {
+        if let Some(e) = last_err {
             Err(e)
         } else {
             Ok(Vec::new())
         }
     }
 
-    /// Fetches live models for Z.ai / Zhipu GLM across international (`api.z.ai`) and CN (`open.bigmodel.cn`) endpoints.
-    async fn fetch_zai_models(&self, api_key: &str) -> Result<Vec<ModelInfo>> {
-        self.fetch_multi_endpoint_openai_models(
+    /// Fetches live models for MiniMax across global (`api.minimax.io`), CN (`api.minimaxi.com`),
+    /// and legacy (`api.minimaxi.chat`) endpoints, locking onto the first working region.
+    async fn fetch_minimax_models(&self, api_key: &str) -> Result<Vec<ModelInfo>> {
+        self.fetch_first_working_openai_models(
+            "minimax",
             &[
-                crate::constants::ZAI_GLOBAL_BASE_URL,
-                crate::constants::ZHIPU_BASE_URL,
+                crate::constants::MINIMAX_BASE_URL,
+                crate::constants::MINIMAX_CN_BASE_URL,
+                crate::constants::MINIMAX_LEGACY_BASE_URL,
             ],
             api_key,
         )
         .await
     }
 
-    /// Fetches live models for Kimi / Moonshot AI across global (`.ai`) and `.cn` endpoints.
+    /// Fetches live models for Z.ai / Zhipu GLM across international (`api.z.ai`) and CN
+    /// (`open.bigmodel.cn`) endpoints, locking onto the first working region.
+    async fn fetch_zai_models(&self, provider: &str, api_key: &str) -> Result<Vec<ModelInfo>> {
+        let urls: &[&str] = if provider.eq_ignore_ascii_case("zhipu") {
+            &[
+                crate::constants::ZHIPU_BASE_URL,
+                crate::constants::ZHIPU_CODING_BASE_URL,
+                crate::constants::ZAI_GLOBAL_BASE_URL,
+                crate::constants::ZAI_CODING_BASE_URL,
+            ]
+        } else {
+            &[
+                crate::constants::ZAI_GLOBAL_BASE_URL,
+                crate::constants::ZAI_CODING_BASE_URL,
+                crate::constants::ZHIPU_BASE_URL,
+                crate::constants::ZHIPU_CODING_BASE_URL,
+            ]
+        };
+        self.fetch_first_working_openai_models(provider, urls, api_key)
+            .await
+    }
+
+    /// Fetches live models for Kimi / Moonshot AI across global (`.ai`) and `.cn` endpoints,
+    /// locking onto the first working region.
     async fn fetch_kimi_models(&self, api_key: &str) -> Result<Vec<ModelInfo>> {
-        self.fetch_multi_endpoint_openai_models(
+        self.fetch_first_working_openai_models(
+            "kimi",
             &[
                 crate::constants::KIMI_BASE_URL,
                 crate::constants::KIMI_CN_BASE_URL,
@@ -1318,6 +1389,75 @@ impl ModelFetcher {
             api_key,
         )
         .await
+    }
+
+    /// Fetches live local models from Ollama via OpenAI-compatible `/v1/models`, falling back
+    /// to Ollama's native `/api/tags` endpoint for full version compatibility.
+    async fn fetch_ollama_models(&self, base_url: &str, api_key: &str) -> Result<Vec<ModelInfo>> {
+        let trimmed = base_url.trim().trim_end_matches('/');
+        let v1_url = if trimmed.to_ascii_lowercase().ends_with("/v1") {
+            trimmed.to_string()
+        } else {
+            format!("{}/v1", trimmed)
+        };
+
+        if let Ok(models) = self.fetch_openai_compatible_models(&v1_url, api_key).await {
+            if !models.is_empty() {
+                return Ok(models);
+            }
+        }
+
+        // Fallback to native Ollama `/api/tags`
+        let host = trimmed
+            .strip_suffix("/v1")
+            .or_else(|| trimmed.strip_suffix("/V1"))
+            .unwrap_or(trimmed);
+        let tags_url = format!("{}/api/tags", host);
+        let resp = self
+            .send_fetch_request(&tags_url, |c| {
+                let mut req = c.get(&tags_url);
+                if !api_key.is_empty() && api_key != "none" && api_key != "ollama" {
+                    req = req.header("Authorization", format!("Bearer {}", api_key));
+                }
+                req
+            })
+            .await?;
+
+        if !resp.status().is_success() {
+            let status = resp.status().as_u16();
+            let text = resp.text().await.unwrap_or_default();
+            return Err(ProviderError::Api {
+                status,
+                message: format!("Ollama /api/tags error ({}): {}", status, text),
+            }
+            .into());
+        }
+
+        let body: serde_json::Value = resp.json().await?;
+        let mut models = Vec::new();
+        if let Some(items) = body.get("models").and_then(|m| m.as_array()) {
+            for item in items {
+                if let Some(id) = item
+                    .get("name")
+                    .or_else(|| item.get("model"))
+                    .and_then(|v| v.as_str())
+                {
+                    let id = id.trim();
+                    if id.is_empty() || is_non_chat_utility_model(id) {
+                        continue;
+                    }
+                    models.push(ModelInfo {
+                        id: id.to_string(),
+                        name: id.to_string(),
+                        description: Some("Local Ollama model".to_string()),
+                        context_length: Some(get_model_context_limit(&format!("ollama/{}", id))),
+                        is_free: true,
+                    });
+                }
+            }
+        }
+        models.sort_by(|a, b| a.id.cmp(&b.id));
+        Ok(models)
     }
 
     /// Fetches live models from Cerebras (`/v1/models` + public `/public/v1/models` with `limits.max_context_length`).
@@ -1337,9 +1477,9 @@ impl ModelFetcher {
 
         // Also query Cerebras public models endpoint which includes `limits.max_context_length`
         if let Ok(resp) = self
-            .client
-            .get(crate::constants::CEREBRAS_PUBLIC_MODELS_URL)
-            .send()
+            .send_fetch_request(crate::constants::CEREBRAS_PUBLIC_MODELS_URL, |c| {
+                c.get(crate::constants::CEREBRAS_PUBLIC_MODELS_URL)
+            })
             .await
         {
             if resp.status().is_success() {
@@ -1347,6 +1487,9 @@ impl ModelFetcher {
                     if let Some(items) = body.get("data").and_then(|d| d.as_array()) {
                         for item in items {
                             if let Some(id) = item.get("id").and_then(|i| i.as_str()) {
+                                if is_non_chat_item(item, id) {
+                                    continue;
+                                }
                                 let ctx = extract_model_context_from_item(item, id);
                                 let name = item
                                     .get("name")
@@ -1359,7 +1502,8 @@ impl ModelFetcher {
                                     if existing.context_length.is_none() && ctx.is_some() {
                                         existing.context_length = ctx;
                                     }
-                                } else {
+                                } else if combined.is_empty() {
+                                    // Only seed from public endpoint when authenticated `/v1/models` did not return models
                                     combined.push(ModelInfo {
                                         id: id.to_string(),
                                         name,
@@ -1388,7 +1532,7 @@ impl ModelFetcher {
         Ok(combined)
     }
 
-    /// Fetches live models from AIHubMix (`/api/v1/models` with rich context/pricing + `/v1/models`).
+    /// Fetches live models from AIHubMix (`/v1/models` enriched with `/api/v1/models` metadata).
     async fn fetch_aihubmix_models(&self, api_key: &str) -> Result<Vec<ModelInfo>> {
         let mut combined = Vec::new();
         let mut auth_err = None;
@@ -1403,11 +1547,13 @@ impl ModelFetcher {
             }
         }
 
+        let had_auth_list = !combined.is_empty();
+
         // Fetch rich model catalog from https://aihubmix.com/api/v1/models (includes context_length and free pricing)
         if let Ok(resp) = self
-            .client
-            .get(crate::constants::AIHUBMIX_MODELS_API_URL)
-            .send()
+            .send_fetch_request(crate::constants::AIHUBMIX_MODELS_API_URL, |c| {
+                c.get(crate::constants::AIHUBMIX_MODELS_API_URL)
+            })
             .await
         {
             if resp.status().is_success() {
@@ -1422,7 +1568,7 @@ impl ModelFetcher {
                                 continue;
                             };
                             let id = id.trim();
-                            if id.is_empty() || is_non_chat_utility_model(id) {
+                            if id.is_empty() || is_non_chat_item(item, id) {
                                 continue;
                             }
                             let ctx = extract_model_context_from_item(item, id);
@@ -1442,7 +1588,7 @@ impl ModelFetcher {
                                 if is_free {
                                     existing.is_free = true;
                                 }
-                            } else {
+                            } else if !had_auth_list {
                                 combined.push(ModelInfo {
                                     id: id.to_string(),
                                     name: id.to_string(),
@@ -1467,50 +1613,95 @@ impl ModelFetcher {
         Ok(combined)
     }
 
-    /// Fetches live models from Anthropic API
-    async fn fetch_anthropic_models(&self, api_key: &str) -> Result<Vec<ModelInfo>> {
-        let mut req = self
-            .client
-            .get(crate::constants::ANTHROPIC_MODELS_URL)
-            .header(
-                "anthropic-version",
-                crate::constants::ANTHROPIC_VERSION_HEADER,
-            );
+    /// Fetches live models from Anthropic API (with pagination & optional custom base URL)
+    async fn fetch_anthropic_models(
+        &self,
+        api_key: &str,
+        custom_base_url: Option<&str>,
+    ) -> Result<Vec<ModelInfo>> {
+        let base_models_url = match custom_base_url {
+            Some(url) => format!("{}/models", url.trim_end_matches('/')),
+            None => crate::constants::ANTHROPIC_MODELS_URL.to_string(),
+        };
 
-        if !api_key.is_empty() {
-            req = req.header("x-api-key", api_key);
-        }
-
-        let resp = req.send().await?;
-        if !resp.status().is_success() {
-            let status = resp.status().as_u16();
-            let text = resp.text().await.unwrap_or_default();
-            return Err(ProviderError::Api {
-                status,
-                message: format!("Anthropic models error: {}", text),
-            }
-            .into());
-        }
-
-        let body: serde_json::Value = resp.json().await?;
         let mut models = Vec::new();
-        if let Some(data) = body.get("data").and_then(|d| d.as_array()) {
-            for item in data {
-                if let Some(id) = item.get("id").and_then(|i| i.as_str()) {
-                    let name = item
-                        .get("display_name")
-                        .and_then(|n| n.as_str())
-                        .unwrap_or(id)
-                        .to_string();
-                    let context_length = Some(get_model_context_limit(id));
-                    models.push(ModelInfo {
-                        id: id.to_string(),
-                        name,
-                        description: Some("Anthropic Claude model".to_string()),
-                        context_length,
-                        is_free: false,
-                    });
+        let mut after_id: Option<String> = None;
+
+        for _page in 0..5 {
+            let url = match &after_id {
+                Some(cursor) => format!("{}?limit=100&after_id={}", base_models_url, cursor),
+                None => format!("{}?limit=100", base_models_url),
+            };
+            let resp = self
+                .send_fetch_request(&url, |c| {
+                    let mut req = c.get(&url).header(
+                        "anthropic-version",
+                        crate::constants::ANTHROPIC_VERSION_HEADER,
+                    );
+                    if !api_key.is_empty() {
+                        req = req.header("x-api-key", api_key);
+                    }
+                    req
+                })
+                .await?;
+
+            if !resp.status().is_success() {
+                if !models.is_empty() {
+                    break;
                 }
+                let status = resp.status().as_u16();
+                let text = resp.text().await.unwrap_or_default();
+                return Err(ProviderError::Api {
+                    status,
+                    message: format!("Anthropic models error: {}", text),
+                }
+                .into());
+            }
+
+            let body: serde_json::Value = resp.json().await?;
+            if let Some(data) = body.get("data").and_then(|d| d.as_array()) {
+                for item in data {
+                    if let Some(id) = item.get("id").and_then(|i| i.as_str()) {
+                        if is_non_chat_item(item, id) {
+                            continue;
+                        }
+                        if models
+                            .iter()
+                            .any(|m: &ModelInfo| m.id.eq_ignore_ascii_case(id))
+                        {
+                            continue;
+                        }
+                        let name = item
+                            .get("display_name")
+                            .and_then(|n| n.as_str())
+                            .unwrap_or(id)
+                            .to_string();
+                        let context_length = extract_model_context_from_item(item, id)
+                            .or_else(|| Some(get_model_context_limit(id)));
+                        models.push(ModelInfo {
+                            id: id.to_string(),
+                            name,
+                            description: Some("Anthropic Claude model".to_string()),
+                            context_length,
+                            is_free: false,
+                        });
+                    }
+                }
+            }
+
+            let has_more = body
+                .get("has_more")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false);
+            let next_cursor = body
+                .get("last_id")
+                .and_then(|v| v.as_str())
+                .filter(|s| !s.is_empty())
+                .map(|s| s.to_string());
+            if has_more && next_cursor.is_some() {
+                after_id = next_cursor;
+            } else {
+                break;
             }
         }
 
@@ -1524,18 +1715,16 @@ impl ModelFetcher {
     fn default_anthropic_models() -> Vec<ModelInfo> {
         vec![
             ModelInfo {
-                id: "claude-3-7-sonnet-20250219".to_string(),
-                name: "Claude 3.7 Sonnet (Hybrid Reasoning)".to_string(),
-                description: Some("Anthropic flagship hybrid reasoning & coding model".to_string()),
+                id: "claude-sonnet-4-20250514".to_string(),
+                name: "Claude Sonnet 4".to_string(),
+                description: Some("Anthropic flagship coding & reasoning model".to_string()),
                 context_length: Some(200_000),
                 is_free: false,
             },
             ModelInfo {
-                id: "claude-3-5-sonnet-20241022".to_string(),
-                name: "Claude 3.5 Sonnet v2".to_string(),
-                description: Some(
-                    "High-speed intelligence and coding benchmark leader".to_string(),
-                ),
+                id: "claude-3-7-sonnet-20250219".to_string(),
+                name: "Claude 3.7 Sonnet (Hybrid Reasoning)".to_string(),
+                description: Some("Anthropic hybrid reasoning & coding model".to_string()),
                 context_length: Some(200_000),
                 is_free: false,
             },
@@ -1549,19 +1738,30 @@ impl ModelFetcher {
         ]
     }
 
-    /// Fetches live models from OpenRouter API
-    async fn fetch_openrouter_models(&self, api_key: &str) -> Result<Vec<ModelInfo>> {
-        let mut req = self
-            .client
-            .get(crate::constants::OPENROUTER_MODELS_URL)
-            .header("HTTP-Referer", crate::constants::PROJECT_REPO_URL)
-            .header("X-Title", crate::constants::APP_NAME);
+    /// Fetches live models from OpenRouter API (filtering out image/audio-only non-chat models)
+    async fn fetch_openrouter_models(
+        &self,
+        api_key: &str,
+        custom_base_url: Option<&str>,
+    ) -> Result<Vec<ModelInfo>> {
+        let url = match custom_base_url {
+            Some(u) => format!("{}/models", u.trim_end_matches('/')),
+            None => crate::constants::OPENROUTER_MODELS_URL.to_string(),
+        };
 
-        if !api_key.is_empty() {
-            req = req.header("Authorization", format!("Bearer {}", api_key));
-        }
+        let resp = self
+            .send_fetch_request(&url, |c| {
+                let mut req = c
+                    .get(&url)
+                    .header("HTTP-Referer", crate::constants::PROJECT_REPO_URL)
+                    .header("X-Title", crate::constants::APP_NAME);
+                if !api_key.is_empty() {
+                    req = req.header("Authorization", format!("Bearer {}", api_key));
+                }
+                req
+            })
+            .await?;
 
-        let resp = req.send().await?;
         if !resp.status().is_success() {
             let status = resp.status().as_u16();
             let text = resp.text().await.unwrap_or_default();
@@ -1578,6 +1778,9 @@ impl ModelFetcher {
         if let Some(data) = body.get("data").and_then(|d| d.as_array()) {
             for item in data {
                 if let Some(id) = item.get("id").and_then(|i| i.as_str()) {
+                    if is_non_chat_item(item, id) {
+                        continue;
+                    }
                     let name = item
                         .get("name")
                         .and_then(|n| n.as_str())
@@ -1618,68 +1821,103 @@ impl ModelFetcher {
         Ok(models)
     }
 
-    /// Fetches live models from Google Gemini API
-    async fn fetch_gemini_models(&self, api_key: &str) -> Result<Vec<ModelInfo>> {
-        let url = crate::constants::GEMINI_MODELS_URL;
+    /// Fetches live models from Google Gemini API with full pagination (`pageSize=1000` + `nextPageToken`)
+    async fn fetch_gemini_models(
+        &self,
+        api_key: &str,
+        custom_base_url: Option<&str>,
+    ) -> Result<Vec<ModelInfo>> {
+        let base_models_url = match custom_base_url {
+            Some(u) => format!("{}/models", u.trim_end_matches('/')),
+            None => crate::constants::GEMINI_MODELS_URL.to_string(),
+        };
 
-        let resp = self
-            .client
-            .get(url)
-            .header("x-goog-api-key", api_key)
-            .send()
-            .await?;
-        if !resp.status().is_success() {
-            let status = resp.status().as_u16();
-            let text = resp.text().await.unwrap_or_default();
-            return Err(ProviderError::Api {
-                status,
-                message: format!("Gemini models error: {}", text),
-            }
-            .into());
-        }
-
-        let body: serde_json::Value = resp.json().await?;
         let mut models = Vec::new();
+        let mut page_token: Option<String> = None;
 
-        if let Some(data) = body.get("models").and_then(|m| m.as_array()) {
-            for item in data {
-                if let Some(full_name) = item.get("name").and_then(|n| n.as_str()) {
-                    let id = full_name.trim_start_matches("models/").to_string();
-                    // Filter models that support content generation
-                    if let Some(methods) = item
-                        .get("supportedGenerationMethods")
-                        .and_then(|m| m.as_array())
-                    {
-                        let can_generate = methods
-                            .iter()
-                            .any(|m| m.as_str() == Some("generateContent"));
-                        if !can_generate {
+        for _page in 0..5 {
+            let url = match &page_token {
+                Some(tok) => format!("{}?pageSize=1000&pageToken={}", base_models_url, tok),
+                None => format!("{}?pageSize=1000", base_models_url),
+            };
+            let resp = self
+                .send_fetch_request(&url, |c| c.get(&url).header("x-goog-api-key", api_key))
+                .await?;
+            if !resp.status().is_success() {
+                if !models.is_empty() {
+                    break;
+                }
+                let status = resp.status().as_u16();
+                let text = resp.text().await.unwrap_or_default();
+                return Err(ProviderError::Api {
+                    status,
+                    message: format!("Gemini models error: {}", text),
+                }
+                .into());
+            }
+
+            let body: serde_json::Value = resp.json().await?;
+
+            if let Some(data) = body.get("models").and_then(|m| m.as_array()) {
+                for item in data {
+                    if let Some(full_name) = item.get("name").and_then(|n| n.as_str()) {
+                        let id = full_name.trim_start_matches("models/").to_string();
+                        if is_non_chat_utility_model(&id) {
                             continue;
                         }
+                        // Filter models that support content generation
+                        if let Some(methods) = item
+                            .get("supportedGenerationMethods")
+                            .and_then(|m| m.as_array())
+                        {
+                            let can_generate = methods
+                                .iter()
+                                .any(|m| m.as_str() == Some("generateContent"));
+                            if !can_generate {
+                                continue;
+                            }
+                        }
+                        if models
+                            .iter()
+                            .any(|m: &ModelInfo| m.id.eq_ignore_ascii_case(&id))
+                        {
+                            continue;
+                        }
+
+                        let name = item
+                            .get("displayName")
+                            .and_then(|d| d.as_str())
+                            .unwrap_or(&id)
+                            .to_string();
+                        let description = item
+                            .get("description")
+                            .and_then(|d| d.as_str())
+                            .map(|s| s.to_string());
+                        let context_length = item
+                            .get("inputTokenLimit")
+                            .and_then(|c| c.as_u64())
+                            .map(|c| c as usize);
+
+                        models.push(ModelInfo {
+                            id,
+                            name,
+                            description,
+                            context_length,
+                            is_free: false,
+                        });
                     }
-
-                    let name = item
-                        .get("displayName")
-                        .and_then(|d| d.as_str())
-                        .unwrap_or(&id)
-                        .to_string();
-                    let description = item
-                        .get("description")
-                        .and_then(|d| d.as_str())
-                        .map(|s| s.to_string());
-                    let context_length = item
-                        .get("inputTokenLimit")
-                        .and_then(|c| c.as_u64())
-                        .map(|c| c as usize);
-
-                    models.push(ModelInfo {
-                        id,
-                        name,
-                        description,
-                        context_length,
-                        is_free: false,
-                    });
                 }
+            }
+
+            let next_tok = body
+                .get("nextPageToken")
+                .and_then(|t| t.as_str())
+                .filter(|s| !s.is_empty())
+                .map(|s| s.to_string());
+            if next_tok.is_some() {
+                page_token = next_tok;
+            } else {
+                break;
             }
         }
 
@@ -1694,13 +1932,16 @@ impl ModelFetcher {
         api_key: &str,
     ) -> Result<Vec<ModelInfo>> {
         let url = format!("{}/models", base_url.trim_end_matches('/'));
-        let mut req = self.client.get(&url);
+        let resp = self
+            .send_fetch_request(&url, |c| {
+                let mut req = c.get(&url);
+                if !api_key.is_empty() && api_key != "none" {
+                    req = req.header("Authorization", format!("Bearer {}", api_key));
+                }
+                req
+            })
+            .await?;
 
-        if !api_key.is_empty() {
-            req = req.header("Authorization", format!("Bearer {}", api_key));
-        }
-
-        let resp = req.send().await?;
         if !resp.status().is_success() {
             let status = resp.status().as_u16();
             let text = resp.text().await.unwrap_or_default();
@@ -1713,6 +1954,7 @@ impl ModelFetcher {
 
         let body: serde_json::Value = resp.json().await?;
         let mut models = Vec::new();
+        let mut seen = std::collections::HashSet::new();
 
         // Support {"data": [...]}, {"models": [...]}, or top-level [...] array
         let list = body
@@ -1730,7 +1972,10 @@ impl ModelFetcher {
                     .or_else(|| item.get("name").and_then(|n| n.as_str()))
                 {
                     let id = id.trim();
-                    if id.is_empty() || is_non_chat_utility_model(id) {
+                    if id.is_empty() || is_non_chat_item(item, id) {
+                        continue;
+                    }
+                    if !seen.insert(id.to_ascii_lowercase()) {
                         continue;
                     }
                     let name = item
@@ -1774,18 +2019,103 @@ fn sort_models_free_first(models: &mut [ModelInfo]) {
     });
 }
 
+/// Checks both schema metadata (`type`, `capabilities.completion_chat`, `architecture.output_modalities`,
+/// HuggingFace empty `providers`) and ID patterns to exclude non-chat utility models.
+fn is_non_chat_item(item: &serde_json::Value, id: &str) -> bool {
+    if is_non_chat_utility_model(id) {
+        return true;
+    }
+
+    // Together AI & similar catalogs tag non-chat models via `"type": "image" | "embedding" | "rerank" | "audio" | "moderation" | "video"`
+    if let Some(kind) = item.get("type").and_then(|t| t.as_str()) {
+        if matches!(
+            kind.to_ascii_lowercase().as_str(),
+            "image"
+                | "embedding"
+                | "embeddings"
+                | "rerank"
+                | "audio"
+                | "moderation"
+                | "video"
+                | "tts"
+                | "stt"
+        ) {
+            return true;
+        }
+    }
+
+    // Mistral API exposes `capabilities.completion_chat: bool`
+    if item
+        .get("capabilities")
+        .and_then(|c| c.get("completion_chat"))
+        .and_then(|b| b.as_bool())
+        == Some(false)
+    {
+        return true;
+    }
+
+    // OpenRouter / OpenAI-compat gateways expose `architecture.output_modalities` or `modalities.output`
+    let out_mods = item
+        .get("architecture")
+        .and_then(|a| a.get("output_modalities"))
+        .or_else(|| item.get("modalities").and_then(|m| m.get("output")))
+        .and_then(|o| o.as_array());
+    if let Some(mods) = out_mods {
+        if !mods.is_empty() && !mods.iter().any(|v| v.as_str() == Some("text")) {
+            return true;
+        }
+    }
+
+    // Hugging Face Router lists `providers: [...]`; an explicitly empty array means no live inference route
+    if let Some(providers) = item.get("providers").and_then(|p| p.as_array()) {
+        if providers.is_empty() {
+            return true;
+        }
+    }
+
+    false
+}
+
 fn is_non_chat_utility_model(id: &str) -> bool {
     let lower = id.to_lowercase();
     lower.contains("embedding")
+        || lower.contains("embed-")
+        || lower.ends_with("-embed")
         || lower.contains("whisper")
         || lower.contains("tts")
+        || lower.contains("transcribe")
+        || lower.contains("realtime")
+        || lower.contains("-audio")
+        || lower.contains("audio-preview")
         || lower.contains("moderation")
         || lower.contains("dall-e")
+        || lower.contains("gpt-image")
+        || lower.contains("image-generation")
+        || lower.contains("imagen")
+        || lower.contains("sora")
         || lower.contains("veo-")
         || lower.contains("lyria-")
         || lower.contains("babbage")
         || lower.contains("davinci")
+        || lower.contains("curie-")
+        || lower.contains("text-ada")
         || lower.contains("rerank")
+        || lower.contains("prompt-guard")
+        || lower.contains("llama-guard")
+        || lower.contains("mistral-ocr")
+        || lower.contains("voxtral")
+        || lower.contains("nvclip")
+        || lower.contains("riva-")
+        || lower.contains("corrdiff")
+        || lower.contains("bionemo")
+        || lower.contains("stable-diffusion")
+        || lower.contains("sdxl")
+        || lower.contains("flux-")
+        || lower.contains("flux.")
+        || lower.contains("robotics")
+        || lower.contains("computer-use")
+        || lower.contains("gpt-3.5-turbo-instruct")
+        || lower == "aqa"
 }
 
 /// Dynamically extracts max context window length from any provider `/models` JSON schema field:
@@ -2076,5 +2406,63 @@ mod tests {
         assert!(!DynamicModelResolver::resolve_model_sync("gemini", Some(":auto")).is_empty());
         assert!(!DynamicModelResolver::resolve_model_sync("anthropic", Some(":fast")).is_empty());
         assert!(!DynamicModelResolver::resolve_model_sync("openai", Some(":reasoning")).is_empty());
+    }
+
+    #[test]
+    fn test_models_dev_keys_no_cross_provider_pollution_and_non_chat_filtering() {
+        // NaraRouter must NOT map to OpenRouter's catalog
+        assert!(ModelFetcher::models_dev_keys_for_provider("nara").is_empty());
+        assert!(ModelFetcher::models_dev_keys_for_provider("nararouter").is_empty());
+
+        // Z.ai / Kimi / MiniMax / OpenCode must not mix coding-plan or go buckets
+        assert_eq!(
+            ModelFetcher::models_dev_keys_for_provider("z.ai"),
+            &["zai", "zhipuai"]
+        );
+        assert_eq!(
+            ModelFetcher::models_dev_keys_for_provider("opencode"),
+            &["opencode"]
+        );
+
+        // Non-chat metadata & ID filtering across providers
+        let together_img =
+            serde_json::json!({ "id": "black-forest-labs/FLUX.1-dev", "type": "image" });
+        assert!(is_non_chat_item(
+            &together_img,
+            "black-forest-labs/FLUX.1-dev"
+        ));
+
+        let mistral_ocr = serde_json::json!({
+            "id": "mistral-ocr-latest",
+            "capabilities": { "completion_chat": false }
+        });
+        assert!(is_non_chat_item(&mistral_ocr, "mistral-ocr-latest"));
+
+        let hf_unroutable = serde_json::json!({ "id": "some/model", "providers": [] });
+        assert!(is_non_chat_item(&hf_unroutable, "some/model"));
+
+        let or_img = serde_json::json!({
+            "id": "vendor/gen-model",
+            "architecture": { "output_modalities": ["image"] }
+        });
+        assert!(is_non_chat_item(&or_img, "vendor/gen-model"));
+
+        assert!(is_non_chat_utility_model("gemini-2.5-flash-preview-tts"));
+        assert!(is_non_chat_utility_model("gpt-4o-realtime-preview"));
+        assert!(is_non_chat_utility_model(
+            "meta-llama/llama-prompt-guard-2-86m"
+        ));
+        assert!(is_non_chat_utility_model("nvidia/nvclip"));
+
+        // Valid chat models pass cleanly
+        let valid_chat = serde_json::json!({
+            "id": "claude-sonnet-4-20250514",
+            "capabilities": { "completion_chat": true }
+        });
+        assert!(!is_non_chat_item(&valid_chat, "claude-sonnet-4-20250514"));
+        assert!(!is_non_chat_utility_model("MiniMax-M2.7"));
+        assert!(!is_non_chat_utility_model("glm-4.5"));
+        assert!(!is_non_chat_utility_model("kimi-k2.5"));
+        assert!(!is_non_chat_utility_model("gemini-2.5-pro"));
     }
 }

@@ -279,6 +279,10 @@ fn test_local_providers_key_optional() {
 
     // Base URL resolution
     assert_eq!(
+        config.get_provider_base_url("ollama").unwrap(),
+        "http://localhost:11434/v1"
+    );
+    assert_eq!(
         config.get_provider_base_url("lmstudio").unwrap(),
         "http://localhost:1234/v1"
     );
@@ -578,4 +582,70 @@ fn test_ui_theme_toast_symbols_and_non_destructive_map_preservation() {
             .map(String::as_str),
         Some("sk-preserve-me")
     );
+}
+
+#[test]
+fn test_workspace_config_strips_and_scrubs_plaintext_api_keys() {
+    let dir = tempfile::tempdir().unwrap();
+    let ws_cfg_path = dir.path().join(".minicode").join("config.toml");
+
+    // Pre-seed a previously leaked workspace config containing plaintext API keys
+    std::fs::create_dir_all(ws_cfg_path.parent().unwrap()).unwrap();
+    std::fs::write(
+        &ws_cfg_path,
+        "[provider]\ndefault = \"minimax\"\nmodel = \"MiniMax-M3.1-Flash\"\n\n[provider.api_keys]\ngemini = \"AIza-leaked-secret\"\ngroq = \"gsk_leaked_secret\"\n",
+    )
+    .unwrap();
+
+    let mut cfg = Config::default();
+    cfg.ui.theme = "aura-dark-plus".to_string();
+    cfg.provider.default = "openrouter".to_string();
+    cfg.provider.model = "deepseek/deepseek-chat".to_string();
+    cfg.provider.api_keys.insert(
+        "openrouter".to_string(),
+        "sk-or-secret-never-write".to_string(),
+    );
+    cfg.provider
+        .api_keys
+        .insert("gemini".to_string(), "AIza-secret-never-write".to_string());
+
+    cfg.write_config_to_path_with_options(&ws_cfg_path, true)
+        .unwrap();
+
+    let saved_raw = std::fs::read_to_string(&ws_cfg_path).unwrap();
+    assert!(
+        !saved_raw.contains("api_keys"),
+        "Workspace config must not contain [provider.api_keys]:\n{saved_raw}"
+    );
+    assert!(!saved_raw.contains("AIza-leaked-secret"));
+    assert!(!saved_raw.contains("gsk_leaked_secret"));
+    assert!(!saved_raw.contains("sk-or-secret-never-write"));
+    assert!(saved_raw.contains("aura-dark-plus"));
+    assert!(saved_raw.contains("openrouter"));
+}
+
+#[test]
+fn test_temp_dir_workspace_only_isolated_in_test_harness() {
+    let tmp_ws = std::env::temp_dir().join("minicode_real_user_scratch");
+    // Real CLI binary (is_test_env = false) targeting /tmp/... must NOT skip global config
+    assert!(!Config::is_isolated_temp_workspace_with_env(&tmp_ws, false));
+    // Test harness (is_test_env = true) targeting /tmp/... stays isolated
+    assert!(Config::is_isolated_temp_workspace_with_env(&tmp_ws, true));
+
+    // Real binaries vs Cargo test binaries under target/.../deps/<name>-<hex>
+    assert!(!Config::exe_looks_like_cargo_test_binary(
+        std::path::Path::new("/home/user/.local/bin/minicode")
+    ));
+    assert!(!Config::exe_looks_like_cargo_test_binary(
+        std::path::Path::new("/repo/target/release/minicode")
+    ));
+    assert!(!Config::exe_looks_like_cargo_test_binary(
+        std::path::Path::new("/repo/target/debug/minicode")
+    ));
+    assert!(Config::exe_looks_like_cargo_test_binary(
+        std::path::Path::new("/repo/target/debug/deps/integration_agent_config-a1b2c3d4e5f67890")
+    ));
+    assert!(Config::exe_looks_like_cargo_test_binary(
+        std::path::Path::new("/repo/target/debug/deps/minicode-deadbeef0123.exe")
+    ));
 }

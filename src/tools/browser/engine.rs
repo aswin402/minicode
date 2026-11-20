@@ -90,7 +90,7 @@ pub enum BrowserPurpose {
 }
 
 /// Execution mode for the browser instance
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
 pub enum BrowserMode {
     /// Headless: Background execution, zero screen clutter, fast and token-efficient
     #[default]

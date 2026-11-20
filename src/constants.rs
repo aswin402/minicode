@@ -695,8 +695,10 @@ pub const BRAVE_SEARCH_URL: &str = "https://api.search.brave.com/res/v1/web/sear
 pub const GITHUB_API_BASE_URL: &str = "https://api.github.com";
 
 // === Model Provider Endpoints & Timeouts ===
-/// Default timeout in seconds for fetching live models
-pub const MODEL_FETCH_TIMEOUT_SECS: u64 = 8;
+/// Default timeout in seconds for fetching live models (allows slower mobile/VPN networks & models.dev catalog)
+pub const MODEL_FETCH_TIMEOUT_SECS: u64 = 15;
+/// Connect timeout in seconds for model discovery HTTP probes
+pub const MODEL_FETCH_CONNECT_TIMEOUT_SECS: u64 = 8;
 /// Default provider connect timeout for establishing TCP/TLS connection (seconds)
 pub const PROVIDER_CONNECT_TIMEOUT_SECS: u64 = 30;
 /// Default provider idle read timeout between received chunks/tokens (120s = 2 mins).
@@ -725,12 +727,20 @@ pub const DEEPSEEK_BASE_URL: &str = "https://api.deepseek.com/v1";
 pub const GROQ_BASE_URL: &str = "https://api.groq.com/openai/v1";
 /// Together AI API base URL
 pub const TOGETHER_BASE_URL: &str = "https://api.together.xyz/v1";
-/// MiniMax API base URL
-pub const MINIMAX_BASE_URL: &str = "https://api.minimaxi.chat/v1";
-/// Zhipu / BigModel / Z.ai API base URL (China & legacy compatibility)
+/// MiniMax Global OpenAI-compatible API base URL
+pub const MINIMAX_BASE_URL: &str = "https://api.minimax.io/v1";
+/// MiniMax China OpenAI-compatible API base URL
+pub const MINIMAX_CN_BASE_URL: &str = "https://api.minimaxi.com/v1";
+/// MiniMax legacy API base URL (for older accounts/regions)
+pub const MINIMAX_LEGACY_BASE_URL: &str = "https://api.minimaxi.chat/v1";
+/// Zhipu / BigModel China API base URL
 pub const ZHIPU_BASE_URL: &str = "https://open.bigmodel.cn/api/paas/v4";
+/// Zhipu / BigModel China Coding Plan API base URL
+pub const ZHIPU_CODING_BASE_URL: &str = "https://open.bigmodel.cn/api/coding/paas/v4";
 /// Z.ai International API base URL
 pub const ZAI_GLOBAL_BASE_URL: &str = "https://api.z.ai/api/paas/v4";
+/// Z.ai International Coding Plan API base URL
+pub const ZAI_CODING_BASE_URL: &str = "https://api.z.ai/api/coding/paas/v4";
 /// Mistral AI API base URL
 pub const MISTRAL_BASE_URL: &str = "https://api.mistral.ai/v1";
 /// Hugging Face Inference Router OpenAI-compatible base URL
@@ -818,13 +828,13 @@ pub const OPENAI_DEFAULT_MODEL: &str = "gpt-4o";
 /// DeepSeek default model used when config omits one
 pub const DEEPSEEK_DEFAULT_MODEL: &str = "deepseek-chat";
 /// MiniMax default model used when config omits one
-pub const MINIMAX_DEFAULT_MODEL: &str = "MiniMax-Text-01";
+pub const MINIMAX_DEFAULT_MODEL: &str = "MiniMax-M2.7";
 /// Anthropic API base URL
 pub const ANTHROPIC_BASE_URL: &str = "https://api.anthropic.com/v1";
 /// Anthropic API version header value
 pub const ANTHROPIC_VERSION_HEADER: &str = "2023-06-01";
-/// Anthropic default model (Claude 3.7 Sonnet hybrid reasoning)
-pub const ANTHROPIC_DEFAULT_MODEL: &str = "claude-3-7-sonnet-20250219";
+/// Anthropic default model (Claude Sonnet 4)
+pub const ANTHROPIC_DEFAULT_MODEL: &str = "claude-sonnet-4-20250514";
 /// Anthropic live models API endpoint
 pub const ANTHROPIC_MODELS_URL: &str = "https://api.anthropic.com/v1/models";
 /// Default thinking token budget when reasoning is enabled
@@ -835,7 +845,7 @@ pub const MIN_THINKING_BUDGET_TOKENS: usize = 1024;
 /// Maximum thinking token budget allowed
 pub const MAX_THINKING_BUDGET_TOKENS: usize = 64_000;
 /// Z.ai / Zhipu GLM default model
-pub const ZHIPU_DEFAULT_MODEL: &str = "glm-4-flash";
+pub const ZHIPU_DEFAULT_MODEL: &str = "glm-4.5";
 /// Mistral default model used when config omits one
 pub const MISTRAL_DEFAULT_MODEL: &str = "codestral-latest";
 /// Groq default model used when config omits one
@@ -1787,6 +1797,12 @@ pub const META_STATE_PREDICATE_TOKENS: &[&str] = &[
 /// Interrogative WH-pronouns and adverbs used in set-algebraic epistemic and retrospective query detection.
 pub const INTERROGATIVE_WH_TOKENS: &[&str] =
     &["what", "which", "who", "where", "when", "why", "how"];
+/// Auxiliary interrogative openers (e.g. "is we completed all todos", "did we finish", "have all tests passed")
+/// that signal a read-only status/epistemic question when no mutating engineering verb is present.
+pub const INTERROGATIVE_AUXILIARY_TOKENS: &[&str] = &[
+    "is", "are", "was", "were", "did", "do", "does", "have", "has", "can", "could", "should",
+    "would",
+];
 /// Imperative workspace-mutating engineering verbs that distinguish code/artifact changes from read-only epistemic questions.
 pub const MUTATING_TASK_VERBS: &[&str] = &[
     "build",

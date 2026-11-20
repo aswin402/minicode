@@ -147,10 +147,48 @@ impl Config {
         Self::load(Some(workspace_dir), None).unwrap_or_default()
     }
 
+    /// Returns `true` if `exe_path` looks like a Cargo unit/integration test binary
+    /// (`.../deps/<crate_or_test>-<hex_hash>[.exe]`), preventing integration tests compiled without
+    /// `cfg(test)` inside `libminicode` from touching the developer's `~/.config/minicode`.
+    pub(crate) fn exe_looks_like_cargo_test_binary(exe_path: &Path) -> bool {
+        let in_deps = exe_path
+            .parent()
+            .and_then(|d| d.file_name())
+            .is_some_and(|name| name == "deps");
+        if !in_deps {
+            return false;
+        }
+        exe_path
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .and_then(|stem| stem.rsplit_once('-'))
+            .is_some_and(|(_, hash)| hash.len() >= 8 && hash.chars().all(|c| c.is_ascii_hexdigit()))
+    }
+
+    /// Returns `true` when running inside a Rust unit/integration test harness or when
+    /// `MINICODE_ISOLATED_TEST` is explicitly set.
+    pub(crate) fn is_isolated_test_env() -> bool {
+        cfg!(test)
+            || std::env::var_os("MINICODE_ISOLATED_TEST").is_some()
+            || std::env::current_exe()
+                .ok()
+                .is_some_and(|p| Self::exe_looks_like_cargo_test_binary(&p))
+    }
+
+    /// Evaluates whether `workspace_root` should be treated as an isolated temporary test workspace.
+    pub(crate) fn is_isolated_temp_workspace_with_env(
+        workspace_root: &Path,
+        is_test_env: bool,
+    ) -> bool {
+        is_test_env && workspace_root.starts_with(std::env::temp_dir())
+    }
+
     /// Resolves the global configuration directory (`~/.config/minicode`), honoring `MINICODE_CONFIG_DIR`.
     ///
-    /// In unit-test builds (`#[cfg(test)]`), returns `None` unless `MINICODE_CONFIG_DIR` is explicitly set
-    /// so test runs can NEVER clobber or read the developer's live `~/.config/minicode/config.toml`.
+    /// In unit/integration test harnesses (`is_isolated_test_env()`), returns `None` unless
+    /// `MINICODE_CONFIG_DIR` is explicitly set so tests never clobber or read the developer's
+    /// live `~/.config/minicode/config.toml`. Real CLI binaries (including `--dir /tmp/...`)
+    /// always resolve `~/.config/minicode` normally.
     #[must_use]
     pub fn resolve_global_config_dir() -> Option<std::path::PathBuf> {
         if let Ok(custom) = std::env::var("MINICODE_CONFIG_DIR") {
@@ -159,12 +197,9 @@ impl Config {
                 return Some(std::path::PathBuf::from(trimmed));
             }
         }
-        #[cfg(test)]
-        {
+        if Self::is_isolated_test_env() {
             None
-        }
-        #[cfg(not(test))]
-        {
+        } else {
             dirs::config_dir().map(|d| d.join(crate::constants::CONFIG_DIR_NAME))
         }
     }
@@ -176,12 +211,7 @@ impl Config {
     /// 4. Built-in defaults
     /// 5. Environment variable overrides (MINICODE_*)
     pub fn load(workspace_dir: Option<&Path>, custom_config_path: Option<&Path>) -> Result<Self> {
-        let is_ephemeral_ws = workspace_dir.is_some_and(|ws| ws.starts_with(std::env::temp_dir()));
-        let global_cfg_dir = if is_ephemeral_ws {
-            None
-        } else {
-            Self::resolve_global_config_dir()
-        };
+        let global_cfg_dir = Self::resolve_global_config_dir();
 
         // 0. Load global ~/.config/minicode/.env if present
         if let Some(ref global_dir) = global_cfg_dir {
@@ -287,48 +317,76 @@ impl Config {
         Ok(config)
     }
 
+    /// Returns `true` when `workspace_root` lives inside `std::env::temp_dir()` inside a test
+    /// environment (or with `MINICODE_ISOLATED_TEST` set).
+    fn is_isolated_temp_workspace(workspace_root: &Path) -> bool {
+        Self::is_isolated_temp_workspace_with_env(workspace_root, Self::is_isolated_test_env())
+    }
+
     /// Explicitly writes configuration to `<workspace>/.minicode/config.toml`.
+    /// For real (non-tempdir) workspaces, strips plaintext `[provider.api_keys]` so global
+    /// credentials are never leaked into a project workspace directory.
     pub fn save_workspace(&self, workspace_root: &Path) -> Result<()> {
         let local_path = workspace_root
             .join(crate::constants::WORKSPACE_DIR_NAME)
             .join(crate::constants::CONFIG_FILE_NAME);
-        self.write_config_to_path(&local_path)
+        let strip_secrets = !Self::is_isolated_temp_workspace(workspace_root);
+        self.write_config_to_path_with_options(&local_path, strip_secrets)
     }
 
     /// Saves the current configuration to disk:
-    /// - If project-local `.minicode/config.toml` already exists (or `workspace_root` is an isolated tempdir / test workspace),
-    ///   updates `<workspace>/.minicode/config.toml`.
-    /// - Otherwise writes non-destructively to global `~/.config/minicode/config.toml` without creating accidental
-    ///   per-project `.minicode/config.toml` snapshots just because `.minicode/sessions/` exists.
+    /// - For isolated tempdir/test workspaces (`std::env::temp_dir()`), writes only to
+    ///   `<workspace>/.minicode/config.toml` so tests never mutate the user's real global config.
+    /// - For real workspaces: ALWAYS persists full configuration (including `[provider.api_keys]`)
+    ///   to global `~/.config/minicode/config.toml`, and if a project-local `.minicode/config.toml`
+    ///   already exists, also updates it with plaintext `[provider.api_keys]` stripped so secrets
+    ///   never leak into project directories.
     pub fn save(&self, workspace_root: Option<&Path>) -> Result<()> {
         let global_cfg_dir = Self::resolve_global_config_dir();
-        let path = if let Some(ws) = workspace_root {
+
+        if let Some(ws) = workspace_root {
             let local_path = ws
                 .join(crate::constants::WORKSPACE_DIR_NAME)
                 .join(crate::constants::CONFIG_FILE_NAME);
-            if local_path.exists() || ws.starts_with(std::env::temp_dir()) {
-                local_path
-            } else if let Some(global_dir) = global_cfg_dir {
-                global_dir.join(crate::constants::CONFIG_FILE_NAME)
-            } else {
-                local_path
+            if Self::is_isolated_temp_workspace(ws) {
+                return self.write_config_to_path_with_options(&local_path, false);
             }
-        } else if let Some(global_dir) = global_cfg_dir {
-            global_dir.join(crate::constants::CONFIG_FILE_NAME)
-        } else {
-            return Ok(());
-        };
 
-        self.write_config_to_path(&path)
+            if let Some(ref global_dir) = global_cfg_dir {
+                let global_path = global_dir.join(crate::constants::CONFIG_FILE_NAME);
+                self.write_config_to_path_with_options(&global_path, false)?;
+                if local_path.exists() {
+                    self.write_config_to_path_with_options(&local_path, true)?;
+                }
+                return Ok(());
+            }
+
+            return self.write_config_to_path_with_options(&local_path, true);
+        }
+
+        if let Some(global_dir) = global_cfg_dir {
+            let global_path = global_dir.join(crate::constants::CONFIG_FILE_NAME);
+            self.write_config_to_path_with_options(&global_path, false)?;
+        }
+        Ok(())
     }
 
-    fn write_config_to_path(&self, path: &Path) -> Result<()> {
+    pub(crate) fn write_config_to_path_with_options(
+        &self,
+        path: &Path,
+        strip_secrets: bool,
+    ) -> Result<()> {
         if let Some(parent) = path.parent() {
             let _ = std::fs::create_dir_all(parent);
         }
 
-        let new_val = toml::Value::try_from(self.clone()).map_err(ConfigError::TomlSerialize)?;
-        let final_val = if let Ok(existing_str) = std::fs::read_to_string(path) {
+        let mut new_val =
+            toml::Value::try_from(self.clone()).map_err(ConfigError::TomlSerialize)?;
+        if strip_secrets {
+            strip_secrets_from_toml_value(&mut new_val);
+        }
+
+        let mut final_val = if let Ok(existing_str) = std::fs::read_to_string(path) {
             if let Ok(mut existing_val) = toml::from_str::<toml::Value>(&existing_str) {
                 merge_config_preserving_existing_maps(&mut existing_val, &new_val);
                 existing_val
@@ -339,14 +397,27 @@ impl Config {
             new_val
         };
 
+        if strip_secrets {
+            strip_secrets_from_toml_value(&mut final_val);
+        }
+
         let toml_str = toml::to_string_pretty(&final_val).map_err(ConfigError::TomlSerialize)?;
         let tmp_path = path.with_extension(format!("toml.tmp.{}", uuid::Uuid::new_v4()));
         std::fs::write(&tmp_path, &toml_str)?;
+        #[cfg(unix)]
+        if !strip_secrets {
+            use std::os::unix::fs::PermissionsExt;
+            let _ = std::fs::set_permissions(&tmp_path, std::fs::Permissions::from_mode(0o600));
+        }
         if let Err(e) = std::fs::rename(&tmp_path, path) {
             let _ = std::fs::remove_file(&tmp_path);
             return Err(e.into());
         }
-        tracing::info!(path = %path.display(), "Configuration saved atomically to disk");
+        tracing::info!(
+            path = %path.display(),
+            secrets_stripped = strip_secrets,
+            "Configuration saved atomically to disk"
+        );
         Ok(())
     }
 
@@ -841,6 +912,16 @@ impl Config {
             if !ponytail_level.trim().is_empty() {
                 self.agent.ponytail_level = ponytail_level.trim().to_lowercase();
             }
+        }
+    }
+}
+
+/// Removes plaintext `[provider.api_keys]` from a serialized TOML config tree so
+/// project-local `.minicode/config.toml` files never retain or leak global API keys.
+fn strip_secrets_from_toml_value(val: &mut toml::Value) {
+    if let toml::Value::Table(root) = val {
+        if let Some(toml::Value::Table(provider)) = root.get_mut("provider") {
+            provider.remove("api_keys");
         }
     }
 }

@@ -1429,7 +1429,7 @@ impl<'a> InputDock<'a> {
                             self.intellisense.ensure_indexed(ws.as_deref());
                         }
                         let sub = self.resolve_submission(&final_prompt);
-                        self.history.record(&sub.display, ws.as_deref());
+                        self.history.record(&sub.full, ws.as_deref());
                         sub
                     };
                     self.reset();

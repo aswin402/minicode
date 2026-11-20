@@ -243,7 +243,9 @@ impl<'a> App<'a> {
             match event {
                 AgentEvent::UserPrompt { prompt, .. } => {
                     self.timeline.add_user_message(prompt.clone());
-                    self.input_dock.history.seed_prompt(prompt);
+                    if !crate::ui::prompt_corpus::is_excluded_from_prompt_history(prompt) {
+                        self.input_dock.history.seed_prompt(prompt);
+                    }
                 }
                 AgentEvent::TurnStart { context_tokens, .. } => {
                     if *context_tokens > 0 {
@@ -1495,7 +1497,7 @@ impl<'a> App<'a> {
 
                                 // Ctrl+L opens Switch Model & Provider modal
                                 if key_event.code == KeyCode::Char('l') && key_event.modifiers.contains(KeyModifiers::CONTROL) {
-                                    self.modal = ModalState::new_provider_select();
+                                    self.modal = ModalState::new_provider_select_with_config(&self.config);
                                     continue;
                                 }
 
@@ -1579,7 +1581,7 @@ impl<'a> App<'a> {
 
                                 // F2 opens interactive Provider Select modal
                                 if key_event.code == KeyCode::F(2) {
-                                    self.modal = ModalState::new_provider_select();
+                                    self.modal = ModalState::new_provider_select_with_config(&self.config);
                                     continue;
                                 }
 
@@ -1724,11 +1726,19 @@ impl<'a> App<'a> {
                                         if let Some(token) = self.cancel_token.take() {
                                             token.cancel();
                                         }
+                                        if let Some(pool) =
+                                            crate::agent::subagent::try_get_global_subagent_pool()
+                                        {
+                                            pool.kill_all().await;
+                                        }
+                                        let _ = dev_reg.stop_active_non_daemon_tasks().await;
+                                        let _ = crate::tools::browser::BrowserManager::shutdown_live_engine_opt(true).await;
+                                        let _ = dev_reg.refresh_telemetry_cache().await;
                                         self.is_working = false;
                                         self.current_activity = None;
                                         self.work_start = None;
                                         self.timeline.finalize_open_entries_on_turn_end();
-                                        self.add_timeline_status("⏹ Turn interrupted by user (Ctrl+C)".to_string());
+                                        self.add_timeline_status("⏹ Turn interrupted by user (Ctrl+C) — stopped active subagents, tasks & browser".to_string());
                                         self.timeline.auto_scroll.set(true);
                                         continue;
                                     } else {

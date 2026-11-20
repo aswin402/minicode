@@ -41,6 +41,7 @@ impl SetupWizard {
     /// Maps standard provider IDs to their canonical environment variable names.
     pub fn env_var_for_provider(id: &str) -> &'static str {
         match id {
+            "anthropic" | "claude" => "ANTHROPIC_API_KEY",
             "openrouter" => "OPENROUTER_API_KEY",
             "gemini" | "google" => "GEMINI_API_KEY",
             "openai" => "OPENAI_API_KEY",
@@ -50,6 +51,15 @@ impl SetupWizard {
             "z.ai" | "z_ai" | "zhipu" | "glm" | "bigmodel" => "ZHIPU_API_KEY",
             "together" => "TOGETHER_API_KEY",
             "mistral" => "MISTRAL_API_KEY",
+            "huggingface" | "hf" => "HF_TOKEN",
+            "nvidia" | "nim" | "nvidia-nim" => "NVIDIA_API_KEY",
+            "opencode" | "opencode-zen" | "zen" => "OPENCODE_API_KEY",
+            "cerebras" => "CEREBRAS_API_KEY",
+            "agnes" | "agnes-ai" => "AGNES_API_KEY",
+            "nara" | "nararouter" | "bynara" => "NARA_API_KEY",
+            "ofox" | "ofoxai" => "OFOX_API_KEY",
+            "aihubmix" => "AIHUBMIX_API_KEY",
+            "kimi" | "moonshot" | "moonshotai" => "KIMI_API_KEY",
             "ollama" => "OLLAMA_API_KEY",
             _ => "",
         }

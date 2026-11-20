@@ -3,6 +3,21 @@ use crate::error::{ConfigError, Result};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
+/// Ensures an Ollama host URL points to its OpenAI-compatible `/v1` prefix unless an explicit
+/// version/API path (`/v1`, `/api`) is already present.
+pub(crate) fn normalize_ollama_v1_url(host: &str) -> String {
+    let trimmed = host.trim().trim_end_matches('/');
+    if trimmed.is_empty() {
+        return crate::constants::OLLAMA_DEFAULT_BASE_URL.to_string();
+    }
+    let lower = trimmed.to_ascii_lowercase();
+    if lower.ends_with("/v1") || lower.ends_with("/api") {
+        trimmed.to_string()
+    } else {
+        format!("{}/v1", trimmed)
+    }
+}
+
 impl Config {
     /// Checks whether a `(provider, model)` pair is saved in `config.provider.favorite_models`.
     #[must_use]
@@ -77,11 +92,18 @@ impl Config {
     pub fn get_provider_base_url(&self, provider_name: &str) -> Option<String> {
         let norm = provider_name.to_lowercase();
         if let Some(url) = self.provider.custom_endpoints.get(&norm) {
-            return Some(url.clone());
+            let trimmed = url.trim();
+            if !trimmed.is_empty() {
+                return Some(if norm == "ollama" {
+                    normalize_ollama_v1_url(trimmed)
+                } else {
+                    trimmed.to_string()
+                });
+            }
         }
 
         match norm.as_str() {
-            "ollama" => Some(self.provider.ollama.host.clone()),
+            "ollama" => Some(normalize_ollama_v1_url(&self.provider.ollama.host)),
             "lmstudio" | "lm-studio" => {
                 Some(crate::constants::LMSTUDIO_DEFAULT_BASE_URL.to_string())
             }

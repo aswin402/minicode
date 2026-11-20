@@ -1,6 +1,6 @@
 [package]
 name = "minicode"
-version = "0.5.56"
+version = "0.5.57"
 edition = "2021"
 description = "Fast, minimal Rust-native TUI + CLI coding agent for humans and AI agents"
 authors = ["Aswin"]
@@ -104,3 +104,19 @@ opt-level = 3
 lto = "thin"
 codegen-units = 1
 strip = true
+
+# Low-RAM local install profile used by `localupdate.sh`.
+# Splits the crate into 64 small CGUs compiled sequentially (`-j 1`) without cross-crate ThinLTO
+# so local builds stay ~70-80% lower in peak RAM without freezing 14-16 GiB laptops.
+[profile.release-local]
+inherits = "release"
+opt-level = "s"
+lto = false
+codegen-units = 64
+debug = 0
+incremental = false
+strip = true
+
+[profile.release-local.package."*"]
+opt-level = 2
+codegen-units = 16

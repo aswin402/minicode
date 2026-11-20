@@ -1,10 +1,72 @@
-use crate::agent::provider::{ChunkStream, CompletionOptions, Provider, StreamChunk, ToolSchema};
+use crate::agent::provider::{
+    classify_reqwest_stream_error, send_request_with_ipv4_fallback, shared_llm_http_client_ipv4,
+    ChunkStream, CompletionOptions, Provider, SseLineDecoder, StreamChunk, ToolSchema,
+};
 use crate::agent::types::{ImageAttachment, Message, Role, ToolCall};
 use crate::error::{ProviderError, Result};
 use async_trait::async_trait;
-use reqwest_eventsource::{Event, EventSource};
 use serde::Serialize;
+use std::collections::HashMap;
+use std::sync::{OnceLock, RwLock};
 use tokio_stream::StreamExt;
+
+static GEMINI_THOUGHT_SIGNATURES: OnceLock<RwLock<HashMap<String, String>>> = OnceLock::new();
+
+fn thought_signature_cache() -> &'static RwLock<HashMap<String, String>> {
+    GEMINI_THOUGHT_SIGNATURES.get_or_init(|| RwLock::new(HashMap::new()))
+}
+
+fn record_thought_signature(call_id: &str, signature: &str) {
+    if call_id.is_empty() || signature.is_empty() {
+        return;
+    }
+    if let Ok(mut guard) = thought_signature_cache().write() {
+        if guard.len() >= 256 {
+            guard.clear();
+        }
+        guard.insert(call_id.to_string(), signature.to_string());
+    }
+}
+
+fn lookup_thought_signature(call_id: &str) -> Option<String> {
+    if call_id.is_empty() {
+        return None;
+    }
+    thought_signature_cache()
+        .read()
+        .ok()
+        .and_then(|g| g.get(call_id).cloned())
+}
+
+/// Returns true when a Gemini model supports `generationConfig.thinkingConfig`.
+#[must_use]
+fn model_supports_gemini_thinking(model: &str) -> bool {
+    let lower = model.trim().to_ascii_lowercase();
+    let stripped = lower.strip_prefix("models/").unwrap_or(&lower);
+    stripped.starts_with("gemini-2.5")
+        || stripped.starts_with("gemini-3")
+        || stripped.contains("thinking")
+}
+
+/// Clamps `maxOutputTokens` for Gemini 1.5 / 2.0 / Gemma models capped at 8192 output tokens.
+#[must_use]
+fn clamp_gemini_max_output_tokens(model: &str, requested: usize) -> usize {
+    if let Some(limit) = crate::agent::models::lookup_models_dev_output_limit(model) {
+        if limit >= 256 {
+            return requested.min(limit);
+        }
+    }
+    let lower = model.trim().to_ascii_lowercase();
+    let stripped = lower.strip_prefix("models/").unwrap_or(&lower);
+    if stripped.starts_with("gemini-2.0")
+        || stripped.starts_with("gemini-1.5")
+        || stripped.starts_with("gemma")
+    {
+        requested.min(8192)
+    } else {
+        requested
+    }
+}
 
 #[derive(Serialize)]
 struct GeminiInlineDataWire<'a> {
@@ -47,6 +109,8 @@ enum GeminiPartWire<'a> {
     FunctionCall {
         #[serde(rename = "functionCall")]
         function_call: GeminiFunctionCallWire<'a>,
+        #[serde(rename = "thoughtSignature", skip_serializing_if = "Option::is_none")]
+        thought_signature: Option<String>,
     },
     FunctionResponse {
         #[serde(rename = "functionResponse")]
@@ -113,12 +177,16 @@ pub struct GeminiProvider {
 
 impl GeminiProvider {
     pub fn new(api_key: impl Into<String>) -> Self {
+        Self::with_base_url(api_key, crate::constants::GEMINI_BASE_URL)
+    }
+
+    pub fn with_base_url(api_key: impl Into<String>, base_url: impl Into<String>) -> Self {
         let client = crate::agent::providers::shared_llm_http_client();
 
         Self {
             api_key: api_key.into(),
             client,
-            base_url: crate::constants::GEMINI_BASE_URL.to_string(),
+            base_url: base_url.into(),
         }
     }
 
@@ -311,6 +379,7 @@ impl GeminiProvider {
                                     args: &tc.arguments,
                                     id: (!tc.id.is_empty()).then_some(tc.id.as_str()),
                                 },
+                                thought_signature: lookup_thought_signature(&tc.id),
                             });
                         }
                         contents.push(GeminiContentWire {
@@ -366,12 +435,15 @@ impl GeminiProvider {
             }
         }
 
+        let thinking_config = model_supports_gemini_thinking(&options.model)
+            .then_some(options.thinking_budget)
+            .flatten()
+            .map(|b| GeminiThinkingConfigWire { thinking_budget: b });
+
         let generation_config = GeminiGenerationConfigWire {
             temperature: options.temperature,
-            max_output_tokens: options.max_tokens,
-            thinking_config: options
-                .thinking_budget
-                .map(|b| GeminiThinkingConfigWire { thinking_budget: b }),
+            max_output_tokens: clamp_gemini_max_output_tokens(&options.model, options.max_tokens),
+            thinking_config,
         };
 
         let system_instruction =
@@ -420,6 +492,148 @@ impl GeminiProvider {
         serde_json::to_writer(&mut buf, &wire_req)?;
         Ok(buf)
     }
+    fn process_gemini_payload_value(
+        val: &serde_json::Value,
+        in_reasoning_mode: &mut bool,
+    ) -> Result<Vec<StreamChunk>> {
+        let mut chunks = Vec::new();
+
+        // 1. Check API-level error inside payload
+        if let Some(err) = val.get("error") {
+            let code = err.get("code").and_then(|c| c.as_u64()).unwrap_or(500) as u16;
+            let message = err
+                .get("message")
+                .and_then(|m| m.as_str())
+                .unwrap_or("Unknown Gemini API error")
+                .to_string();
+            return Err(ProviderError::Api {
+                status: code,
+                message: format!("Gemini stream API error: {}", message),
+            }
+            .into());
+        }
+
+        // 2. Check prompt-level policy blocks
+        if let Some(feedback) = val.get("promptFeedback") {
+            if let Some(reason) = feedback.get("blockReason").and_then(|r| r.as_str()) {
+                return Err(ProviderError::Api {
+                    status: 400,
+                    message: format!("Gemini prompt blocked: blockReason={}", reason),
+                }
+                .into());
+            }
+        }
+
+        // 3. Check candidates and candidate finishReason
+        if let Some(candidates) = val.get("candidates").and_then(|c| c.as_array()) {
+            for candidate in candidates {
+                if let Some(reason) = candidate.get("finishReason").and_then(|r| r.as_str()) {
+                    if reason == "SAFETY"
+                        || reason == "RECITATION"
+                        || reason == "BLOCKLIST"
+                        || reason == "PROHIBITED_CONTENT"
+                    {
+                        return Err(ProviderError::Api {
+                            status: 400,
+                            message: format!(
+                                "Gemini candidate generation halted: finishReason={}",
+                                reason
+                            ),
+                        }
+                        .into());
+                    }
+                }
+                if let Some(parts) = candidate
+                    .get("content")
+                    .and_then(|c| c.get("parts"))
+                    .and_then(|p| p.as_array())
+                {
+                    for part in parts {
+                        // Handle text delta
+                        if let Some(text) = part.get("text").and_then(|t| t.as_str()) {
+                            if !text.is_empty() {
+                                if part.get("thought").and_then(|t| t.as_bool()) == Some(true) {
+                                    if !*in_reasoning_mode {
+                                        *in_reasoning_mode = true;
+                                        chunks.push(StreamChunk::Delta("<thought>".to_string()));
+                                    }
+                                    chunks.push(StreamChunk::Delta(text.to_string()));
+                                } else {
+                                    if *in_reasoning_mode {
+                                        *in_reasoning_mode = false;
+                                        chunks.push(StreamChunk::Delta("</thought>".to_string()));
+                                    }
+                                    chunks.push(StreamChunk::Delta(text.to_string()));
+                                }
+                            }
+                        }
+
+                        // Handle function / tool call (+ preserve thoughtSignature for Gemini 2.5/3)
+                        if let Some(func_call) = part.get("functionCall") {
+                            if *in_reasoning_mode {
+                                *in_reasoning_mode = false;
+                                chunks.push(StreamChunk::Delta("</thought>".to_string()));
+                            }
+                            if let Some(name) = func_call.get("name").and_then(|n| n.as_str()) {
+                                let args = func_call
+                                    .get("args")
+                                    .cloned()
+                                    .unwrap_or_else(|| serde_json::json!({}));
+                                let call_id = func_call
+                                    .get("id")
+                                    .and_then(|i| i.as_str())
+                                    .map(|s| s.to_string())
+                                    .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+                                if let Some(sig) = part
+                                    .get("thoughtSignature")
+                                    .or_else(|| part.get("thought_signature"))
+                                    .and_then(|s| s.as_str())
+                                {
+                                    record_thought_signature(&call_id, sig);
+                                }
+                                let tool_call = ToolCall {
+                                    id: call_id,
+                                    name: name.to_string(),
+                                    arguments: args,
+                                };
+                                chunks.push(StreamChunk::ToolCallChunk(tool_call));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // Check usage metadata if provided
+        if let Some(usage) = val.get("usageMetadata") {
+            let prompt_tokens = usage
+                .get("promptTokenCount")
+                .and_then(|t| t.as_u64())
+                .unwrap_or(0) as usize;
+            let completion_tokens = usage
+                .get("candidatesTokenCount")
+                .and_then(|t| t.as_u64())
+                .unwrap_or(0) as usize;
+            let cached_prompt_tokens = usage
+                .get("cachedContentTokenCount")
+                .and_then(|t| t.as_u64())
+                .unwrap_or(0) as usize;
+            if prompt_tokens > 0 || completion_tokens > 0 || cached_prompt_tokens > 0 {
+                chunks.push(StreamChunk::Usage {
+                    prompt_tokens,
+                    completion_tokens,
+                    cached_prompt_tokens,
+                });
+            } else {
+                tracing::debug!(
+                    provider = "gemini",
+                    "Usage metadata absent or zero in Gemini response (prompt_tokens=0, completion_tokens=0)"
+                );
+            }
+        }
+
+        Ok(chunks)
+    }
 }
 
 #[async_trait]
@@ -450,173 +664,146 @@ impl Provider for GeminiProvider {
             options.model.clone()
         };
 
-        let url = format!(
-            "{}/models/{}:streamGenerateContent?alt=sse",
-            self.base_url, model
-        );
+        let mut resolved_options = options.clone();
+        resolved_options.model = model.clone();
 
-        let request_bytes = Self::serialize_request_bytes(messages, tools, options)?;
+        let base = self.base_url.trim_end_matches('/');
+        let url = if options.stream {
+            format!("{}/models/{}:streamGenerateContent?alt=sse", base, model)
+        } else {
+            format!("{}/models/{}:generateContent", base, model)
+        };
 
-        let request = self
-            .client
-            .post(&url)
-            .header("Content-Type", "application/json")
-            .header("x-goog-api-key", &self.api_key)
-            .body(request_bytes);
+        let request_bytes = Self::serialize_request_bytes(messages, tools, &resolved_options)?;
+        let ipv4_client = shared_llm_http_client_ipv4();
+        let accept = if options.stream {
+            "text/event-stream, application/json"
+        } else {
+            "application/json"
+        };
 
-        let event_source = EventSource::new(request).map_err(|e| {
-            ProviderError::StreamDecode(format!("Failed to establish SSE connection: {}", e))
-        })?;
+        let resp = send_request_with_ipv4_fallback(&url, &self.client, &ipv4_client, |c| {
+            c.post(&url)
+                .header("Content-Type", "application/json")
+                .header("Accept", accept)
+                .header("x-goog-api-key", &self.api_key)
+                .body(request_bytes.clone())
+        })
+        .await
+        .map_err(|e| classify_reqwest_stream_error("Gemini", &e, false))?;
+
+        if !resp.status().is_success() {
+            let status = resp.status();
+            return Err(
+                crate::agent::providers::handle_sse_status_error("Gemini", status, resp).await,
+            );
+        }
+
+        let content_type = resp
+            .headers()
+            .get(reqwest::header::CONTENT_TYPE)
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("")
+            .to_ascii_lowercase();
+
+        if !options.stream || content_type.contains("application/json") {
+            let raw_text = resp
+                .text()
+                .await
+                .map_err(|e| classify_reqwest_stream_error("Gemini", &e, false))?;
+            let val: serde_json::Value = serde_json::from_str(&raw_text).map_err(|e| {
+                ProviderError::StreamDecode(format!("Gemini JSON response parse error: {}", e))
+            })?;
+            let mut in_reasoning = false;
+            let mut chunks = if let Some(arr) = val.as_array() {
+                let mut all = Vec::new();
+                for item in arr {
+                    all.extend(Self::process_gemini_payload_value(item, &mut in_reasoning)?);
+                }
+                all
+            } else {
+                Self::process_gemini_payload_value(&val, &mut in_reasoning)?
+            };
+            if in_reasoning {
+                chunks.push(StreamChunk::Delta("</thought>".to_string()));
+            }
+            chunks.push(StreamChunk::Done);
+            let stream = async_stream::stream! {
+                for chunk in chunks {
+                    yield Ok(chunk);
+                }
+            };
+            return Ok(Box::pin(stream));
+        }
 
         let stream = async_stream::stream! {
-            let mut event_source = event_source;
+            let mut byte_stream = resp.bytes_stream();
+            let mut decoder = SseLineDecoder::new();
             let mut in_reasoning_mode = false;
 
-            while let Some(event_res) = event_source.next().await {
-                match event_res {
-                    Ok(Event::Open) => {
-                        tracing::debug!("Gemini SSE connection established");
-                    }
-                    Ok(Event::Message(message)) => {
-                        if message.data.trim() == "[DONE]" {
-                            if in_reasoning_mode {
-                                in_reasoning_mode = false;
-                                yield Ok(StreamChunk::Delta("</thought>".to_string()));
+            while let Some(chunk_res) = byte_stream.next().await {
+                match chunk_res {
+                    Ok(bytes) => {
+                        for frame in decoder.push_chunk(&bytes) {
+                            let data_trimmed = frame.data.trim();
+                            if data_trimmed.is_empty() {
+                                continue;
                             }
-                            yield Ok(StreamChunk::Done);
-                            break;
-                        }
-
-                        let parsed: Result<serde_json::Value> = serde_json::from_str(&message.data)
-                            .map_err(|e| ProviderError::StreamDecode(format!("JSON parse error: {}", e)).into());
-
-                        match parsed {
-                            Ok(val) => {
-                                // 1. Check API-level error inside stream payload
-                                if let Some(err) = val.get("error") {
-                                    let code = err.get("code").and_then(|c| c.as_u64()).unwrap_or(500) as u16;
-                                    let message = err
-                                        .get("message")
-                                        .and_then(|m| m.as_str())
-                                        .unwrap_or("Unknown Gemini API error")
-                                        .to_string();
-                                    yield Err(ProviderError::Api {
-                                        status: code,
-                                        message: format!("Gemini stream API error: {}", message),
-                                    }
-                                    .into());
-                                    break;
+                            if data_trimmed == "[DONE]" {
+                                if in_reasoning_mode {
+                                    yield Ok(StreamChunk::Delta("</thought>".to_string()));
                                 }
+                                yield Ok(StreamChunk::Done);
+                                return;
+                            }
 
-                                // 2. Check prompt-level policy blocks
-                                if let Some(feedback) = val.get("promptFeedback") {
-                                    if let Some(reason) = feedback.get("blockReason").and_then(|r| r.as_str()) {
-                                        yield Err(ProviderError::Api {
-                                            status: 400,
-                                            message: format!("Gemini prompt blocked: blockReason={}", reason),
-                                        }
-                                        .into());
-                                        break;
-                                    }
-                                }
+                            let parsed: Result<serde_json::Value> = serde_json::from_str(data_trimmed)
+                                .map_err(|e| ProviderError::StreamDecode(format!("JSON parse error: {}", e)).into());
 
-                                // 3. Check candidates and candidate finishReason
-                                if let Some(candidates) = val.get("candidates").and_then(|c| c.as_array()) {
-                                    for candidate in candidates {
-                                        if let Some(reason) = candidate.get("finishReason").and_then(|r| r.as_str()) {
-                                            if reason == "SAFETY" || reason == "RECITATION" || reason == "BLOCKLIST" || reason == "PROHIBITED_CONTENT" {
-                                                if in_reasoning_mode {
-                                                    yield Ok(StreamChunk::Delta("</thought>".to_string()));
-                                                }
-                                                yield Err(ProviderError::Api {
-                                                    status: 400,
-                                                    message: format!("Gemini candidate generation halted: finishReason={}", reason),
-                                                }
-                                                .into());
-                                                return;
+                            match parsed {
+                                Ok(val) => {
+                                    match Self::process_gemini_payload_value(&val, &mut in_reasoning_mode) {
+                                        Ok(chunks) => {
+                                            for chunk in chunks {
+                                                yield Ok(chunk);
                                             }
                                         }
-                                        if let Some(parts) = candidate.get("content").and_then(|c| c.get("parts")).and_then(|p| p.as_array()) {
-                                            for part in parts {
-                                                // Handle text delta
-                                                if let Some(text) = part.get("text").and_then(|t| t.as_str()) {
-                                                    if !text.is_empty() {
-                                                        if part.get("thought").and_then(|t| t.as_bool()) == Some(true) {
-                                                            if !in_reasoning_mode {
-                                                                in_reasoning_mode = true;
-                                                                yield Ok(StreamChunk::Delta("<thought>".to_string()));
-                                                            }
-                                                            yield Ok(StreamChunk::Delta(text.to_string()));
-                                                        } else {
-                                                            if in_reasoning_mode {
-                                                                in_reasoning_mode = false;
-                                                                yield Ok(StreamChunk::Delta("</thought>".to_string()));
-                                                            }
-                                                            yield Ok(StreamChunk::Delta(text.to_string()));
-                                                        }
-                                                    }
-                                                }
-
-                                                // Handle function / tool call
-                                                if let Some(func_call) = part.get("functionCall") {
-                                                    if in_reasoning_mode {
-                                                        in_reasoning_mode = false;
-                                                        yield Ok(StreamChunk::Delta("</thought>".to_string()));
-                                                    }
-                                                    if let Some(name) = func_call.get("name").and_then(|n| n.as_str()) {
-                                                        let args = func_call.get("args").cloned().unwrap_or(serde_json::json!({}));
-                                                        let call_id = func_call
-                                                            .get("id")
-                                                            .and_then(|i| i.as_str())
-                                                            .map(|s| s.to_string())
-                                                            .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
-                                                        let tool_call = ToolCall {
-                                                            id: call_id,
-                                                            name: name.to_string(),
-                                                            arguments: args,
-                                                        };
-                                                        yield Ok(StreamChunk::ToolCallChunk(tool_call));
-                                                    }
-                                                }
+                                        Err(err) => {
+                                            if in_reasoning_mode {
+                                                yield Ok(StreamChunk::Delta("</thought>".to_string()));
                                             }
+                                            yield Err(err);
+                                            return;
                                         }
                                     }
                                 }
-
-                                // Check usage metadata if provided
-                                if let Some(usage) = val.get("usageMetadata") {
-                                    let prompt_tokens = usage.get("promptTokenCount").and_then(|t| t.as_u64()).unwrap_or(0) as usize;
-                                    let completion_tokens = usage.get("candidatesTokenCount").and_then(|t| t.as_u64()).unwrap_or(0) as usize;
-                                    let cached_prompt_tokens = usage.get("cachedContentTokenCount").and_then(|t| t.as_u64()).unwrap_or(0) as usize;
-                                    if prompt_tokens > 0 || completion_tokens > 0 || cached_prompt_tokens > 0 {
-                                        yield Ok(StreamChunk::Usage { prompt_tokens, completion_tokens, cached_prompt_tokens });
-                                    } else {
-                                        tracing::debug!(
-                                            provider = "gemini",
-                                            "Usage metadata absent or zero in Gemini response (prompt_tokens=0, completion_tokens=0)"
-                                        );
-                                    }
-                                }
+                                Err(e) => yield Err(e),
                             }
-                            Err(e) => yield Err(e),
                         }
-                    }
-                    Err(reqwest_eventsource::Error::StreamEnded) => {
-                        // The server cleanly ended the SSE stream — this is normal EOF
-                        break;
-                    }
-                    Err(reqwest_eventsource::Error::InvalidStatusCode(status, resp)) => {
-                        yield Err(crate::agent::providers::handle_sse_status_error("Gemini", status, resp).await);
-                        return;
                     }
                     Err(e) => {
-                        if let Some(classified_err) =
-                            crate::agent::providers::classify_sse_stream_error("Gemini", &e, false)
-                        {
-                            yield Err(classified_err);
+                        yield Err(classify_reqwest_stream_error("Gemini", &e, false));
+                        return;
+                    }
+                }
+            }
+
+            for frame in decoder.finish() {
+                let data_trimmed = frame.data.trim();
+                if data_trimmed.is_empty() || data_trimmed == "[DONE]" {
+                    continue;
+                }
+                if let Ok(val) = serde_json::from_str::<serde_json::Value>(data_trimmed) {
+                    match Self::process_gemini_payload_value(&val, &mut in_reasoning_mode) {
+                        Ok(chunks) => {
+                            for chunk in chunks {
+                                yield Ok(chunk);
+                            }
+                        }
+                        Err(err) => {
+                            yield Err(err);
                             return;
                         }
-                        break;
                     }
                 }
             }
@@ -683,6 +870,66 @@ mod tests {
             .post("http://127.0.0.1:1/models/gemini-2.5-pro:streamGenerateContent?alt=sse")
             .header("Content-Type", "application/json")
             .body(wire_bytes);
-        assert!(EventSource::new(req).is_ok());
+        assert!(reqwest_eventsource::EventSource::new(req).is_ok());
+    }
+
+    #[test]
+    fn test_gemini_thinking_gate_and_thought_signature_roundtrip() {
+        // Non-thinking gemini-2.0-flash must omit thinkingConfig and clamp maxOutputTokens to 8192
+        let opts_20 = CompletionOptions {
+            model: "gemini-2.0-flash".to_string(),
+            max_tokens: 16384,
+            thinking_budget: Some(2048),
+            ..Default::default()
+        };
+        let bytes_20 =
+            GeminiProvider::serialize_request_bytes(&[Message::user("hi")], &[], &opts_20).unwrap();
+        let val_20: serde_json::Value = serde_json::from_slice(&bytes_20).unwrap();
+        assert!(val_20["generationConfig"].get("thinkingConfig").is_none());
+        assert_eq!(val_20["generationConfig"]["maxOutputTokens"], 8192);
+
+        // ThoughtSignature extracted from a functionCall part must be echoed back on the next turn
+        let stream_payload = serde_json::json!({
+            "candidates": [{
+                "content": {
+                    "parts": [{
+                        "functionCall": {
+                            "id": "gem_call_sig_1",
+                            "name": "read_file",
+                            "args": {"path": "Cargo.toml"}
+                        },
+                        "thoughtSignature": "ENC_SIG_ABC123"
+                    }]
+                }
+            }]
+        });
+        let mut in_reasoning = false;
+        let chunks =
+            GeminiProvider::process_gemini_payload_value(&stream_payload, &mut in_reasoning)
+                .unwrap();
+        assert!(chunks
+            .iter()
+            .any(|c| matches!(c, StreamChunk::ToolCallChunk(tc) if tc.id == "gem_call_sig_1")));
+
+        let next_messages = vec![
+            Message::user("check cargo"),
+            Message::assistant_with_tools(
+                "",
+                vec![ToolCall {
+                    id: "gem_call_sig_1".to_string(),
+                    name: "read_file".to_string(),
+                    arguments: serde_json::json!({"path": "Cargo.toml"}),
+                }],
+            ),
+            Message::tool_result("gem_call_sig_1", "read_file", "[package]"),
+        ];
+        let opts_25 = CompletionOptions::new("gemini-2.5-pro");
+        let next_bytes =
+            GeminiProvider::serialize_request_bytes(&next_messages, &[], &opts_25).unwrap();
+        let next_val: serde_json::Value = serde_json::from_slice(&next_bytes).unwrap();
+        assert_eq!(
+            next_val["contents"][1]["parts"][0]["thoughtSignature"],
+            "ENC_SIG_ABC123"
+        );
     }
 }

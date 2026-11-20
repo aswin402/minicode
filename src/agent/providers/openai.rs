@@ -1,8 +1,12 @@
-use crate::agent::providers::{ChunkStream, CompletionOptions, Provider, StreamChunk, ToolSchema};
+use crate::agent::providers::{
+    candidate_base_urls_for_provider, classify_reqwest_stream_error,
+    record_working_provider_base_url, send_request_with_ipv4_fallback, shared_llm_http_client_ipv4,
+    summarize_http_error_body, ChunkStream, CompletionOptions, Provider, SseLineDecoder,
+    StreamChunk, ToolSchema,
+};
 use crate::agent::types::{ImageAttachment, Message, Role, ToolCall};
 use crate::error::{ProviderError, Result};
 use async_trait::async_trait;
-use reqwest_eventsource::{Event, EventSource};
 use serde::Serialize;
 use std::borrow::Cow;
 use tokio_stream::StreamExt;
@@ -60,7 +64,9 @@ fn parse_claude_family_version(slug: &str) -> Option<(u32, u32)> {
 struct ModelWireProfile {
     uses_max_completion_tokens: bool,
     omits_temperature: bool,
+    forced_temperature_x100: Option<u16>,
     claude_thinking_via_openrouter: bool,
+    supports_reasoning_effort: bool,
 }
 
 impl ModelWireProfile {
@@ -92,16 +98,340 @@ impl ModelWireProfile {
         });
         let omits_temperature = uses_max_completion_tokens || is_reasoning_family;
 
+        // Kimi K2.5 / K2-thinking enforce temperature=1.0 on Moonshot's OpenAI-compatible API
+        let is_kimi_thinking = slug.contains("kimi-k2.5")
+            || slug.contains("kimi-k2-thinking")
+            || slug.contains("kimi-k3");
+        let forced_temperature_x100 = is_kimi_thinking.then_some(100);
+
         // Anthropic extended thinking started in Claude 3.7 and applies to all Claude 4+ releases
         let claude_thinking_via_openrouter = parse_claude_family_version(&slug)
             .is_some_and(|(major, minor)| (major, minor) >= (3, 7));
 
+        let is_gemini_thinking = slug.starts_with("gemini-2.5")
+            || slug.starts_with("gemini-3")
+            || slug.contains("thinking");
+        let is_gpt_oss = slug.contains("gpt-oss");
+        let is_qwen3 = slug.starts_with("qwen3") || slug.contains("qwen-3");
+        let is_grok_reasoning = slug.contains("grok-3-mini") || slug.contains("grok-4");
+
+        let supports_reasoning_effort = uses_max_completion_tokens
+            || is_reasoning_family
+            || claude_thinking_via_openrouter
+            || is_kimi_thinking
+            || is_gemini_thinking
+            || is_gpt_oss
+            || is_qwen3
+            || is_grok_reasoning;
+
         Self {
             uses_max_completion_tokens,
             omits_temperature,
+            forced_temperature_x100,
             claude_thinking_via_openrouter,
+            supports_reasoning_effort,
         }
     }
+}
+
+/// Declarative per-provider OpenAI-compatible wire capability profile.
+#[derive(Debug, Clone, Copy)]
+struct ProviderWireCapabilities {
+    emits_stream_options: bool,
+    supports_reasoning_effort: bool,
+    temperature_bounds: Option<(f32, f32)>,
+}
+
+impl ProviderWireCapabilities {
+    const DEFAULT: Self = Self {
+        emits_stream_options: true,
+        supports_reasoning_effort: true,
+        temperature_bounds: None,
+    };
+
+    const TABLE: &[(&str, Self)] = &[
+        (
+            "mistral",
+            Self {
+                // Mistral strictly validates OpenAI payloads and returns HTTP 422 on `stream_options`
+                emits_stream_options: false,
+                supports_reasoning_effort: false,
+                temperature_bounds: None,
+            },
+        ),
+        (
+            "minimax",
+            Self {
+                emits_stream_options: false,
+                supports_reasoning_effort: false,
+                // MiniMax rejects temperature <= 0.0 or > 1.0
+                temperature_bounds: Some((0.01, 1.0)),
+            },
+        ),
+        (
+            "z.ai",
+            Self {
+                emits_stream_options: false,
+                supports_reasoning_effort: false,
+                temperature_bounds: None,
+            },
+        ),
+        (
+            "zhipu",
+            Self {
+                emits_stream_options: false,
+                supports_reasoning_effort: false,
+                temperature_bounds: None,
+            },
+        ),
+        (
+            "deepseek",
+            Self {
+                emits_stream_options: true,
+                supports_reasoning_effort: false,
+                temperature_bounds: None,
+            },
+        ),
+    ];
+
+    #[must_use]
+    fn for_provider(provider_name: &str) -> Self {
+        Self::TABLE
+            .iter()
+            .find(|(name, _)| name.eq_ignore_ascii_case(provider_name))
+            .map(|(_, caps)| *caps)
+            .unwrap_or(Self::DEFAULT)
+    }
+}
+
+/// Clamps `requested_max_tokens` against known model output and context-window caps so
+/// `default_max_tokens = 16384` does not cause HTTP 400 on models capped at 4096 or 8192 tokens
+/// (e.g., `allam-2-7b` with a 4096 context window).
+#[must_use]
+fn clamp_max_tokens_for_model(model: &str, requested: usize) -> usize {
+    let mut cap = usize::MAX;
+
+    if let Some(limit) = crate::agent::models::lookup_models_dev_output_limit(model) {
+        if limit >= 256 {
+            cap = cap.min(limit);
+        }
+    }
+
+    if let Some(ctx) = crate::agent::models::lookup_models_dev_context(model) {
+        if ctx >= 512 {
+            // Small-context models (<= 16K) reject requests where `max_tokens >= context_window`
+            // or leave no headroom for prompt tokens; reserve at least half the window for input.
+            let ctx_output_cap = if ctx <= 16_384 {
+                (ctx / 2).max(256)
+            } else {
+                ctx.saturating_sub(256).max(256)
+            };
+            cap = cap.min(ctx_output_cap);
+        }
+    }
+
+    let slug = model
+        .rsplit('/')
+        .next()
+        .unwrap_or(model)
+        .to_ascii_lowercase();
+    let legacy_cap = if slug == "deepseek-chat"
+        || slug.starts_with("claude-3-5-")
+        || slug.starts_with("claude-3.5-")
+        || slug.starts_with("llama-3.1-8b")
+    {
+        8192
+    } else if slug.starts_with("gpt-3.5")
+        || slug.starts_with("claude-3-haiku")
+        || slug.starts_with("claude-3-sonnet")
+        || slug.starts_with("claude-3-opus")
+    {
+        4096
+    } else {
+        usize::MAX
+    };
+    requested.min(cap).min(legacy_cap)
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+struct CompatOverrides {
+    strip_optional_fields: bool,
+    omit_temperature: bool,
+    force_max_tokens_key: Option<bool>, // Some(true) => max_completion_tokens, Some(false) => max_tokens
+    max_tokens_cap: Option<usize>,
+}
+
+/// Extracts a safe reduced `max_tokens` cap when a provider returns HTTP 400/422 complaining
+/// that `max_tokens` exceeds the model's output or context ceiling (e.g., Groq's
+/// `` `max_tokens` must be less than or equal to `4096` ``).
+fn extract_max_tokens_cap_from_error(lower: &str) -> Option<usize> {
+    if !(lower.contains("max_tokens") || lower.contains("max_completion_tokens")) {
+        return None;
+    }
+    const BOUND_PHRASES: &[&str] = &[
+        "less than or equal to",
+        "must be <=",
+        "at most",
+        "must not exceed",
+        "exceeds the maximum",
+        "maximum value",
+        "max allowed",
+    ];
+    let matched_phrase = BOUND_PHRASES.iter().find(|&&p| lower.contains(p))?;
+    let after = lower
+        .split_once(matched_phrase)
+        .map(|(_, rest)| rest)
+        .unwrap_or(lower);
+
+    let parsed_limit = after
+        .split(|c: char| !c.is_ascii_digit())
+        .filter(|tok| !tok.is_empty())
+        .find_map(|tok| tok.parse::<usize>().ok())
+        .filter(|&n| n >= 256);
+
+    let needs_input_headroom = lower.contains("context_window")
+        || lower.contains("context window")
+        || lower.contains("context length")
+        || lower.contains("less than the");
+
+    match parsed_limit {
+        Some(n) if needs_input_headroom => Some((n / 2).clamp(256, 4096)),
+        Some(n) => Some(n.clamp(256, 16_384)),
+        None => Some(2048),
+    }
+}
+
+/// Inspects an HTTP 400/422 error body for rejected optional parameters and constructs
+/// a stripped compatibility override for a single self-healing retry.
+fn detect_compat_override_from_error(
+    status: u16,
+    body: &str,
+    current_uses_max_completion_tokens: bool,
+) -> Option<CompatOverrides> {
+    if status != 400 && status != 422 {
+        return None;
+    }
+    let lower = body.to_ascii_lowercase();
+    let mentions_optional = lower.contains("stream_options")
+        || lower.contains("reasoning_effort")
+        || lower.contains("reasoning")
+        || lower.contains("thinking")
+        || lower.contains("prompt_cache_key")
+        || lower.contains("cache_prompt")
+        || lower.contains("extra inputs are not permitted")
+        || lower.contains("extra_forbidden")
+        || lower.contains("unrecognized request argument")
+        || lower.contains("unknown field")
+        || lower.contains("unsupported parameter");
+
+    let mentions_temp = lower.contains("temperature")
+        && (lower.contains("unsupported")
+            || lower.contains("not supported")
+            || lower.contains("invalid")
+            || lower.contains("only")
+            || lower.contains("must be"));
+
+    let force_max_tokens_key = if lower.contains("max_completion_tokens")
+        && (lower.contains("unsupported")
+            || lower.contains("unknown")
+            || lower.contains("not permitted")
+            || lower.contains("unrecognized")
+            || lower.contains("use 'max_tokens'")
+            || lower.contains("use \"max_tokens\""))
+    {
+        Some(false)
+    } else if lower.contains("max_tokens")
+        && (lower.contains("max_completion_tokens") || lower.contains("unsupported parameter"))
+        && !current_uses_max_completion_tokens
+    {
+        Some(true)
+    } else {
+        None
+    };
+
+    let max_tokens_cap = extract_max_tokens_cap_from_error(&lower);
+
+    if mentions_optional
+        || mentions_temp
+        || force_max_tokens_key.is_some()
+        || max_tokens_cap.is_some()
+    {
+        Some(CompatOverrides {
+            strip_optional_fields: true,
+            omit_temperature: mentions_temp,
+            force_max_tokens_key,
+            max_tokens_cap,
+        })
+    } else {
+        None
+    }
+}
+
+/// Extracts an in-band API error from an OpenAI-compatible SSE chunk or HTTP-200 JSON body
+/// (including OpenRouter `{"error": ...}` and MiniMax `{"base_resp": {"status_code": != 0}}`).
+fn extract_openai_inline_error(val: &serde_json::Value) -> Option<crate::error::MinicodeError> {
+    if let Some(err_val) = val.get("error") {
+        if !err_val.is_null() {
+            let status = err_val
+                .get("code")
+                .or_else(|| err_val.get("status"))
+                .and_then(|c| {
+                    c.as_u64()
+                        .or_else(|| c.as_str().and_then(|s| s.parse::<u64>().ok()))
+                })
+                .filter(|&c| (100..=599).contains(&c))
+                .unwrap_or(502) as u16;
+            let msg = err_val
+                .get("message")
+                .and_then(|m| m.as_str())
+                .or_else(|| err_val.as_str())
+                .unwrap_or("Upstream provider returned an in-stream error")
+                .to_string();
+            if status == 429 {
+                return Some(
+                    ProviderError::RateLimited {
+                        retry_after_secs: Some(
+                            crate::constants::PROVIDER_RATE_LIMIT_RETRY_DELAY_SECS,
+                        ),
+                    }
+                    .into(),
+                );
+            }
+            return Some(
+                ProviderError::Api {
+                    status,
+                    message: msg,
+                }
+                .into(),
+            );
+        }
+    }
+
+    if let Some(base_resp) = val.get("base_resp") {
+        if let Some(code) = base_resp.get("status_code").and_then(|c| c.as_i64()) {
+            if code != 0 {
+                let status_msg = base_resp
+                    .get("status_msg")
+                    .and_then(|m| m.as_str())
+                    .unwrap_or("Upstream API error");
+                let http_status = match code {
+                    1004 | 2049 => 401, // MiniMax auth / invalid key
+                    1002 | 1039 => 429, // MiniMax rate limit
+                    1008 => 402,        // MiniMax insufficient balance
+                    _ => 400,
+                };
+                return Some(
+                    ProviderError::Api {
+                        status: http_status,
+                        message: format!("API error (code {}): {}", code, status_msg),
+                    }
+                    .into(),
+                );
+            }
+        }
+    }
+
+    None
 }
 
 /// Declarative KV-cache slot & prefix-router affinity protocol table (`LMCache` / `vLLM` / `Ollama` / `OpenAI`).
@@ -285,7 +615,8 @@ struct OpenAiRequestWire<'a> {
     model: &'a str,
     messages: Vec<OpenAiMessageWire<'a>>,
     stream: bool,
-    stream_options: OpenAiStreamOptionsWire,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    stream_options: Option<OpenAiStreamOptionsWire>,
     #[serde(skip_serializing_if = "Option::is_none")]
     temperature: Option<f32>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -514,6 +845,7 @@ impl OpenAiCompatibleProvider {
         };
 
         let profile = ModelWireProfile::for_model(model);
+        let provider_caps = ProviderWireCapabilities::for_provider(provider_name);
 
         let formatted_messages =
             Self::format_messages(messages, options.system_instruction.as_deref());
@@ -521,27 +853,39 @@ impl OpenAiCompatibleProvider {
         let mut request_body = serde_json::json!({
             "model": model,
             "messages": formatted_messages,
-            "stream": true,
-            "stream_options": {
-                "include_usage": true
-            }
+            "stream": options.stream,
         });
 
-        if !profile.omits_temperature {
-            request_body["temperature"] = serde_json::json!(options.temperature);
+        if options.stream && provider_caps.emits_stream_options {
+            request_body["stream_options"] = serde_json::json!({
+                "include_usage": true
+            });
         }
 
+        if let Some(forced_x100) = profile.forced_temperature_x100 {
+            request_body["temperature"] = serde_json::json!(f32::from(forced_x100) / 100.0);
+        } else if !profile.omits_temperature {
+            let temp = match provider_caps.temperature_bounds {
+                Some((lo, hi)) => options.temperature.clamp(lo, hi),
+                None => options.temperature,
+            };
+            request_body["temperature"] = serde_json::json!(temp);
+        }
+
+        let effective_max_tokens = clamp_max_tokens_for_model(model, options.max_tokens);
         if profile.uses_max_completion_tokens {
-            request_body["max_completion_tokens"] = serde_json::json!(options.max_tokens);
+            request_body["max_completion_tokens"] = serde_json::json!(effective_max_tokens);
         } else {
-            request_body["max_tokens"] = serde_json::json!(options.max_tokens);
+            request_body["max_tokens"] = serde_json::json!(effective_max_tokens);
         }
 
         if let Some(ref effort) = options.reasoning_effort {
-            if provider_name == "openrouter" {
-                request_body["reasoning"] = serde_json::json!({ "effort": effort });
-            } else {
-                request_body["reasoning_effort"] = serde_json::json!(effort);
+            if provider_caps.supports_reasoning_effort && profile.supports_reasoning_effort {
+                if provider_name == "openrouter" {
+                    request_body["reasoning"] = serde_json::json!({ "effort": effort });
+                } else {
+                    request_body["reasoning_effort"] = serde_json::json!(effort);
+                }
             }
         } else if let Some(budget) = options.thinking_budget {
             if provider_name == "openrouter" {
@@ -551,12 +895,13 @@ impl OpenAiCompatibleProvider {
                         "budget_tokens": budget
                     });
                     request_body["temperature"] = serde_json::json!(1.0);
-                } else {
+                } else if profile.supports_reasoning_effort {
                     request_body["reasoning"] = serde_json::json!({
                         "max_tokens": budget
                     });
                 }
-            } else if profile.uses_max_completion_tokens {
+            } else if provider_caps.supports_reasoning_effort && profile.uses_max_completion_tokens
+            {
                 request_body["reasoning_effort"] =
                     serde_json::json!(reasoning_effort_for_budget(budget));
             }
@@ -612,12 +957,31 @@ impl OpenAiCompatibleProvider {
         options: &CompletionOptions,
         default_model: &str,
     ) -> Result<Vec<u8>> {
+        Self::serialize_request_bytes_with_compat(
+            provider_name,
+            messages,
+            tools,
+            options,
+            default_model,
+            CompatOverrides::default(),
+        )
+    }
+
+    fn serialize_request_bytes_with_compat(
+        provider_name: &str,
+        messages: &[Message],
+        tools: &[ToolSchema],
+        options: &CompletionOptions,
+        default_model: &str,
+        compat: CompatOverrides,
+    ) -> Result<Vec<u8>> {
         let model = if options.model.is_empty() {
             default_model
         } else {
             &options.model
         };
         let profile = ModelWireProfile::for_model(model);
+        let provider_caps = ProviderWireCapabilities::for_provider(provider_name);
 
         let mut wire_messages = Vec::with_capacity(messages.len() + 2);
         if let Some(ref sys) = options.system_instruction {
@@ -727,36 +1091,60 @@ impl OpenAiCompatibleProvider {
             }
         }
 
-        let mut temperature = (!profile.omits_temperature).then_some(options.temperature);
-        let (max_completion_tokens, max_tokens) = if profile.uses_max_completion_tokens {
-            (Some(options.max_tokens), None)
+        let mut temperature = if compat.omit_temperature {
+            None
+        } else if let Some(forced_x100) = profile.forced_temperature_x100 {
+            Some(f32::from(forced_x100) / 100.0)
+        } else if !profile.omits_temperature {
+            let temp = match provider_caps.temperature_bounds {
+                Some((lo, hi)) => options.temperature.clamp(lo, hi),
+                None => options.temperature,
+            };
+            Some(temp)
         } else {
-            (None, Some(options.max_tokens))
+            None
+        };
+
+        let effective_max_tokens = clamp_max_tokens_for_model(model, options.max_tokens)
+            .min(compat.max_tokens_cap.unwrap_or(usize::MAX));
+        let use_max_completion = compat
+            .force_max_tokens_key
+            .unwrap_or(profile.uses_max_completion_tokens);
+        let (max_completion_tokens, max_tokens) = if use_max_completion {
+            (Some(effective_max_tokens), None)
+        } else {
+            (None, Some(effective_max_tokens))
         };
 
         let mut reasoning = None;
         let mut reasoning_effort = None;
         let mut thinking = None;
 
-        if let Some(ref effort) = options.reasoning_effort {
-            if provider_name == "openrouter" {
-                reasoning = Some(OpenAiReasoningWire::Effort { effort });
-            } else {
-                reasoning_effort = Some(effort.as_str());
-            }
-        } else if let Some(budget) = options.thinking_budget {
-            if provider_name == "openrouter" {
-                if profile.claude_thinking_via_openrouter {
-                    thinking = Some(OpenAiThinkingWire {
-                        kind: "enabled",
-                        budget_tokens: budget,
-                    });
-                    temperature = Some(1.0);
-                } else {
-                    reasoning = Some(OpenAiReasoningWire::MaxTokens { max_tokens: budget });
+        if !compat.strip_optional_fields {
+            if let Some(ref effort) = options.reasoning_effort {
+                if provider_caps.supports_reasoning_effort && profile.supports_reasoning_effort {
+                    if provider_name == "openrouter" {
+                        reasoning = Some(OpenAiReasoningWire::Effort { effort });
+                    } else {
+                        reasoning_effort = Some(effort.as_str());
+                    }
                 }
-            } else if profile.uses_max_completion_tokens {
-                reasoning_effort = Some(reasoning_effort_for_budget(budget));
+            } else if let Some(budget) = options.thinking_budget {
+                if provider_name == "openrouter" {
+                    if profile.claude_thinking_via_openrouter {
+                        thinking = Some(OpenAiThinkingWire {
+                            kind: "enabled",
+                            budget_tokens: budget,
+                        });
+                        temperature = Some(1.0);
+                    } else if profile.supports_reasoning_effort {
+                        reasoning = Some(OpenAiReasoningWire::MaxTokens { max_tokens: budget });
+                    }
+                } else if provider_caps.supports_reasoning_effort
+                    && profile.uses_max_completion_tokens
+                {
+                    reasoning_effort = Some(reasoning_effort_for_budget(budget));
+                }
             }
         }
 
@@ -789,22 +1177,30 @@ impl OpenAiCompatibleProvider {
             + tools.len() * 384;
 
         let affinity = ProviderCacheAffinityProfile::for_provider(provider_name);
-        let normalized_key = options
-            .prompt_cache_key
-            .as_deref()
-            .and_then(normalize_cache_key);
+        let normalized_key = if compat.strip_optional_fields {
+            None
+        } else {
+            options
+                .prompt_cache_key
+                .as_deref()
+                .and_then(normalize_cache_key)
+        };
         let prompt_cache_key = normalized_key.filter(|_| affinity.emits_prompt_cache_key);
         let cache_prompt = normalized_key
             .filter(|_| affinity.emits_cache_prompt_bool)
             .map(|_| true);
 
+        let stream_options =
+            (options.stream && provider_caps.emits_stream_options && !compat.strip_optional_fields)
+                .then_some(OpenAiStreamOptionsWire {
+                    include_usage: true,
+                });
+
         let wire_req = OpenAiRequestWire {
             model,
             messages: wire_messages,
-            stream: true,
-            stream_options: OpenAiStreamOptionsWire {
-                include_usage: true,
-            },
+            stream: options.stream,
+            stream_options,
             temperature,
             max_completion_tokens,
             max_tokens,
@@ -819,6 +1215,165 @@ impl OpenAiCompatibleProvider {
         let mut buf = Vec::with_capacity(estimated_bytes);
         serde_json::to_writer(&mut buf, &wire_req)?;
         Ok(buf)
+    }
+
+    fn build_http_request(
+        &self,
+        client: &reqwest::Client,
+        url: &str,
+        body: Vec<u8>,
+        options: &CompletionOptions,
+        emit_session_header: bool,
+    ) -> reqwest::RequestBuilder {
+        let mut req_builder = client
+            .post(url)
+            .header("Content-Type", "application/json")
+            .header(
+                "Accept",
+                if options.stream {
+                    "text/event-stream, application/json"
+                } else {
+                    "application/json"
+                },
+            );
+
+        if !self.api_key.is_empty() && self.api_key != "none" {
+            req_builder = req_builder.header("Authorization", format!("Bearer {}", self.api_key));
+        }
+
+        // OpenRouter custom attribution headers
+        if self.provider_name == "openrouter" {
+            req_builder = req_builder
+                .header("HTTP-Referer", crate::constants::PROJECT_REPO_URL)
+                .header("X-Title", crate::constants::APP_NAME);
+        }
+
+        // Local & LMCache/vLLM/Ollama KV-cache prefix-router affinity header
+        if emit_session_header {
+            let affinity = ProviderCacheAffinityProfile::for_provider(&self.provider_name);
+            if affinity.emits_session_header {
+                if let Some(cache_key) = options
+                    .prompt_cache_key
+                    .as_deref()
+                    .and_then(normalize_cache_key)
+                {
+                    req_builder = req_builder.header("x-session-id", cache_key);
+                }
+            }
+        }
+
+        req_builder.body(body)
+    }
+
+    fn parse_nonstreaming_json_chunks(
+        val: &serde_json::Value,
+        has_tools: bool,
+        provider_name: &str,
+    ) -> Result<Vec<StreamChunk>> {
+        if let Some(err) = extract_openai_inline_error(val) {
+            return Err(err);
+        }
+
+        let mut chunks = Vec::new();
+        let mut accumulated_content = String::new();
+        let mut emitted_native_tool_calls = false;
+
+        if let Some(choices) = val.get("choices").and_then(|c| c.as_array()) {
+            for choice in choices {
+                let msg_obj = choice.get("message").or_else(|| choice.get("delta"));
+                if let Some(msg) = msg_obj {
+                    if let Some(reasoning) = msg
+                        .get("reasoning_content")
+                        .or_else(|| msg.get("reasoning"))
+                        .and_then(|r| r.as_str())
+                    {
+                        if !reasoning.is_empty() {
+                            chunks.push(StreamChunk::Delta("<thought>".to_string()));
+                            chunks.push(StreamChunk::Delta(reasoning.to_string()));
+                            chunks.push(StreamChunk::Delta("</thought>".to_string()));
+                        }
+                    }
+
+                    if let Some(content) = msg.get("content").and_then(|c| c.as_str()) {
+                        if !content.is_empty() {
+                            accumulated_content.push_str(content);
+                        }
+                    }
+
+                    if let Some(tool_calls) = msg.get("tool_calls").and_then(|tc| tc.as_array()) {
+                        for tc in tool_calls {
+                            let id = tc
+                                .get("id")
+                                .and_then(|i| i.as_str())
+                                .map(|s| s.to_string())
+                                .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+                            if let Some(func) = tc.get("function") {
+                                if let Some(name) = func.get("name").and_then(|n| n.as_str()) {
+                                    let args_str = match func.get("arguments") {
+                                        Some(serde_json::Value::String(s)) => s.clone(),
+                                        Some(other) => other.to_string(),
+                                        None => "{}".to_string(),
+                                    };
+                                    emitted_native_tool_calls = true;
+                                    chunks.push(crate::agent::providers::parse_tool_call_chunk(
+                                        id,
+                                        name.to_string(),
+                                        args_str,
+                                    ));
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        if !emitted_native_tool_calls && has_tools && !accumulated_content.is_empty() {
+            let (cleaned, inline_calls) = extract_inline_tool_calls(&accumulated_content);
+            if !inline_calls.is_empty() {
+                if !cleaned.trim().is_empty() {
+                    chunks.push(StreamChunk::Delta(cleaned));
+                }
+                for tc in inline_calls {
+                    chunks.push(StreamChunk::ToolCallChunk(tc));
+                }
+            } else {
+                chunks.push(StreamChunk::Delta(accumulated_content));
+            }
+        } else if !accumulated_content.is_empty() {
+            chunks.push(StreamChunk::Delta(accumulated_content));
+        }
+
+        if let Some(usage) = val.get("usage") {
+            let prompt_tokens = usage
+                .get("prompt_tokens")
+                .and_then(|t| t.as_u64())
+                .unwrap_or(0) as usize;
+            let completion_tokens = usage
+                .get("completion_tokens")
+                .and_then(|t| t.as_u64())
+                .unwrap_or(0) as usize;
+            let cached_prompt_tokens = usage
+                .get("prompt_tokens_details")
+                .and_then(|d| d.get("cached_tokens"))
+                .and_then(|t| t.as_u64())
+                .unwrap_or(0) as usize;
+            if prompt_tokens > 0 || completion_tokens > 0 || cached_prompt_tokens > 0 {
+                chunks.push(StreamChunk::Usage {
+                    prompt_tokens,
+                    completion_tokens,
+                    cached_prompt_tokens,
+                });
+            } else {
+                tracing::debug!(
+                    provider = %provider_name,
+                    "Usage metadata absent or zero in non-streaming response"
+                );
+            }
+        }
+
+        chunks.push(StreamChunk::Done);
+        Ok(chunks)
     }
 }
 
@@ -838,8 +1393,13 @@ impl Provider for OpenAiCompatibleProvider {
         tools: &[ToolSchema],
         options: &CompletionOptions,
     ) -> Result<ChunkStream> {
-        let url = format!("{}/chat/completions", self.base_url.trim_end_matches('/'));
-        let request_bytes = Self::serialize_request_bytes(
+        let model = if options.model.is_empty() {
+            self.default_model()
+        } else {
+            &options.model
+        };
+        let profile = ModelWireProfile::for_model(model);
+        let initial_body = Self::serialize_request_bytes(
             &self.provider_name,
             messages,
             tools,
@@ -847,43 +1407,190 @@ impl Provider for OpenAiCompatibleProvider {
             self.default_model(),
         )?;
 
-        let mut req_builder = self
-            .client
-            .post(&url)
-            .header("Content-Type", "application/json")
-            .header("Authorization", format!("Bearer {}", self.api_key));
+        let ipv4_client = shared_llm_http_client_ipv4();
+        let candidates = candidate_base_urls_for_provider(&self.provider_name, &self.base_url);
+        let mut selected_response: Option<(String, reqwest::Response)> = None;
+        let mut last_err: Option<crate::error::MinicodeError> = None;
+        let mut first_retryable_err: Option<crate::error::MinicodeError> = None;
 
-        // OpenRouter custom attribution headers
-        if self.provider_name == "openrouter" {
-            req_builder = req_builder
-                .header("HTTP-Referer", crate::constants::PROJECT_REPO_URL)
-                .header("X-Title", crate::constants::APP_NAME);
-        }
+        for (cand_idx, base_url) in candidates.iter().enumerate() {
+            let url = format!("{}/chat/completions", base_url.trim_end_matches('/'));
+            let send_res = send_request_with_ipv4_fallback(&url, &self.client, &ipv4_client, |c| {
+                self.build_http_request(c, &url, initial_body.clone(), options, true)
+            })
+            .await;
 
-        // Local & LMCache/vLLM/Ollama KV-cache prefix-router affinity header
-        let affinity = ProviderCacheAffinityProfile::for_provider(&self.provider_name);
-        if affinity.emits_session_header {
-            if let Some(cache_key) = options
-                .prompt_cache_key
-                .as_deref()
-                .and_then(normalize_cache_key)
-            {
-                req_builder = req_builder.header("x-session-id", cache_key);
+            let resp = match send_res {
+                Ok(r) => r,
+                Err(e) => {
+                    tracing::warn!(
+                        provider = %self.provider_name,
+                        url = %url,
+                        error = %e,
+                        "OpenAI-compatible request transport error"
+                    );
+                    let classified = classify_reqwest_stream_error(&self.provider_name, &e, false);
+                    if first_retryable_err.is_none() && classified.is_retryable_provider_error() {
+                        first_retryable_err = Some(classify_reqwest_stream_error(
+                            &self.provider_name,
+                            &e,
+                            false,
+                        ));
+                    }
+                    last_err = Some(classified);
+                    continue;
+                }
+            };
+
+            if resp.status().is_success() {
+                selected_response = Some((base_url.clone(), resp));
+                break;
             }
+
+            let status = resp.status();
+            let status_code = status.as_u16();
+            if status_code == 429 {
+                return Err(
+                    crate::agent::providers::handle_sse_status_error("", status, resp).await,
+                );
+            }
+
+            let raw_err_body = resp.text().await.unwrap_or_default();
+
+            // Self-healing retry for strict OpenAI-compatible gateways that reject optional fields
+            // (e.g. `stream_options`, `reasoning_effort`, `thinking`, `temperature`, `max_completion_tokens`).
+            if let Some(compat) = detect_compat_override_from_error(
+                status_code,
+                &raw_err_body,
+                profile.uses_max_completion_tokens,
+            ) {
+                if let Ok(stripped_vec) = Self::serialize_request_bytes_with_compat(
+                    &self.provider_name,
+                    messages,
+                    tools,
+                    options,
+                    self.default_model(),
+                    compat,
+                ) {
+                    tracing::info!(
+                        provider = %self.provider_name,
+                        model = %model,
+                        status = status_code,
+                        "Retrying request with stripped optional parameters for gateway compatibility"
+                    );
+                    let stripped_body = stripped_vec;
+                    if let Ok(retry_resp) =
+                        send_request_with_ipv4_fallback(&url, &self.client, &ipv4_client, |c| {
+                            self.build_http_request(c, &url, stripped_body.clone(), options, false)
+                        })
+                        .await
+                    {
+                        if retry_resp.status().is_success() {
+                            selected_response = Some((base_url.clone(), retry_resp));
+                            break;
+                        }
+                        let retry_status = retry_resp.status();
+                        let retry_body = retry_resp.text().await.unwrap_or_default();
+                        let retry_summary = summarize_http_error_body(retry_status, &retry_body);
+                        last_err = Some(
+                            ProviderError::Api {
+                                status: retry_status.as_u16(),
+                                message: retry_summary,
+                            }
+                            .into(),
+                        );
+                        if cand_idx + 1 < candidates.len()
+                            && matches!(retry_status.as_u16(), 401 | 403 | 404)
+                        {
+                            continue;
+                        }
+                        break;
+                    }
+                }
+            }
+
+            let summary = summarize_http_error_body(status, &raw_err_body);
+            let api_err: crate::error::MinicodeError = ProviderError::Api {
+                status: status_code,
+                message: summary.clone(),
+            }
+            .into();
+            if first_retryable_err.is_none() && api_err.is_retryable_provider_error() {
+                first_retryable_err = Some(
+                    ProviderError::Api {
+                        status: status_code,
+                        message: summary,
+                    }
+                    .into(),
+                );
+            }
+            last_err = Some(api_err);
+
+            // Regional failover for multi-region providers (e.g. api.z.ai vs open.bigmodel.cn,
+            // api.minimax.io vs api.minimaxi.com, api.moonshot.ai vs api.moonshot.cn)
+            let can_try_next_region = cand_idx + 1 < candidates.len()
+                && matches!(status_code, 401 | 403 | 404 | 502 | 503 | 504);
+            if can_try_next_region {
+                tracing::info!(
+                    provider = %self.provider_name,
+                    failed_base_url = %base_url,
+                    status = status_code,
+                    "Regional endpoint rejected request; trying alternate regional endpoint"
+                );
+                continue;
+            }
+            break;
         }
 
-        let request = req_builder.body(request_bytes);
+        let (working_base_url, resp) = match selected_response {
+            Some(pair) => pair,
+            None => {
+                return Err(select_regional_failure_error(
+                    first_retryable_err,
+                    last_err,
+                    &self.provider_name,
+                ));
+            }
+        };
 
-        // Clone now — both the EventSource closure and the usage-missing log closure need owned data
+        if candidates.len() > 1 {
+            record_working_provider_base_url(&self.provider_name, &working_base_url);
+        }
+
         let provider_name = self.provider_name.clone();
         let has_tools = !tools.is_empty();
+        let content_type = resp
+            .headers()
+            .get(reqwest::header::CONTENT_TYPE)
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("")
+            .to_ascii_lowercase();
 
-        let event_source = EventSource::new(request).map_err(|e| {
-            ProviderError::StreamDecode(format!("Failed to connect to {}: {}", provider_name, e))
-        })?;
+        // Handle non-streaming JSON responses (when `stream=false`, proxy buffers SSE into JSON,
+        // or provider returns an HTTP 200 JSON error body like MiniMax `base_resp`).
+        if !options.stream || content_type.contains("application/json") {
+            let raw_text = resp
+                .text()
+                .await
+                .map_err(|e| classify_reqwest_stream_error(&provider_name, &e, false))?;
+            let val: serde_json::Value = serde_json::from_str(&raw_text).map_err(|e| {
+                ProviderError::StreamDecode(format!(
+                    "{} JSON response parse error: {}",
+                    provider_name, e
+                ))
+            })?;
+            let chunks = Self::parse_nonstreaming_json_chunks(&val, has_tools, &provider_name)?;
+            let stream = async_stream::stream! {
+                for chunk in chunks {
+                    yield Ok(chunk);
+                }
+            };
+            return Ok(Box::pin(stream));
+        }
 
         let stream = async_stream::stream! {
-            let mut event_source = event_source;
+            let mut byte_stream = resp.bytes_stream();
+            let mut decoder = SseLineDecoder::new();
             let mut tool_calls_accumulator: std::collections::BTreeMap<usize, (String, String, String)> =
                 std::collections::BTreeMap::new(); // (id, name, args_json)
             let mut in_reasoning_mode = false;
@@ -891,174 +1598,180 @@ impl Provider for OpenAiCompatibleProvider {
             let mut emitted_native_tool_calls = false;
             let mut suppress_inline_xml = false;
             let mut last_tool_progress_sig = String::new();
+            let mut raw_non_sse_buf = Vec::new();
+            let mut saw_any_sse_frame = false;
 
-            while let Some(event_res) = event_source.next().await {
-                match event_res {
-                    Ok(Event::Open) => {
-                        tracing::debug!("OpenAI-compatible SSE stream open");
-                    }
-                    Ok(Event::Message(message)) => {
-                        if message.data.trim() == "[DONE]" {
-                            if in_reasoning_mode {
-                                yield Ok(StreamChunk::Delta("</thought>".to_string()));
-                            }
-                            // Emit any accumulated tool calls before concluding
-                            for (_, (id, name, args_str)) in std::mem::take(&mut tool_calls_accumulator) {
-                                emitted_native_tool_calls = true;
-                                yield Ok(crate::agent::providers::parse_tool_call_chunk(id, name, args_str));
-                            }
-
-                            // Fallback: check for Hermes / Ollama inline XML <tool_call> tags, markdown code blocks, or raw JSON
-                            if !emitted_native_tool_calls && has_tools {
-                                let (_, inline_calls) = extract_inline_tool_calls(&accumulated_content);
-                                for tc in inline_calls {
-                                    yield Ok(StreamChunk::ToolCallChunk(tc));
-                                }
-                            }
-
-                            yield Ok(StreamChunk::Done);
-                            return;
+            while let Some(chunk_res) = byte_stream.next().await {
+                match chunk_res {
+                    Ok(bytes) => {
+                        if !saw_any_sse_frame && raw_non_sse_buf.len() < 65_536 {
+                            raw_non_sse_buf.extend_from_slice(&bytes);
                         }
+                        let frames = decoder.push_chunk(&bytes);
+                        for frame in frames {
+                            saw_any_sse_frame = true;
+                            let data_trimmed = frame.data.trim();
+                            if data_trimmed.is_empty() {
+                                continue;
+                            }
+                            if data_trimmed == "[DONE]" {
+                                if in_reasoning_mode {
+                                    yield Ok(StreamChunk::Delta("</thought>".to_string()));
+                                }
+                                for (_, (id, name, args_str)) in std::mem::take(&mut tool_calls_accumulator) {
+                                    emitted_native_tool_calls = true;
+                                    yield Ok(crate::agent::providers::parse_tool_call_chunk(id, name, args_str));
+                                }
+                                if !emitted_native_tool_calls && has_tools {
+                                    let (_, inline_calls) = extract_inline_tool_calls(&accumulated_content);
+                                    for tc in inline_calls {
+                                        yield Ok(StreamChunk::ToolCallChunk(tc));
+                                    }
+                                }
+                                yield Ok(StreamChunk::Done);
+                                return;
+                            }
 
-                        let parsed: Result<serde_json::Value> = serde_json::from_str(&message.data)
-                            .map_err(|e| ProviderError::StreamDecode(format!("JSON parse error: {}", e)).into());
+                            let parsed: Result<serde_json::Value> = serde_json::from_str(data_trimmed)
+                                .map_err(|e| ProviderError::StreamDecode(format!("JSON parse error: {}", e)).into());
 
-                        match parsed {
-                            Ok(val) => {
-                                if let Some(choices) = val.get("choices").and_then(|c| c.as_array()) {
-                                    for choice in choices {
-                                        if let Some(delta) = choice.get("delta") {
-                                            // 1. Reasoning / Thought Delta (DeepSeek R1, OpenAI o1/o3, MiniMax, etc.)
-                                            if let Some(reasoning) = delta.get("reasoning_content").or_else(|| delta.get("reasoning")).and_then(|r| r.as_str()) {
-                                                if !reasoning.is_empty() {
-                                                    if !in_reasoning_mode {
-                                                        in_reasoning_mode = true;
-                                                        yield Ok(StreamChunk::Delta("<thought>".to_string()));
+                            match parsed {
+                                Ok(val) => {
+                                    if let Some(inline_err) = extract_openai_inline_error(&val) {
+                                        if in_reasoning_mode {
+                                            yield Ok(StreamChunk::Delta("</thought>".to_string()));
+                                        }
+                                        yield Err(inline_err);
+                                        return;
+                                    }
+
+                                    if let Some(choices) = val.get("choices").and_then(|c| c.as_array()) {
+                                        for choice in choices {
+                                            if let Some(delta) = choice.get("delta") {
+                                                // 1. Reasoning / Thought Delta (DeepSeek R1, OpenAI o1/o3, MiniMax, etc.)
+                                                if let Some(reasoning) = delta.get("reasoning_content").or_else(|| delta.get("reasoning")).and_then(|r| r.as_str()) {
+                                                    if !reasoning.is_empty() {
+                                                        if !in_reasoning_mode {
+                                                            in_reasoning_mode = true;
+                                                            yield Ok(StreamChunk::Delta("<thought>".to_string()));
+                                                        }
+                                                        yield Ok(StreamChunk::Delta(reasoning.to_string()));
                                                     }
-                                                    yield Ok(StreamChunk::Delta(reasoning.to_string()));
                                                 }
-                                            }
 
-                                            // 2. Text Delta
-                                            if let Some(content) = delta.get("content").and_then(|c| c.as_str()) {
-                                                if !content.is_empty() {
-                                                    accumulated_content.push_str(content);
-                                                    if in_reasoning_mode {
+                                                // 2. Text Delta
+                                                if let Some(content) = delta.get("content").and_then(|c| c.as_str()) {
+                                                    if !content.is_empty() {
+                                                        accumulated_content.push_str(content);
+                                                        if in_reasoning_mode {
+                                                            in_reasoning_mode = false;
+                                                            yield Ok(StreamChunk::Delta("</thought>".to_string()));
+                                                        }
+                                                        // Suppress streaming inline tool call tags into chat stream using O(1) tail window check
+                                                        if !suppress_inline_xml {
+                                                            let tail_start = accumulated_content.floor_char_boundary(
+                                                                accumulated_content.len().saturating_sub(32 + content.len()),
+                                                            );
+                                                            let tail = &accumulated_content[tail_start..];
+                                                            if tail.contains("<minimax:tool_call")
+                                                                || tail.contains("<tool_call>")
+                                                                || tail.contains("<tool_use>")
+                                                            {
+                                                                suppress_inline_xml = true;
+                                                            }
+                                                        }
+                                                        if !suppress_inline_xml {
+                                                            yield Ok(StreamChunk::Delta(content.to_string()));
+                                                        } else if let Some((name, args_preview)) =
+                                                            extract_streaming_inline_tool_hint(&accumulated_content)
+                                                        {
+                                                            let sig = format!(
+                                                                "xml:{}:{}",
+                                                                name,
+                                                                args_preview.len() >= 64
+                                                            );
+                                                            if sig != last_tool_progress_sig {
+                                                                last_tool_progress_sig = sig;
+                                                                yield Ok(StreamChunk::ToolCallProgress {
+                                                                    name,
+                                                                    args_preview,
+                                                                });
+                                                            }
+                                                        }
+                                                    }
+                                                }
+
+                                                // 3. Tool Calls Delta
+                                                if let Some(tool_calls) = delta.get("tool_calls").and_then(|tc| tc.as_array()) {
+                                                    if !tool_calls.is_empty() && in_reasoning_mode {
                                                         in_reasoning_mode = false;
                                                         yield Ok(StreamChunk::Delta("</thought>".to_string()));
                                                     }
-                                                    // Suppress streaming inline tool call tags into chat stream using O(1) tail window check
-                                                    if !suppress_inline_xml {
-                                                        let tail_start = accumulated_content.floor_char_boundary(
-                                                            accumulated_content.len().saturating_sub(32 + content.len()),
-                                                        );
-                                                        let tail = &accumulated_content[tail_start..];
-                                                        if tail.contains("<minimax:tool_call")
-                                                            || tail.contains("<tool_call>")
-                                                            || tail.contains("<tool_use>")
-                                                        {
-                                                            suppress_inline_xml = true;
-                                                        }
-                                                    }
-                                                    if !suppress_inline_xml {
-                                                        yield Ok(StreamChunk::Delta(content.to_string()));
-                                                    } else if let Some((name, args_preview)) =
-                                                        extract_streaming_inline_tool_hint(&accumulated_content)
-                                                    {
-                                                        let sig = format!(
-                                                            "xml:{}:{}",
-                                                            name,
-                                                            args_preview.len() >= 64
-                                                        );
-                                                        if sig != last_tool_progress_sig {
-                                                            last_tool_progress_sig = sig;
-                                                            yield Ok(StreamChunk::ToolCallProgress {
-                                                                name,
-                                                                args_preview,
-                                                            });
-                                                        }
-                                                    }
-                                                }
-                                            }
+                                                    for tc in tool_calls {
+                                                        let index = tc.get("index").and_then(|i| i.as_u64()).unwrap_or(0) as usize;
+                                                        let entry = tool_calls_accumulator.entry(index).or_insert_with(|| (
+                                                            uuid::Uuid::new_v4().to_string(),
+                                                            String::new(),
+                                                            String::new(),
+                                                        ));
 
-                                            // 3. Tool Calls Delta
-                                            if let Some(tool_calls) = delta.get("tool_calls").and_then(|tc| tc.as_array()) {
-                                                if !tool_calls.is_empty() && in_reasoning_mode {
-                                                    in_reasoning_mode = false;
-                                                    yield Ok(StreamChunk::Delta("</thought>".to_string()));
-                                                }
-                                                for tc in tool_calls {
-                                                    let index = tc.get("index").and_then(|i| i.as_u64()).unwrap_or(0) as usize;
-                                                    let entry = tool_calls_accumulator.entry(index).or_insert_with(|| (
-                                                        uuid::Uuid::new_v4().to_string(),
-                                                        String::new(),
-                                                        String::new(),
-                                                    ));
-
-                                                    if let Some(id) = tc.get("id").and_then(|id| id.as_str()) {
-                                                        entry.0 = id.to_string();
-                                                    }
-                                                    if let Some(func) = tc.get("function") {
-                                                        if let Some(name) = func.get("name").and_then(|n| n.as_str()) {
-                                                            if entry.1.is_empty() {
-                                                                entry.1 = name.to_string();
+                                                        if let Some(id) = tc.get("id").and_then(|id| id.as_str()) {
+                                                            entry.0 = id.to_string();
+                                                        }
+                                                        if let Some(func) = tc.get("function") {
+                                                            if let Some(name) = func.get("name").and_then(|n| n.as_str()) {
+                                                                if entry.1.is_empty() {
+                                                                    entry.1 = name.to_string();
+                                                                }
+                                                            }
+                                                            if let Some(args) = func.get("arguments").and_then(|a| a.as_str()) {
+                                                                entry.2.push_str(args);
                                                             }
                                                         }
-                                                        if let Some(args) = func.get("arguments").and_then(|a| a.as_str()) {
-                                                            entry.2.push_str(args);
-                                                        }
-                                                    }
-                                                    if !entry.1.is_empty() {
-                                                        let sig = format!(
-                                                            "sse:{}:{}:{}",
-                                                            index,
-                                                            entry.1,
-                                                            entry.2.len() >= 64
-                                                        );
-                                                        if sig != last_tool_progress_sig {
-                                                            last_tool_progress_sig = sig;
-                                                            let preview: String =
-                                                                entry.2.chars().take(280).collect();
-                                                            yield Ok(StreamChunk::ToolCallProgress {
-                                                                name: entry.1.clone(),
-                                                                args_preview: preview,
-                                                            });
+                                                        if !entry.1.is_empty() {
+                                                            let sig = format!(
+                                                                "sse:{}:{}:{}",
+                                                                index,
+                                                                entry.1,
+                                                                entry.2.len() >= 64
+                                                            );
+                                                            if sig != last_tool_progress_sig {
+                                                                last_tool_progress_sig = sig;
+                                                                let preview: String =
+                                                                    entry.2.chars().take(280).collect();
+                                                                yield Ok(StreamChunk::ToolCallProgress {
+                                                                    name: entry.1.clone(),
+                                                                    args_preview: preview,
+                                                                });
+                                                            }
                                                         }
                                                     }
                                                 }
                                             }
                                         }
                                     }
-                                }
 
-                                if let Some(usage) = val.get("usage") {
-                                    let prompt_tokens = usage.get("prompt_tokens").and_then(|t| t.as_u64()).unwrap_or(0) as usize;
-                                    let completion_tokens = usage.get("completion_tokens").and_then(|t| t.as_u64()).unwrap_or(0) as usize;
-                                    let cached_prompt_tokens = usage
-                                        .get("prompt_tokens_details")
-                                        .and_then(|d| d.get("cached_tokens"))
-                                        .and_then(|t| t.as_u64())
-                                        .unwrap_or(0) as usize;
-                                    if prompt_tokens > 0 || completion_tokens > 0 || cached_prompt_tokens > 0 {
-                                        yield Ok(StreamChunk::Usage { prompt_tokens, completion_tokens, cached_prompt_tokens });
-                                    } else {
-                                        tracing::debug!(
-                                            provider = %provider_name,
-                                            "Usage metadata absent or zero in response (prompt_tokens=0, completion_tokens=0)"
-                                        );
+                                    if let Some(usage) = val.get("usage") {
+                                        let prompt_tokens = usage.get("prompt_tokens").and_then(|t| t.as_u64()).unwrap_or(0) as usize;
+                                        let completion_tokens = usage.get("completion_tokens").and_then(|t| t.as_u64()).unwrap_or(0) as usize;
+                                        let cached_prompt_tokens = usage
+                                            .get("prompt_tokens_details")
+                                            .and_then(|d| d.get("cached_tokens"))
+                                            .and_then(|t| t.as_u64())
+                                            .unwrap_or(0) as usize;
+                                        if prompt_tokens > 0 || completion_tokens > 0 || cached_prompt_tokens > 0 {
+                                            yield Ok(StreamChunk::Usage { prompt_tokens, completion_tokens, cached_prompt_tokens });
+                                        } else {
+                                            tracing::debug!(
+                                                provider = %provider_name,
+                                                "Usage metadata absent or zero in response (prompt_tokens=0, completion_tokens=0)"
+                                            );
+                                        }
                                     }
                                 }
+                                Err(e) => yield Err(e),
                             }
-                            Err(e) => yield Err(e),
                         }
-                    }
-                    Err(reqwest_eventsource::Error::StreamEnded) => {
-                        // The server cleanly ended the SSE stream — this is normal EOF
-                        break;
-                    }
-                    Err(reqwest_eventsource::Error::InvalidStatusCode(status, resp)) => {
-                        yield Err(crate::agent::providers::handle_sse_status_error("", status, resp).await);
-                        return;
                     }
                     Err(e) => {
                         let (completed, had_incomplete) =
@@ -1074,13 +1787,63 @@ impl Provider for OpenAiCompatibleProvider {
                             );
                             break;
                         }
-                        if let Some(classified_err) =
-                            crate::agent::providers::classify_sse_stream_error("", &e, had_incomplete)
-                        {
-                            yield Err(classified_err);
+                        yield Err(classify_reqwest_stream_error("", &e, had_incomplete));
+                        return;
+                    }
+                }
+            }
+
+            // Flush any trailing SSE frame without final newline
+            for frame in decoder.finish() {
+                saw_any_sse_frame = true;
+                let data_trimmed = frame.data.trim();
+                if data_trimmed.is_empty() || data_trimmed == "[DONE]" {
+                    continue;
+                }
+                if let Ok(val) = serde_json::from_str::<serde_json::Value>(data_trimmed) {
+                    if let Some(inline_err) = extract_openai_inline_error(&val) {
+                        if in_reasoning_mode {
+                            yield Ok(StreamChunk::Delta("</thought>".to_string()));
+                        }
+                        yield Err(inline_err);
+                        return;
+                    }
+                    if let Some(choices) = val.get("choices").and_then(|c| c.as_array()) {
+                        for choice in choices {
+                            if let Some(content) = choice
+                                .get("delta")
+                                .and_then(|d| d.get("content"))
+                                .and_then(|c| c.as_str())
+                            {
+                                if !content.is_empty() {
+                                    accumulated_content.push_str(content);
+                                    if in_reasoning_mode {
+                                        in_reasoning_mode = false;
+                                        yield Ok(StreamChunk::Delta("</thought>".to_string()));
+                                    }
+                                    yield Ok(StreamChunk::Delta(content.to_string()));
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            // If upstream returned a plain JSON payload without `application/json` Content-Type
+            // (some proxies strip Content-Type on HTTP 200 JSON errors or buffered responses)
+            if !saw_any_sse_frame && !raw_non_sse_buf.is_empty() {
+                if let Ok(val) = serde_json::from_slice::<serde_json::Value>(&raw_non_sse_buf) {
+                    match Self::parse_nonstreaming_json_chunks(&val, has_tools, &provider_name) {
+                        Ok(chunks) => {
+                            for chunk in chunks {
+                                yield Ok(chunk);
+                            }
                             return;
                         }
-                        break;
+                        Err(e) => {
+                            yield Err(e);
+                            return;
+                        }
                     }
                 }
             }
@@ -1515,6 +2278,27 @@ pub fn extract_inline_tool_calls(text: &str) -> (String, Vec<ToolCall>) {
     (cleaned, tool_calls)
 }
 
+/// Chooses the error to surface when every regional candidate endpoint fails.
+///
+/// When an earlier region (e.g. `api.minimax.io`) hit a retryable transport or 5xx error and a
+/// fallback region (e.g. China `api.minimaxi.com`) returned a non-retryable auth mismatch (`401`/`403`),
+/// preserve the retryable transport error so the agent loop retries the user's actual region instead
+/// of aborting the turn as an invalid API key.
+pub(crate) fn select_regional_failure_error(
+    first_retryable_err: Option<crate::error::MinicodeError>,
+    last_err: Option<crate::error::MinicodeError>,
+    provider_name: &str,
+) -> crate::error::MinicodeError {
+    match (first_retryable_err, last_err) {
+        (Some(retryable), Some(ref last)) if !last.is_retryable_provider_error() => retryable,
+        (_, Some(last)) => last,
+        (Some(retryable), None) => retryable,
+        (None, None) => {
+            ProviderError::Network(format!("Failed to connect to {}", provider_name)).into()
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1656,6 +2440,7 @@ Let me proceed."#;
             thinking_budget: Some(2048),
             reasoning_effort: None,
             prompt_cache_key: Some("minicode:session:test-123".to_string()),
+            ..Default::default()
         };
 
         let dom_val = OpenAiCompatibleProvider::build_request_body(
@@ -1710,7 +2495,7 @@ Let me proceed."#;
             .post("http://127.0.0.1:1/chat/completions")
             .header("Content-Type", "application/json")
             .body(wire_bytes);
-        assert!(EventSource::new(req).is_ok());
+        assert!(reqwest_eventsource::EventSource::new(req).is_ok());
     }
 
     #[test]
@@ -1758,5 +2543,279 @@ Let me proceed."#;
             reasoning_effort_for_budget(crate::constants::OPENAI_REASONING_MEDIUM_MAX_TOKENS + 1),
             "high"
         );
+    }
+
+    #[test]
+    fn test_provider_wire_compatibility_mistral_minimax_kimi_and_effort_gating() {
+        let messages = vec![Message::user("hello")];
+
+        // 1. Mistral must omit `stream_options` (avoids HTTP 422) and `reasoning_effort`
+        let mistral_opts = CompletionOptions {
+            model: "codestral-latest".to_string(),
+            temperature: 0.2,
+            max_tokens: 4096,
+            reasoning_effort: Some("medium".to_string()),
+            ..Default::default()
+        };
+        let mistral_val: serde_json::Value = serde_json::from_slice(
+            &OpenAiCompatibleProvider::serialize_request_bytes(
+                "mistral",
+                &messages,
+                &[],
+                &mistral_opts,
+                "codestral-latest",
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        assert!(mistral_val.get("stream_options").is_none());
+        assert!(mistral_val.get("reasoning_effort").is_none());
+
+        // 2. Non-reasoning GPT-4o must NOT receive `reasoning_effort` even if globally set
+        let gpt4o_opts = CompletionOptions {
+            model: "gpt-4o".to_string(),
+            temperature: 0.2,
+            max_tokens: 4096,
+            reasoning_effort: Some("high".to_string()),
+            ..Default::default()
+        };
+        let gpt4o_val: serde_json::Value = serde_json::from_slice(
+            &OpenAiCompatibleProvider::serialize_request_bytes(
+                "openai",
+                &messages,
+                &[],
+                &gpt4o_opts,
+                "gpt-4o",
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        assert!(gpt4o_val.get("reasoning_effort").is_none());
+        assert!(gpt4o_val.get("stream_options").is_some());
+
+        // 3. MiniMax clamps temperature == 0.0 into (0.01, 1.0] and omits stream_options
+        let mm_opts = CompletionOptions {
+            model: "MiniMax-M2.7".to_string(),
+            temperature: 0.0,
+            max_tokens: 8192,
+            reasoning_effort: Some("medium".to_string()),
+            ..Default::default()
+        };
+        let mm_val: serde_json::Value = serde_json::from_slice(
+            &OpenAiCompatibleProvider::serialize_request_bytes(
+                "minimax",
+                &messages,
+                &[],
+                &mm_opts,
+                "MiniMax-M2.7",
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        assert!(mm_val["temperature"].as_f64().unwrap() >= 0.009);
+        assert!(mm_val.get("stream_options").is_none());
+        assert!(mm_val.get("reasoning_effort").is_none());
+
+        // 4. Kimi K2.5 enforces temperature=1.0 and preserves reasoning_effort
+        let kimi_opts = CompletionOptions {
+            model: "kimi-k2.5".to_string(),
+            temperature: 0.2,
+            max_tokens: 8192,
+            reasoning_effort: Some("high".to_string()),
+            ..Default::default()
+        };
+        let kimi_val: serde_json::Value = serde_json::from_slice(
+            &OpenAiCompatibleProvider::serialize_request_bytes(
+                "kimi",
+                &messages,
+                &[],
+                &kimi_opts,
+                "kimi-k2.5",
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(kimi_val["temperature"], 1.0);
+        assert_eq!(kimi_val["reasoning_effort"], "high");
+
+        // 5. Non-streaming mode omits `stream_options` even for OpenAI
+        let nonstream_opts = CompletionOptions {
+            model: "gpt-4o".to_string(),
+            stream: false,
+            ..Default::default()
+        };
+        let nonstream_val: serde_json::Value = serde_json::from_slice(
+            &OpenAiCompatibleProvider::serialize_request_bytes(
+                "openai",
+                &messages,
+                &[],
+                &nonstream_opts,
+                "gpt-4o",
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(nonstream_val["stream"], false);
+        assert!(nonstream_val.get("stream_options").is_none());
+
+        // 6. DeepSeek-chat clamps 16384 -> 8192
+        let ds_opts = CompletionOptions {
+            model: "deepseek-chat".to_string(),
+            max_tokens: 16384,
+            ..Default::default()
+        };
+        let ds_val: serde_json::Value = serde_json::from_slice(
+            &OpenAiCompatibleProvider::serialize_request_bytes(
+                "deepseek",
+                &messages,
+                &[],
+                &ds_opts,
+                "deepseek-chat",
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(ds_val["max_tokens"], 8192);
+
+        // 7. Inline error detection covers OpenRouter `error` and MiniMax `base_resp`
+        let mm_err = serde_json::json!({
+            "base_resp": { "status_code": 1004, "status_msg": "login fail" }
+        });
+        assert!(extract_openai_inline_error(&mm_err).is_some());
+
+        let or_err = serde_json::json!({
+            "error": { "code": 502, "message": "Provider returned error" }
+        });
+        assert!(extract_openai_inline_error(&or_err).is_some());
+
+        // 8. Self-healing HTTP 422 parameter rejection detector
+        let compat = detect_compat_override_from_error(
+            422,
+            "Extra inputs are not permitted: stream_options",
+            false,
+        )
+        .expect("must detect unsupported stream_options");
+        assert!(compat.strip_optional_fields);
+    }
+
+    #[tokio::test]
+    async fn test_openai_compat_self_healing_422_and_json_proxy_fallback() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        use tokio::net::TcpListener;
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+
+        let server = tokio::spawn(async move {
+            for attempt in 0..2 {
+                let (mut socket, _) = listener.accept().await.unwrap();
+                let mut buf = vec![0u8; 8192];
+                let n = socket.read(&mut buf).await.unwrap();
+                let req_str = String::from_utf8_lossy(&buf[..n]);
+                if attempt == 0 {
+                    assert!(req_str.contains("stream_options"));
+                    let body =
+                        r#"{"error":{"message":"Extra inputs are not permitted: stream_options"}}"#;
+                    let resp = format!(
+                        "HTTP/1.1 422 Unprocessable Entity\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                        body.len(),
+                        body
+                    );
+                    socket.write_all(resp.as_bytes()).await.unwrap();
+                } else {
+                    assert!(!req_str.contains("stream_options"));
+                    // Simulate a buffering proxy returning HTTP 200 application/json despite stream=true
+                    let body = r#"{"choices":[{"message":{"role":"assistant","content":"recovered!"}}],"usage":{"prompt_tokens":10,"completion_tokens":4}}"#;
+                    let resp = format!(
+                        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                        body.len(),
+                        body
+                    );
+                    socket.write_all(resp.as_bytes()).await.unwrap();
+                }
+            }
+        });
+
+        let provider = OpenAiCompatibleProvider::new(
+            "custom-gw",
+            "test-key",
+            format!("http://{}/v1", addr),
+            "gpt-4o",
+        );
+        let messages = vec![Message::user("ping")];
+        let options = CompletionOptions::new("gpt-4o");
+        let mut stream = provider
+            .stream_completion(&messages, &[], &options)
+            .await
+            .expect("self-healing retry should succeed");
+
+        let mut text = String::new();
+        while let Some(chunk) = stream.next().await {
+            if let StreamChunk::Delta(d) = chunk.unwrap() {
+                text.push_str(&d);
+            }
+        }
+        assert_eq!(text, "recovered!");
+        server.await.unwrap();
+    }
+
+    #[test]
+    fn test_small_context_max_tokens_error_recovery_and_retry_after_backoff() {
+        // 1. Groq HTTP 400 max_tokens cap error on 4096-window models like `allam-2-7b`
+        let groq_err = r#"{"error":{"message":"`max_tokens` must be less than or equal to `4096`, the maximum value for `max_tokens` is less than the `context_window` for this model","type":"invalid_request_error","param":"max_tokens"}}"#;
+        let compat = detect_compat_override_from_error(400, groq_err, false)
+            .expect("should produce self-healing compat override");
+        assert_eq!(compat.max_tokens_cap, Some(2048));
+
+        let messages = vec![Message::user("hi")];
+        let mut options = CompletionOptions::new("allam-2-7b");
+        options.max_tokens = 16384;
+        let bytes = OpenAiCompatibleProvider::serialize_request_bytes_with_compat(
+            "groq",
+            &messages,
+            &[],
+            &options,
+            "allam-2-7b",
+            compat,
+        )
+        .unwrap();
+        let val: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(val["max_tokens"], 2048);
+
+        // 2. MinicodeError::retry_backoff_secs honors server Retry-After hints instead of burning 2s/4s retries
+        let rl_err =
+            crate::error::MinicodeError::Provider(crate::error::ProviderError::RateLimited {
+                retry_after_secs: Some(5),
+            });
+        assert_eq!(rl_err.retry_backoff_secs(1), 5);
+        assert_eq!(rl_err.retry_backoff_secs(2), 5);
+        assert_eq!(rl_err.retry_backoff_secs(3), 8);
+    }
+
+    #[test]
+    fn test_select_regional_failure_error_preserves_retryable_transport_over_fallback_401() {
+        // Primary region (api.minimax.io) had a transient network error, then China fallback
+        // (api.minimaxi.com) returned 401 -> must preserve the retryable Network error!
+        let net_err: crate::error::MinicodeError =
+            ProviderError::Network("minimax transport reset".to_string()).into();
+        let auth_err: crate::error::MinicodeError = ProviderError::Api {
+            status: 401,
+            message: "invalid api key (2049)".to_string(),
+        }
+        .into();
+        let chosen = select_regional_failure_error(Some(net_err), Some(auth_err), "minimax");
+        assert!(
+            chosen.is_retryable_provider_error(),
+            "Expected retryable transport error to be preserved over fallback region 401, got: {chosen}"
+        );
+
+        // If ALL regions returned 401 (real bad API key), first_retryable_err is None -> surface 401!
+        let real_auth_err: crate::error::MinicodeError = ProviderError::Api {
+            status: 401,
+            message: "invalid api key".to_string(),
+        }
+        .into();
+        let chosen_auth = select_regional_failure_error(None, Some(real_auth_err), "minimax");
+        assert!(!chosen_auth.is_retryable_provider_error());
     }
 }

@@ -544,6 +544,53 @@ impl ModalState {
         }
     }
 
+    /// Builds `ProviderSelect` including any user-defined custom providers from
+    /// `config.provider.custom_endpoints` and pre-selecting the currently active provider.
+    pub fn new_provider_select_with_config(config: &crate::config::Config) -> Self {
+        let mut providers = Vec::with_capacity(
+            crate::constants::SUPPORTED_PROVIDERS.len()
+                + config.provider.custom_endpoints.len()
+                + 1,
+        );
+        providers.push("favorites".to_string());
+        providers.extend(
+            crate::constants::SUPPORTED_PROVIDERS
+                .iter()
+                .map(|&p| p.to_string()),
+        );
+
+        let mut custom_names: Vec<String> = config
+            .provider
+            .custom_endpoints
+            .keys()
+            .filter(|name| {
+                let lower = name.trim().to_ascii_lowercase();
+                !lower.is_empty()
+                    && !providers
+                        .iter()
+                        .any(|existing| existing.eq_ignore_ascii_case(&lower))
+            })
+            .cloned()
+            .collect();
+        custom_names.sort();
+        providers.extend(custom_names);
+
+        let active = config.provider.default.trim();
+        let selected_index = if !active.is_empty() {
+            providers
+                .iter()
+                .position(|p| p.eq_ignore_ascii_case(active))
+                .unwrap_or(0)
+        } else {
+            0
+        };
+
+        ModalState::ProviderSelect {
+            providers,
+            selected_index,
+        }
+    }
+
     pub fn new_model_select(provider: String, models: Vec<ModelInfo>) -> Self {
         let count = models.len();
         ModalState::ModelSelect {

@@ -694,7 +694,7 @@ impl PromptBuilder {
                 avg_cpu,
                 if browser_live { " | Live browser running" } else { "" }
             ));
-            recency.push_str("    Rules: Keep dev servers running across turns (NEVER stop a dev server at turn end unless explicitly requested by the user); close headless browsers via `browser_close` when inspection finishes (keep GUI browsers open); use `minitask(action=\"resources\"|\"status\"|\"stop\"|\"kill_all\")` internally instead of raw `ps`/`top`/`kill`/`pkill`, and never tell the human user to type internal tool calls like `minitask(...)` in final prose.\n");
+            recency.push_str("    Rules: Clean up temporary QA dev servers and browsers via `minitask(action=\"stop\")` / `browser_close` once verification finishes (minicode automatically tears down ephemeral webdev servers and browsers at turn end unless the user explicitly requested a persistent live preview); use `minitask(action=\"resources\"|\"status\"|\"stop\"|\"kill_all\")` internally instead of raw `ps`/`top`/`kill`/`pkill`, and never tell the human user to type internal tool calls like `minitask(...)` in final prose.\n");
             recency.push_str("  </active_background_tasks>\n");
         }
 

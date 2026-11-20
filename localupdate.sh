@@ -145,20 +145,88 @@ render_progress_bar() {
     printf -v BAR_STR "%b" "$bar"
 }
 
+sample_tree_rss_kb() {
+    local root_pid="$1"
+    awk -v root="$root_pid" '
+        BEGIN { total = 0 }
+        {
+            pid = $1; ppid = $2; rss = $3
+            parent[pid] = ppid
+            mem[pid] = rss
+            pids[pid] = 1
+        }
+        END {
+            in_tree[root] = 1
+            changed = 1
+            while (changed) {
+                changed = 0
+                for (p in pids) {
+                    if (!in_tree[p] && in_tree[parent[p]]) {
+                        in_tree[p] = 1
+                        changed = 1
+                    }
+                }
+            }
+            for (p in in_tree) {
+                total += mem[p]
+            }
+            print total
+        }
+    ' < <(ps -eo pid=,ppid=,rss= 2>/dev/null) 2>/dev/null || echo 0
+}
+
 run_cargo_pretty_build() {
     local jobs="$1"
+    local profile="$2"
     local project_name="minicode"
-    local cmd_label="cargo build --release -j ${jobs}"
+    local cmd_label="cargo build --profile ${profile} -j ${jobs}"
     local is_tty=false
-    # Disable cursor-up 12.5fps ANSI animation when invoked inside AI agent PTY harnesses
+    # Disable cursor-up ANSI animation when invoked inside AI agent PTY harnesses
     # (e.g. Antigravity run_command sets TERM=dumb and ANTIGRAVITY_AGENT=1) so we don't flood
     # the agent's in-memory PTY transcript with 25,000+ redraw lines and spike host RAM.
     if [ -t 1 ] && [ "${TERM:-dumb}" != "dumb" ] && [ -z "${ANTIGRAVITY_AGENT:-}${ANTIGRAVITY_CLI:-}${CI:-}${CLAUDECODE:-}${CODEX_CI:-}${NO_TTY_ANIMATION:-}" ]; then
         is_tty=true
     fi
 
+    # Dynamically compute safe kernel cgroup RAM & CPU limits from /proc/meminfo so the build
+    # can NEVER freeze or OOM-crash the desktop/IDE even on tight 14-16 GiB laptops.
+    local use_cgroup_guard=false
+    local mem_high_mb=2400
+    local mem_max_mb=3200
+    local cpu_quota_pct=$(( jobs * 100 ))
+    local guard_badge="nice -n 19 • low-RAM"
+
+    if [ "${NO_MEM_LIMIT:-false}" != true ] && [ -r /proc/meminfo ]; then
+        local mem_total_kb mem_avail_kb mem_total_mb mem_avail_mb
+        mem_total_kb=$(awk '/^MemTotal:/ {print $2; exit}' /proc/meminfo 2>/dev/null || echo 0)
+        mem_avail_kb=$(awk '/^MemAvailable:/ {print $2; exit}' /proc/meminfo 2>/dev/null || echo 0)
+        mem_total_mb=$(( mem_total_kb / 1024 ))
+        mem_avail_mb=$(( mem_avail_kb / 1024 ))
+        if [ "$mem_avail_mb" -gt 0 ] && [ "$mem_total_mb" -gt 0 ]; then
+            local cap_high_avail=$(( mem_avail_mb * 72 / 100 ))
+            local cap_high_total=$(( mem_total_mb * 55 / 100 ))
+            mem_high_mb="$cap_high_avail"
+            if [ "$cap_high_total" -lt "$mem_high_mb" ]; then mem_high_mb="$cap_high_total"; fi
+            if [ "$mem_high_mb" -lt 1800 ]; then mem_high_mb=1800; fi
+
+            local cap_max_avail=$(( mem_avail_mb * 90 / 100 ))
+            local cap_max_total=$(( mem_total_mb * 72 / 100 ))
+            mem_max_mb="$cap_max_avail"
+            if [ "$cap_max_total" -lt "$mem_max_mb" ]; then mem_max_mb="$cap_max_total"; fi
+            if [ "$mem_max_mb" -lt $(( mem_high_mb + 640 )) ]; then
+                mem_max_mb=$(( mem_high_mb + 640 ))
+            fi
+        fi
+
+        if command -v systemd-run >/dev/null 2>&1 \
+            && systemd-run --user --scope --quiet -p "MemoryHigh=${mem_high_mb}M" true >/dev/null 2>&1; then
+            use_cgroup_guard=true
+            guard_badge="nice -n 19 • cgroup <=${mem_max_mb}MiB • CPU ${cpu_quota_pct}%"
+        fi
+    fi
+
     echo ""
-    echo -e "  ${PURPLE}${BOLD}${cmd_label}${RESET} ${MUTED}(nice -n 19 • Aura Dark cargo-pretty)${RESET}"
+    echo -e "  ${PURPLE}${BOLD}${cmd_label}${RESET} ${MUTED}(${guard_badge})${RESET}"
     echo -e "  ${BORDER}────────────────────────────────────────${RESET}"
 
     local total_crates=300
@@ -254,7 +322,7 @@ run_cargo_pretty_build() {
                 root_stage_start_ms="$NOW_MS"
                 root_stage_base_pct=35
                 root_stage_target_pct=78
-                root_phase="compiling ${project_name} (lib • release)"
+                root_phase="compiling ${project_name} (lib • ${profile})"
                 active_crates=("${c_name} ${c_ver} (lib)|${NOW_MS}" "${active_crates[@]:0:$(( max_active - 1 ))}")
             else
                 root_phase="building dependencies (${compiled_crates} built)"
@@ -284,28 +352,48 @@ run_cargo_pretty_build() {
                 root_stage_start_ms="$NOW_MS"
                 root_stage_base_pct=78
                 root_stage_target_pct=99
-                root_phase="compiling & linking ${project_name} (bin • release)"
+                root_phase="compiling & linking ${project_name} (bin • ${profile})"
                 active_crates=("${project_name} ${root_ver} (bin)|${NOW_MS}")
             elif [[ "$trimmed" == *--crate-type\ lib* ]]; then
-                root_phase="compiling ${project_name} (lib • opt-level=3)"
+                root_phase="compiling ${project_name} (lib • ${profile})"
             fi
         fi
     }
 
     set +e
-    if command -v ionice >/dev/null 2>&1; then
-        CARGO_BUILD_JOBS="${jobs}" RAYON_NUM_THREADS=1 ionice -c 3 nice -n 19 cargo build --release --workspace -j "${jobs}" -v --color never >"$fifo_file" 2>&1 &
-    else
-        CARGO_BUILD_JOBS="${jobs}" RAYON_NUM_THREADS=1 nice -n 19 cargo build --release --workspace -j "${jobs}" -v --color never >"$fifo_file" 2>&1 &
+    local -a wrap_cmd=()
+    if [ "$use_cgroup_guard" = true ]; then
+        wrap_cmd+=(systemd-run --user --scope --quiet \
+            -p "MemoryHigh=${mem_high_mb}M" \
+            -p "MemoryMax=${mem_max_mb}M" \
+            -p "CPUQuota=${cpu_quota_pct}%")
     fi
+    if command -v ionice >/dev/null 2>&1; then
+        wrap_cmd+=(ionice -c 3)
+    fi
+    wrap_cmd+=(nice -n 19)
+
+    # Build workspace binaries (minibrowse + minicode) in one cargo invocation with -j 1 so
+    # shared dependencies unify features once instead of compiling twice, while Cargo's
+    # 1-token jobserver compiles one crate/CGU at a time and frees each rustc process's RAM.
+    # MALLOC_ARENA_MAX=2 prevents glibc from creating 16*8=128 fragmented arenas across 16 cores.
+    (
+        export CARGO_BUILD_JOBS="${jobs}"
+        export CARGO_INCREMENTAL=0
+        export RAYON_NUM_THREADS=1
+        export MALLOC_ARENA_MAX=2
+        "${wrap_cmd[@]}" cargo build --profile "${profile}" --workspace --bins -j "${jobs}" -v --color never
+    ) >"$fifo_file" 2>&1 &
     local cargo_pid=$!
     exec 3<>"$fifo_file"
     rm -f "$fifo_file"
 
-    local read_timeout="0.08"
+    local read_timeout="0.16"
     if [ "$is_tty" != true ]; then
-        read_timeout="0.40"
+        read_timeout="0.50"
     fi
+    local peak_rss_kb=0
+    local last_rss_sample_ms=0
 
     while true; do
         local line=""
@@ -316,6 +404,15 @@ run_cargo_pretty_build() {
         local elapsed_ms=$(( NOW_MS - start_ms ))
         format_dur_ms "$elapsed_ms"
         local elapsed_sec="$FMT_DUR"
+
+        if [ $(( NOW_MS - last_rss_sample_ms )) -ge 750 ]; then
+            last_rss_sample_ms="$NOW_MS"
+            local cur_rss_kb
+            cur_rss_kb=$(sample_tree_rss_kb "$cargo_pid")
+            if [ "${cur_rss_kb:-0}" -gt "$peak_rss_kb" ]; then
+                peak_rss_kb="$cur_rss_kb"
+            fi
+        fi
 
         if [ "$read_rc" -eq 0 ]; then
             process_cargo_line "$line"
@@ -331,7 +428,7 @@ run_cargo_pretty_build() {
             fi
         fi
 
-        if [ $(( NOW_MS - last_render_ms )) -ge 80 ] || [ "$read_rc" -eq 0 ]; then
+        if [ $(( NOW_MS - last_render_ms )) -ge 160 ] || [ "$read_rc" -eq 0 ]; then
             last_render_ms="$NOW_MS"
             spin_tick=$(( spin_tick + 1 ))
             local spin_char="${SPINNER_FRAMES[$(( spin_tick % 10 ))]}"
@@ -435,11 +532,13 @@ run_cargo_pretty_build() {
     warning_count=$( { grep -E '^warning(\[|: )' "$log_file" 2>/dev/null | grep -v 'generated .* warning' || true; } | wc -l | awk '{print $1}' )
 
     local bin_bytes=0
-    if [ -f "$SCRIPT_DIR/target/release/minicode" ]; then
-        bin_bytes=$(stat -c %s "$SCRIPT_DIR/target/release/minicode" 2>/dev/null || echo 0)
+    if [ -f "$SCRIPT_DIR/target/${profile}/minicode" ]; then
+        bin_bytes=$(stat -c %s "$SCRIPT_DIR/target/${profile}/minicode" 2>/dev/null || echo 0)
     fi
     local disk_str
     disk_str=$(format_bytes "$bin_bytes")
+    local peak_ram_str
+    peak_ram_str=$(format_bytes $(( peak_rss_kb * 1024 )))
 
     if [ "$exit_code" -eq 0 ]; then
         local final_total="$seen_crates"
@@ -462,10 +561,15 @@ run_cargo_pretty_build() {
             echo -e "  ${GREEN}${BOLD}✓ ${project_name} built in ${total_sec}${RESET}"
         fi
         echo -e "    ${MUTED}libs compiled ${RESET} ${CYAN}${libs_compiled} built • ${fresh_crates} cached${RESET}"
+        echo -e "    ${MUTED}peak build ram${RESET} ${CYAN}${peak_ram_str}${RESET}"
         echo -e "    ${MUTED}disk used     ${RESET} ${CYAN}${disk_str}${RESET}"
     else
         echo -e "  ${RED}${BOLD}✗ ${project_name} build failed after ${total_sec}${RESET}"
         echo -e "    ${MUTED}libs compiled ${RESET} ${CYAN}${libs_compiled}${RESET}"
+        echo -e "    ${MUTED}peak build ram${RESET} ${CYAN}${peak_ram_str}${RESET}"
+        if [ "$exit_code" -eq 137 ]; then
+            echo -e "    ${YELLOW}Hint: build hit memory ceiling (${mem_max_mb} MiB) to protect your desktop. Close heavy apps or pass --no-mem-limit.${RESET}"
+        fi
         echo ""
         grep -v -E '^[[:space:]]*(Compiling|Checking|Fresh|Dirty|Running `|Downloading|Downloaded|Locking|Updating) ' "$log_file" >"$diag_file" || true
         cat "$diag_file"
@@ -489,6 +593,8 @@ TIMESTAMP=$(date +"%Y%m%d_%H%M%S")
 # Parse options
 CLEAN_MODE="debug" # default: auto-purge target/debug to keep release cache fast while saving 3+ GB
 BUILD_JOBS="${CARGO_BUILD_JOBS:-1}"
+BUILD_PROFILE="release-local" # default: low-RAM release profile (opt-level="s", lto=false, cgu=64)
+NO_MEM_LIMIT=false
 
 while [ $# -gt 0 ]; do
     case "$1" in
@@ -498,6 +604,14 @@ while [ $# -gt 0 ]; do
             ;;
         --no-clean)
             CLEAN_MODE="none"
+            shift
+            ;;
+        --full-lto)
+            BUILD_PROFILE="release"
+            shift
+            ;;
+        --no-mem-limit)
+            NO_MEM_LIMIT=true
             shift
             ;;
         -j|--jobs)
@@ -517,6 +631,8 @@ while [ $# -gt 0 ]; do
             echo "Options:"
             echo "  -c, --clean     Purge all build artifacts (cargo clean) after installing to maximize free disk space"
             echo "  --no-clean      Keep all build caches intact (skip automatic target/debug cleanup)"
+            echo "  --full-lto      Use full ThinLTO release profile (high RAM: 6-10 GiB; default uses low-RAM release-local)"
+            echo "  --no-mem-limit  Disable systemd-run cgroup RAM/CPU ceiling guard"
             echo "  -j, --jobs N    Number of parallel cargo build jobs (default: 1, run via nice -n 19 to prevent laptop lag)"
             echo "  -h, --help      Display this help message"
             exit 0
@@ -553,24 +669,29 @@ if [ -d "$BACKUP_DIR" ]; then
     ls -1t "$BACKUP_DIR"/mcp.json.bak_* 2>/dev/null | tail -n +11 | xargs -r rm -f || true
 fi
 
-# 2. Resource-Constrained Recompilation with Aura Dark cargo-pretty live UI (nice -n 19)
-run_cargo_pretty_build "$BUILD_JOBS"
+# 2. Pre-build debug cache cleanup (reclaim disk & OS page cache before compiling)
+if [ "$CLEAN_MODE" = "debug" ] && [ -d "$SCRIPT_DIR/target/debug" ]; then
+    rm -rf "$SCRIPT_DIR/target/debug"
+fi
 
-SOURCE_BIN="$SCRIPT_DIR/target/release/minicode"
+# 3. Resource-Constrained Low-RAM Recompilation (nice -n 19 • cgroup RAM guard • sequential packages)
+run_cargo_pretty_build "$BUILD_JOBS" "$BUILD_PROFILE"
+
+SOURCE_BIN="$SCRIPT_DIR/target/${BUILD_PROFILE}/minicode"
 
 if [ ! -f "$SOURCE_BIN" ]; then
     echo -e "  ${RED}${BOLD}✗ Build failed: $SOURCE_BIN not found.${RESET}"
     exit 1
 fi
 
-# 3. Atomically Replace Installed Binaries (minicode + minibrowse) & Seed Local Stack Database
+# 4. Atomically Replace Installed Binaries (minicode + minibrowse) & Seed Local Stack Database
 mkdir -p "$INSTALL_DIR"
 install -m 755 "$SOURCE_BIN" "$TARGET_BIN"
 BIN_SIZE=$(ls -lh "$TARGET_BIN" | awk '{print $5}')
 echo -e "    ${MUTED}binary size   ${RESET} ${CYAN}${BIN_SIZE}${RESET}"
 echo -e "    ${MUTED}installed to  ${RESET} ${GREEN}${TARGET_BIN}${RESET}"
 
-MINIBROWSE_SOURCE_BIN="$SCRIPT_DIR/target/release/minibrowse"
+MINIBROWSE_SOURCE_BIN="$SCRIPT_DIR/target/${BUILD_PROFILE}/minibrowse"
 MINIBROWSE_TARGET_BIN="$INSTALL_DIR/minibrowse"
 if [ -f "$MINIBROWSE_SOURCE_BIN" ]; then
     install -m 755 "$MINIBROWSE_SOURCE_BIN" "$MINIBROWSE_TARGET_BIN"
@@ -582,7 +703,7 @@ fi
 STACK_DB_COUNT=$(ls -1 "$CONFIG_DIR/stacks/"*.json 2>/dev/null | wc -l || echo 0)
 echo -e "    ${MUTED}stack db      ${RESET} ${GREEN}${STACK_DB_COUNT} templates (${CONFIG_DIR}/stacks)${RESET}"
 
-# 4. Storage Optimization & Cache Cleanup
+# 5. Storage Optimization & Cache Cleanup
 if [ "$CLEAN_MODE" = "all" ]; then
     cargo clean 2>/dev/null || rm -rf "$SCRIPT_DIR/target"
     echo -e "    ${MUTED}target cache  ${RESET} ${GREEN}0 B (100% reclaimed via --clean)${RESET}"
@@ -590,9 +711,13 @@ elif [ "$CLEAN_MODE" = "debug" ]; then
     if [ -d "$SCRIPT_DIR/target/debug" ]; then
         rm -rf "$SCRIPT_DIR/target/debug"
     fi
-    # Also purge any large standalone test binaries in target/release/deps/minicode-* (keeps .rlib/.d intact)
-    find "$SCRIPT_DIR/target/release/deps" -maxdepth 1 -type f -name 'minicode-*' -executable -delete 2>/dev/null || true
-    echo -e "    ${MUTED}target cache  ${RESET} ${CYAN}release cached (debug & test binaries purged)${RESET}"
+    # Also purge any large standalone test binaries in release/release-local deps (keeps .rlib/.d intact)
+    for prof_dir in "release" "release-local"; do
+        if [ -d "$SCRIPT_DIR/target/${prof_dir}/deps" ]; then
+            find "$SCRIPT_DIR/target/${prof_dir}/deps" -maxdepth 1 -type f -name 'minicode-*' -executable -delete 2>/dev/null || true
+        fi
+    done
+    echo -e "    ${MUTED}target cache  ${RESET} ${CYAN}${BUILD_PROFILE} cached (debug & test binaries purged)${RESET}"
 else
     echo -e "    ${MUTED}target cache  ${RESET} ${CYAN}preserved${RESET}"
 fi

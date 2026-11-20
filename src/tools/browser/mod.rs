@@ -160,6 +160,23 @@ impl BrowserController {
             _ => Some(banner),
         };
     }
+    /// Returns `true` when a CDP error indicates a dead/stale WebSocket transport channel
+    /// (e.g. `"CDP channel closed"`, broken pipe, EOF, target/session closed, or a hung
+    /// `Page.reload` on a wedged pooled engine) where evicting and relaunching once recovers.
+    pub(crate) fn is_recoverable_cdp_channel_error(err_msg: &str) -> bool {
+        let lower = err_msg.to_ascii_lowercase();
+        lower.contains("channel closed")
+            || lower.contains("connection closed")
+            || lower.contains("websocket")
+            || lower.contains("broken pipe")
+            || lower.contains("connection reset")
+            || lower.contains("target closed")
+            || lower.contains("session closed")
+            || lower.contains("disconnected")
+            || lower.contains("unexpected eof")
+            || lower.contains("timeout waiting for cdp method 'page.reload'")
+    }
+
     /// Navigates to a URL with automatic engine fallback and returns a structured ARIA snapshot
     pub async fn navigate_and_snapshot(
         url: &str,
@@ -199,59 +216,119 @@ impl BrowserController {
         }
         let target_url = reconciled_url.as_str();
 
-        // Try launching preferred browser engine according to priority chain
-        match BrowserManager::get_or_launch(mode, workspace_root).await {
-            Ok(engine) => {
-                if let Ok((cdp, acc_arc, space_opt)) = engine.active_session().await {
-                    let engine_name = if let Some(ref sp) = space_opt {
-                        format!(
-                            "{} ({}, space={})",
-                            engine.process.config.engine, mode, sp.name
-                        )
-                    } else {
-                        format!("{} ({})", engine.process.config.engine, mode)
-                    };
-                    tracing::info!(engine = %engine_name, url = %target_url, "Navigating via browser engine");
+        // Try launching preferred browser engine according to priority chain.
+        // If a pooled engine's CDP WebSocket channel drops mid-navigation (e.g. "channel closed"),
+        // evict the stale engine and retry launch + navigate once before falling back to plain HTTP.
+        for attempt in 0..2 {
+            match BrowserManager::get_or_launch(mode, workspace_root).await {
+                Ok(engine) => {
+                    let engine_kind = engine.process.config.engine;
+                    match engine.active_session().await {
+                        Ok((cdp, acc_arc, space_opt)) => {
+                            let engine_name = if let Some(ref sp) = space_opt {
+                                format!("{} ({}, space={})", engine_kind, mode, sp.name)
+                            } else {
+                                format!("{} ({})", engine_kind, mode)
+                            };
+                            tracing::info!(
+                                engine = %engine_name,
+                                url = %target_url,
+                                attempt,
+                                "Navigating via browser engine"
+                            );
 
-                    let cdp_res = async {
-                        cdp.navigate(target_url).await?;
-                        let _ = PageAgent::inject_probe(&cdp).await;
-                        cdp.get_document_html().await
-                    }
-                    .await;
-
-                    if let Ok(html) = cdp_res {
-                        let (elements, metrics) = {
-                            let mut acc_mgr = acc_arc.lock().await;
-                            let (_, els, m) =
-                                BrowserInteractor::refresh_accessibility_tree(&cdp, &mut acc_mgr)
-                                    .await;
-                            (els, m)
-                        };
-                        if space_opt.is_none() && engine.is_aura_enabled() {
-                            let _ = PageAgent::inject_simulator_aura(&cdp, Some("AI Agent Ready"))
-                                .await;
-                        }
-                        let engine_used = if let Some(ref notice) = reconciliation_notice {
-                            format!("{} [{}]", engine_name, notice)
-                        } else {
-                            engine_name
-                        };
-                        let mut snapshot = Self::build_aria_snapshot(target_url, &html, elements);
-                        snapshot.engine_used = engine_used;
-                        snapshot.viewport_summary = metrics.map(|m| m.format_summary());
-                        Self::attach_domain_skill_hints(&mut snapshot, workspace_root);
-                        Self::record_engine_telemetry(&engine, &space_opt, "nav").await;
-                        Self::maybe_record_replay_frame(&cdp, &format!("navigate {target_url}"))
+                            let cdp_res = async {
+                                cdp.navigate(target_url).await?;
+                                let _ = PageAgent::inject_probe(&cdp).await;
+                                cdp.get_document_html().await
+                            }
                             .await;
-                        return Ok(snapshot);
-                    } else if let Err(e) = cdp_res {
-                        tracing::warn!(error = ?e, "CDP navigation failed; falling back to HTTP");
+
+                            match cdp_res {
+                                Ok(html) => {
+                                    let (elements, metrics) = {
+                                        let mut acc_mgr = acc_arc.lock().await;
+                                        let (_, els, m) =
+                                            BrowserInteractor::refresh_accessibility_tree(
+                                                &cdp,
+                                                &mut acc_mgr,
+                                            )
+                                            .await;
+                                        (els, m)
+                                    };
+                                    if space_opt.is_none() && engine.is_aura_enabled() {
+                                        let _ = PageAgent::inject_simulator_aura(
+                                            &cdp,
+                                            Some("AI Agent Ready"),
+                                        )
+                                        .await;
+                                    }
+                                    let engine_used =
+                                        if let Some(ref notice) = reconciliation_notice {
+                                            format!("{} [{}]", engine_name, notice)
+                                        } else {
+                                            engine_name
+                                        };
+                                    let mut snapshot =
+                                        Self::build_aria_snapshot(target_url, &html, elements);
+                                    snapshot.engine_used = engine_used;
+                                    snapshot.viewport_summary = metrics.map(|m| m.format_summary());
+                                    Self::attach_domain_skill_hints(&mut snapshot, workspace_root);
+                                    Self::record_engine_telemetry(&engine, &space_opt, "nav").await;
+                                    Self::maybe_record_replay_frame(
+                                        &cdp,
+                                        &format!("navigate {target_url}"),
+                                    )
+                                    .await;
+                                    return Ok(snapshot);
+                                }
+                                Err(e) => {
+                                    let err_str = e.to_string();
+                                    if attempt == 0
+                                        && Self::is_recoverable_cdp_channel_error(&err_str)
+                                    {
+                                        tracing::warn!(
+                                            engine = %engine_kind,
+                                            error = %err_str,
+                                            "CDP channel dropped during navigation; evicting stale engine and retrying once"
+                                        );
+                                        let _ = BrowserManager::shutdown_engine_opt(
+                                            Some(engine_kind),
+                                            true,
+                                        )
+                                        .await;
+                                        continue;
+                                    }
+                                    tracing::warn!(error = ?e, "CDP navigation failed; falling back to HTTP");
+                                    break;
+                                }
+                            }
+                        }
+                        Err(e) => {
+                            let err_str = e.to_string();
+                            if attempt == 0 && Self::is_recoverable_cdp_channel_error(&err_str) {
+                                tracing::warn!(
+                                    engine = %engine_kind,
+                                    error = %err_str,
+                                    "Browser active_session failed on stale channel; evicting engine and retrying once"
+                                );
+                                let _ =
+                                    BrowserManager::shutdown_engine_opt(Some(engine_kind), true)
+                                        .await;
+                                continue;
+                            }
+                            tracing::warn!(
+                                error = ?e,
+                                "Failed to acquire active browser session; falling back to HTTP"
+                            );
+                            break;
+                        }
                     }
                 }
-            }
-            Err(e) => {
-                tracing::warn!(error = ?e, "Failed to launch browser; falling back to HTTP");
+                Err(e) => {
+                    tracing::warn!(error = ?e, "Failed to launch browser; falling back to HTTP");
+                    break;
+                }
             }
         }
 
@@ -1825,25 +1902,77 @@ impl BrowserController {
         health_notes
     }
 
-    /// Executes an atomic pipeline of browser actions sequentially in a single turn
+    /// Executes an atomic pipeline of browser actions sequentially in a single turn.
+    /// If a pooled engine's CDP WebSocket dropped (`channel closed`, etc.), evicts the stale
+    /// engine and retries launch + batch execution once before surfacing an error.
     pub async fn execute_batch(
         steps: &[BatchStep],
         mode: BrowserMode,
         workspace_root: &Path,
     ) -> Result<String> {
-        let engine = BrowserManager::get_or_launch(mode, workspace_root).await?;
-        let (cdp, acc_arc, space_opt) = engine.active_session().await?;
-        let out = {
-            let mut acc_mgr = acc_arc.lock().await;
-            if !acc_mgr.has_elements() {
-                let _ = BrowserInteractor::refresh_accessibility_tree(&cdp, &mut acc_mgr).await;
+        let mut last_err: Option<crate::error::MinicodeError> = None;
+        for attempt in 0..2 {
+            let engine = BrowserManager::get_or_launch(mode, workspace_root).await?;
+            let engine_kind = engine.process.config.engine;
+            let (cdp, acc_arc, space_opt) = match engine.active_session().await {
+                Ok(sess) => sess,
+                Err(e) => {
+                    let err_str = e.to_string();
+                    if attempt == 0 && Self::is_recoverable_cdp_channel_error(&err_str) {
+                        tracing::warn!(
+                            engine = %engine_kind,
+                            error = %err_str,
+                            "Browser active_session failed in execute_batch; evicting stale engine and retrying once"
+                        );
+                        let _ = BrowserManager::shutdown_engine_opt(Some(engine_kind), true).await;
+                        last_err = Some(e);
+                        continue;
+                    }
+                    return Err(e);
+                }
+            };
+            let batch_res = {
+                let mut acc_mgr = acc_arc.lock().await;
+                if !acc_mgr.has_elements() {
+                    let _ = BrowserInteractor::refresh_accessibility_tree(&cdp, &mut acc_mgr).await;
+                }
+                BrowserInteractor::execute_batch(&cdp, steps, &mut acc_mgr, workspace_root).await
+            };
+            match batch_res {
+                Ok(out) => {
+                    Self::record_engine_telemetry(
+                        &engine,
+                        &space_opt,
+                        &format!("batch({})", steps.len()),
+                    )
+                    .await;
+                    Self::maybe_record_replay_frame(
+                        &cdp,
+                        &format!("batch ({} steps)", steps.len()),
+                    )
+                    .await;
+                    return Ok(out);
+                }
+                Err(e) => {
+                    let err_str = e.to_string();
+                    if attempt == 0 && Self::is_recoverable_cdp_channel_error(&err_str) {
+                        tracing::warn!(
+                            engine = %engine_kind,
+                            error = %err_str,
+                            "CDP channel dropped during execute_batch; evicting stale engine and retrying once"
+                        );
+                        let _ = BrowserManager::shutdown_engine_opt(Some(engine_kind), true).await;
+                        last_err = Some(e);
+                        continue;
+                    }
+                    return Err(e);
+                }
             }
-            BrowserInteractor::execute_batch(&cdp, steps, &mut acc_mgr, workspace_root).await?
-        };
-        Self::record_engine_telemetry(&engine, &space_opt, &format!("batch({})", steps.len()))
-            .await;
-        Self::maybe_record_replay_frame(&cdp, &format!("batch ({} steps)", steps.len())).await;
-        Ok(out)
+        }
+        Err(last_err.unwrap_or_else(|| {
+            ToolError::CommandExec("Browser batch execution failed after engine retry".to_string())
+                .into()
+        }))
     }
 
     /// Registers or clears mock HTTP responses for route interception
@@ -4688,5 +4817,27 @@ mod tests {
         assert!(html.contains("minibrowse Visual Action Replay"));
         assert!(!html.contains("</script><script>alert(1)"));
         assert!(html.contains("<\\/script>"));
+    }
+
+    #[test]
+    fn test_is_recoverable_cdp_channel_error() {
+        assert!(BrowserController::is_recoverable_cdp_channel_error(
+            "CDP channel closed"
+        ));
+        assert!(BrowserController::is_recoverable_cdp_channel_error(
+            "WebSocket protocol error: Connection reset by peer"
+        ));
+        assert!(BrowserController::is_recoverable_cdp_channel_error(
+            "Session closed before response arrived"
+        ));
+        assert!(BrowserController::is_recoverable_cdp_channel_error(
+            "Timeout waiting for CDP method 'Page.reload'"
+        ));
+        assert!(!BrowserController::is_recoverable_cdp_channel_error(
+            "Navigation timeout after 15s"
+        ));
+        assert!(!BrowserController::is_recoverable_cdp_channel_error(
+            "Invalid URL scheme"
+        ));
     }
 }

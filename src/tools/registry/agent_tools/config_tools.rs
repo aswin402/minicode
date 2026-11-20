@@ -393,17 +393,12 @@ pub fn fallback_models_for_provider(provider: &str) -> Vec<AvailableModelItem> {
         (
             &["anthropic", "claude"],
             &[
+                ("claude-sonnet-4-20250514", "Claude Sonnet 4", 200_000, true),
                 (
                     "claude-3-7-sonnet-20250219",
                     "Claude 3.7 Sonnet (Hybrid Reasoning)",
                     200_000,
                     true,
-                ),
-                (
-                    "claude-3-5-sonnet-20241022",
-                    "Claude 3.5 Sonnet v2",
-                    200_000,
-                    false,
                 ),
                 (
                     "claude-3-5-haiku-20241022",
@@ -428,11 +423,16 @@ pub fn fallback_models_for_provider(provider: &str) -> Vec<AvailableModelItem> {
                 (
                     "gemini-2.5-pro",
                     "Gemini 2.5 Pro (Thinking)",
-                    2_000_000,
+                    1_048_576,
                     true,
                 ),
-                ("gemini-2.0-flash", "Gemini 2.0 Flash", 1_000_000, false),
-                ("gemini-1.5-pro", "Gemini 1.5 Pro", 2_000_000, false),
+                (
+                    "gemini-2.5-flash",
+                    "Gemini 2.5 Flash (Thinking)",
+                    1_048_576,
+                    true,
+                ),
+                ("gemini-2.0-flash", "Gemini 2.0 Flash", 1_048_576, false),
             ],
         ),
         (
@@ -451,8 +451,8 @@ pub fn fallback_models_for_provider(provider: &str) -> Vec<AvailableModelItem> {
             &["openrouter"],
             &[
                 (
-                    "anthropic/claude-3.7-sonnet",
-                    "Claude 3.7 Sonnet",
+                    "anthropic/claude-sonnet-4",
+                    "Claude Sonnet 4",
                     200_000,
                     true,
                 ),
@@ -500,11 +500,25 @@ pub fn fallback_models_for_provider(provider: &str) -> Vec<AvailableModelItem> {
         ),
         (
             &["minimax"],
-            &[("MiniMax-Text-01", "MiniMax Text 01", 1_000_000, false)],
+            &[
+                ("MiniMax-M2.7", "MiniMax M2.7", 204_800, true),
+                ("MiniMax-M2.5", "MiniMax M2.5", 204_800, true),
+                ("MiniMax-Text-01", "MiniMax Text 01", 1_000_000, false),
+            ],
         ),
         (
             &["z.ai", "z_ai", "zhipu", "glm", "bigmodel"],
-            &[("glm-4-plus", "GLM-4 Plus", 128_000, false)],
+            &[
+                ("glm-4.5", "GLM-4.5", 128_000, true),
+                ("glm-4-plus", "GLM-4 Plus", 128_000, false),
+            ],
+        ),
+        (
+            &["kimi", "moonshot", "moonshotai"],
+            &[
+                ("kimi-k2.5", "Kimi K2.5 (Reasoning)", 256_000, true),
+                ("kimi-k2-0711-preview", "Kimi K2 Preview", 128_000, false),
+            ],
         ),
         (
             &["ollama"],
@@ -580,16 +594,11 @@ async fn test_single_provider_with_fetcher(
     };
 
     let key_masked = mask_api_key(&key);
-    let custom_url = config
-        .provider
-        .custom_endpoints
-        .get(&norm)
-        .or_else(|| config.provider.custom_endpoints.get(provider))
-        .map(|s| s.as_str());
+    let custom_url = config.get_provider_base_url(&norm);
 
     let start = std::time::Instant::now();
     let res = fetcher
-        .fetch_live_models_strict(&norm, &key, custom_url)
+        .fetch_live_models_strict(&norm, &key, custom_url.as_deref())
         .await;
     let latency_ms = start.elapsed().as_millis() as u64;
 
@@ -1049,15 +1058,12 @@ pub async fn dispatch(
                 let provider = param::require_str(args, "provider", "list_available_models")?;
                 let config = Config::load(Some(workspace_root), None).unwrap_or_default();
                 let key = config.get_api_key(provider).unwrap_or_default();
-                let custom_url = config
-                    .provider
-                    .custom_endpoints
-                    .get(&provider.to_lowercase())
-                    .or_else(|| config.provider.custom_endpoints.get(provider))
-                    .map(|s| s.as_str());
+                let custom_url = config.get_provider_base_url(provider);
 
                 let fetcher = ModelFetcher::new();
-                let live_res = fetcher.fetch_models(provider, &key, custom_url).await;
+                let live_res = fetcher
+                    .fetch_models(provider, &key, custom_url.as_deref())
+                    .await;
 
                 let models: Vec<AvailableModelItem> = match live_res {
                     Ok(items) if !items.is_empty() => items

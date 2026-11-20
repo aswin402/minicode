@@ -1253,7 +1253,12 @@ impl SubagentConfig {
             + prompt_depth_bonus;
 
         if total_turn_bonus > 0 {
-            let auto_max_turns = (crate::constants::MAX_MINIPUB_TURNS * 3) / 4;
+            // Keep dynamic turn expansion proportional to the configured baseline (at most 2x
+            // baseline, capped at 75% of MAX_MINIPUB_TURNS) so a `default_max_turns = 15` config
+            // never silently balloons to 48-64 turns on a routine multi-bullet prompt.
+            let proportional_cap = self.max_turns.saturating_mul(2).max(12);
+            let auto_max_turns =
+                ((crate::constants::MAX_MINIPUB_TURNS * 3) / 4).min(proportional_cap);
             let auto_max_budget = (crate::constants::MAX_MINIPUB_TOKEN_BUDGET * 5) / 8;
             self.max_turns = (self.max_turns + total_turn_bonus)
                 .clamp(crate::constants::MIN_MINIPUB_TURNS, auto_max_turns);

@@ -1073,24 +1073,69 @@ impl CdpClient {
         let normalized_url = super::normalize_loopback_url(url);
         let target_url = normalized_url.as_str();
 
-        let current_url = self
-            .evaluate_js("window.location.href")
+        let current_url = match self
+            .send_command_with_timeout(
+                "Runtime.evaluate",
+                json!({ "expression": "window.location.href", "returnByValue": true }),
+                Duration::from_secs(2),
+            )
             .await
-            .unwrap_or_default();
+        {
+            Ok(val) => val
+                .pointer("/result/value")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string(),
+            Err(e) => {
+                // Fail fast on dead transport channels instead of burning a second timeout
+                // on `Network.setCacheDisabled` + `Page.navigate`.
+                let err_str = e.to_string();
+                if crate::tools::browser::BrowserController::is_recoverable_cdp_channel_error(
+                    &err_str,
+                ) {
+                    return Err(e);
+                }
+                String::new()
+            }
+        };
         let clean_current = current_url.trim_matches('"').trim_end_matches('/');
         let clean_target = target_url.trim().trim_end_matches('/');
 
         // Clear stale console logs and network errors from prior navigations before loading/reloading
         self.debug_collector.clear();
 
-        let _ = self
-            .send_command("Network.setCacheDisabled", json!({ "cacheDisabled": true }))
-            .await;
+        if let Err(e) = self
+            .send_command_with_timeout(
+                "Network.setCacheDisabled",
+                json!({ "cacheDisabled": true }),
+                Duration::from_secs(2),
+            )
+            .await
+        {
+            let err_str = e.to_string();
+            if crate::tools::browser::BrowserController::is_recoverable_cdp_channel_error(&err_str)
+            {
+                return Err(e);
+            }
+        }
 
         if !clean_current.is_empty() && clean_current == clean_target {
-            let _ = self
-                .send_command("Page.reload", json!({ "ignoreCache": true }))
-                .await;
+            if let Err(e) = self
+                .send_command_with_timeout(
+                    "Page.reload",
+                    json!({ "ignoreCache": true }),
+                    Duration::from_secs(5),
+                )
+                .await
+            {
+                let err_str = e.to_string();
+                if crate::tools::browser::BrowserController::is_recoverable_cdp_channel_error(
+                    &err_str,
+                ) || err_str.contains("Timeout waiting for CDP method")
+                {
+                    return Err(e);
+                }
+            }
         } else {
             self.send_command("Page.navigate", json!({ "url": target_url }))
                 .await?;
@@ -1113,7 +1158,24 @@ impl CdpClient {
             }
             return false;
         })()"#;
-        let _ = self.evaluate_js(spa_hydrate_js).await;
+        if let Err(e) = self
+            .send_command_with_timeout(
+                "Runtime.evaluate",
+                json!({
+                    "expression": spa_hydrate_js,
+                    "awaitPromise": true,
+                    "returnByValue": true
+                }),
+                Duration::from_secs(3),
+            )
+            .await
+        {
+            let err_str = e.to_string();
+            if crate::tools::browser::BrowserController::is_recoverable_cdp_channel_error(&err_str)
+            {
+                return Err(e);
+            }
+        }
         if let Some((_, raw_frag)) = target_url.split_once('#') {
             let frag = raw_frag.trim();
             if !frag.is_empty() && !frag.starts_with('/') {

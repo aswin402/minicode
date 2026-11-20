@@ -217,7 +217,7 @@ impl<'a> App<'a> {
             || prompt == "/key"
             || prompt == "/api"
         {
-            self.modal = ModalState::new_provider_select();
+            self.modal = ModalState::new_provider_select_with_config(&self.config);
             return Ok(CommandAction::Continue);
         }
 
@@ -405,7 +405,7 @@ impl<'a> App<'a> {
                     self.toasts.push_status(
                         "No favorite models saved yet — use `/fav add` or press `*` / `Ctrl+F` in `/switch`".to_string(),
                     );
-                    self.modal = ModalState::new_provider_select();
+                    self.modal = ModalState::new_provider_select_with_config(&self.config);
                 } else {
                     let fav_models: Vec<crate::agent::models::ModelInfo> = self
                         .config
@@ -452,7 +452,7 @@ impl<'a> App<'a> {
                 }
             }
 
-            self.modal = ModalState::new_provider_select();
+            self.modal = ModalState::new_provider_select_with_config(&self.config);
             return Ok(CommandAction::Continue);
         }
 

@@ -1673,3 +1673,38 @@ fn test_minitest67_parent_gitignore_above_workspace_does_not_hide_core_specs() {
 
     let _ = std::fs::remove_dir_all(&parent_dir);
 }
+
+#[tokio::test]
+async fn test_thought_only_truncation_nudges_and_recovers() {
+    let dir = tempfile::tempdir().unwrap();
+    let mock = crate::agent::mock_provider::MockProvider::new("mock", "mock-model");
+    // Response 1: model hits max_tokens inside an unclosed `<thought>` block (0 visible text, 0 tools)
+    mock.push_response(
+        &["<thought>Drafting entire implementation mentally until output limit cuts off..."],
+        vec![],
+    );
+    // Response 2: after the `[SYSTEM]` nudge, model replies concisely
+    mock.push_response(&["Recovered and answered concisely!"], vec![]);
+
+    let mut agent = AgentLoop::new(dir.path(), Config::default(), Box::new(mock));
+    let (tx, _rx) = mpsc::unbounded_channel();
+    let turn = agent
+        .execute_turn("Build a quick widget", tx, None)
+        .await
+        .expect("turn should recover after thought-only nudge");
+
+    assert!(
+        turn.assistant_response
+            .contains("Recovered and answered concisely!"),
+        "Expected thought-only nudge recovery response, got: {:?}",
+        turn.assistant_response
+    );
+    assert!(
+        agent.messages.iter().any(|m| {
+            m.role == crate::agent::types::Role::User
+                && m.content
+                    .contains("Your previous response contained only internal reasoning")
+        }),
+        "Expected `[SYSTEM]` thought-only nudge in conversation history"
+    );
+}

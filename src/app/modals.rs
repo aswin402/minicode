@@ -54,7 +54,7 @@ impl<'a> App<'a> {
                 cursor,
             } => match key.code {
                 KeyCode::Esc => {
-                    self.modal = ModalState::new_provider_select();
+                    self.modal = ModalState::new_provider_select_with_config(&self.config);
                 }
                 KeyCode::Left => {
                     *cursor = cursor.saturating_sub(1);
@@ -109,10 +109,35 @@ impl<'a> App<'a> {
                         .fetch_models(&prov_name, &entered_key, custom_url.as_deref())
                         .await;
                     let models = match models_res {
-                        Ok(m) => m,
+                        Ok(m) if !m.is_empty() => m,
+                        Ok(_) => {
+                            let fb = crate::tools::registry::agent_tools::config_tools::fallback_models_for_provider(&prov_name);
+                            fb.into_iter()
+                                .map(|item| crate::agent::models::ModelInfo {
+                                    id: item.id,
+                                    name: item.name,
+                                    description: None,
+                                    context_length: Some(item.context_length),
+                                    is_free: false,
+                                })
+                                .collect()
+                        }
                         Err(e) => {
                             tracing::warn!(error = %e, provider = %prov_name, "Failed to fetch live model list");
-                            Vec::new()
+                            self.toasts.push_status(format!(
+                                "Live model fetch failed for '{}': {} (showing fallback list)",
+                                prov_name, e
+                            ));
+                            let fb = crate::tools::registry::agent_tools::config_tools::fallback_models_for_provider(&prov_name);
+                            fb.into_iter()
+                                .map(|item| crate::agent::models::ModelInfo {
+                                    id: item.id,
+                                    name: item.name,
+                                    description: None,
+                                    context_length: Some(item.context_length),
+                                    is_free: false,
+                                })
+                                .collect()
                         }
                     };
 
@@ -214,16 +239,47 @@ impl<'a> App<'a> {
                         return;
                     }
 
-                    // Fetch models (will use static fallbacks if offline)
+                    // Fetch live models (falling back to cached/provider defaults if network or `/models` fails)
                     let models_res = self
                         .model_fetcher
                         .fetch_models(&provider, &api_key, custom_url.as_deref())
                         .await;
                     let mut models = match models_res {
-                        Ok(m) => m,
+                        Ok(m) if !m.is_empty() => m,
+                        Ok(_) => {
+                            let fb = crate::tools::registry::agent_tools::config_tools::fallback_models_for_provider(&provider);
+                            if !fb.is_empty() {
+                                self.toasts.push_status(format!(
+                                    "Provider '{}' returned no live models; showing fallback list",
+                                    provider
+                                ));
+                            }
+                            fb.into_iter()
+                                .map(|item| crate::agent::models::ModelInfo {
+                                    id: item.id,
+                                    name: item.name,
+                                    description: None,
+                                    context_length: Some(item.context_length),
+                                    is_free: false,
+                                })
+                                .collect()
+                        }
                         Err(e) => {
                             tracing::warn!(error = %e, provider = %provider, "Failed to fetch live model list");
-                            Vec::new()
+                            let fb = crate::tools::registry::agent_tools::config_tools::fallback_models_for_provider(&provider);
+                            self.toasts.push_status(format!(
+                                "Live model fetch failed for '{}': {} (showing fallback list)",
+                                provider, e
+                            ));
+                            fb.into_iter()
+                                .map(|item| crate::agent::models::ModelInfo {
+                                    id: item.id,
+                                    name: item.name,
+                                    description: None,
+                                    context_length: Some(item.context_length),
+                                    is_free: false,
+                                })
+                                .collect()
                         }
                     };
 
@@ -284,7 +340,7 @@ impl<'a> App<'a> {
                 ..
             } => match key.code {
                 KeyCode::Esc => {
-                    self.modal = ModalState::new_provider_select();
+                    self.modal = ModalState::new_provider_select_with_config(&self.config);
                 }
                 KeyCode::Up => {
                     *selected_index = selected_index.saturating_sub(1);

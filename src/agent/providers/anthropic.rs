@@ -1,11 +1,62 @@
-use crate::agent::provider::{ChunkStream, CompletionOptions, Provider, StreamChunk, ToolSchema};
+use crate::agent::provider::{
+    classify_reqwest_stream_error, send_request_with_ipv4_fallback, shared_llm_http_client_ipv4,
+    ChunkStream, CompletionOptions, Provider, SseLineDecoder, StreamChunk, ToolSchema,
+};
 use crate::agent::types::{ImageAttachment, Message, Role};
 use crate::error::{ProviderError, Result};
 use async_trait::async_trait;
-use reqwest_eventsource::{Event, EventSource};
 use serde::Serialize;
 use std::borrow::Cow;
 use tokio_stream::StreamExt;
+
+/// Returns true when an Anthropic Claude model supports native extended thinking (`thinking` block):
+/// Claude 3.7+, Claude 4+, Sonnet 4+, Opus 4+, Haiku 4.5+.
+#[must_use]
+fn model_supports_anthropic_thinking(model: &str) -> bool {
+    let lower = model
+        .rsplit('/')
+        .next()
+        .unwrap_or(model)
+        .to_ascii_lowercase();
+    if !lower.contains("claude") {
+        // Non-Claude custom models behind an Anthropic-compatible proxy (e.g. MiniMax/Qwen)
+        return true;
+    }
+    let Some(idx) = lower.find("claude") else {
+        return false;
+    };
+    let tail = &lower[idx + "claude".len()..];
+    let mut parts = tail.split(['-', '.', '_']).filter(|t| !t.is_empty());
+    while let Some(tok) = parts.next() {
+        if let Ok(major) = tok.parse::<u32>() {
+            if major < 100 {
+                let minor = parts
+                    .next()
+                    .and_then(|n| n.parse::<u32>().ok())
+                    .filter(|&m| m < 100)
+                    .unwrap_or(0);
+                return (major, minor) >= (3, 7);
+            }
+        }
+    }
+    false
+}
+
+/// Clamps `max_tokens` for older Claude 3.x models whose hard ceiling is below 16384.
+#[must_use]
+fn clamp_anthropic_max_tokens(model: &str, requested: usize) -> usize {
+    let lower = model.to_ascii_lowercase();
+    if lower.contains("claude-3-5-") || lower.contains("claude-3.5-") {
+        requested.min(8192)
+    } else if lower.contains("claude-3-haiku")
+        || lower.contains("claude-3-sonnet")
+        || lower.contains("claude-3-opus")
+    {
+        requested.min(4096)
+    } else {
+        requested
+    }
+}
 
 #[derive(Serialize, Clone, Copy)]
 struct CacheControlWire {
@@ -428,26 +479,28 @@ impl AnthropicProvider {
             Self::extract_system_prompt(messages, options.system_instruction.as_deref());
         let formatted_messages = Self::format_messages(messages);
 
-        let thinking_budget = options
-            .thinking_budget
+        let thinking_budget = model_supports_anthropic_thinking(model)
+            .then_some(options.thinking_budget)
+            .flatten()
             .filter(|&b| b >= crate::constants::MIN_THINKING_BUDGET_TOKENS);
 
         // Anthropic requires max_tokens > thinking.budget_tokens
+        let base_max = clamp_anthropic_max_tokens(model, options.max_tokens);
         let max_tokens = if let Some(budget) = thinking_budget {
-            if options.max_tokens <= budget {
+            if base_max <= budget {
                 budget + crate::constants::ANTHROPIC_THINKING_HEADROOM_TOKENS
             } else {
-                options.max_tokens
+                base_max
             }
         } else {
-            options.max_tokens
+            base_max
         };
 
         let mut body = serde_json::json!({
             "model": model,
             "messages": formatted_messages,
             "max_tokens": max_tokens,
-            "stream": true,
+            "stream": options.stream,
         });
 
         if let Some(sys) = system_prompt {
@@ -701,18 +754,20 @@ impl AnthropicProvider {
             }
         }
 
-        let thinking_budget = options
-            .thinking_budget
+        let thinking_budget = model_supports_anthropic_thinking(model)
+            .then_some(options.thinking_budget)
+            .flatten()
             .filter(|&b| b >= crate::constants::MIN_THINKING_BUDGET_TOKENS);
 
+        let base_max = clamp_anthropic_max_tokens(model, options.max_tokens);
         let max_tokens = if let Some(budget) = thinking_budget {
-            if options.max_tokens <= budget {
+            if base_max <= budget {
                 budget + crate::constants::ANTHROPIC_THINKING_HEADROOM_TOKENS
             } else {
-                options.max_tokens
+                base_max
             }
         } else {
-            options.max_tokens
+            base_max
         };
 
         let system = system_prompt.map(|sys| {
@@ -766,7 +821,7 @@ impl AnthropicProvider {
             model,
             messages: wire_messages,
             max_tokens,
-            stream: true,
+            stream: options.stream,
             system,
             tools: wire_tools,
             thinking,
@@ -907,6 +962,91 @@ impl AnthropicProvider {
 
         chunks
     }
+    fn parse_nonstreaming_json_chunks(val: &serde_json::Value) -> Result<Vec<StreamChunk>> {
+        if let Some(err_obj) = val.get("error") {
+            let err_msg = err_obj
+                .get("message")
+                .and_then(|m| m.as_str())
+                .unwrap_or("Unknown Anthropic API error");
+            return Err(ProviderError::Api {
+                status: 400,
+                message: format!("Anthropic API error: {}", err_msg),
+            }
+            .into());
+        }
+
+        let mut chunks = Vec::new();
+        if let Some(content) = val.get("content").and_then(|c| c.as_array()) {
+            for block in content {
+                let btype = block.get("type").and_then(|t| t.as_str()).unwrap_or("");
+                match btype {
+                    "thinking" => {
+                        if let Some(t) = block.get("thinking").and_then(|t| t.as_str()) {
+                            if !t.is_empty() {
+                                chunks.push(StreamChunk::Delta("<thought>".to_string()));
+                                chunks.push(StreamChunk::Delta(t.to_string()));
+                                chunks.push(StreamChunk::Delta("</thought>".to_string()));
+                            }
+                        }
+                    }
+                    "text" => {
+                        if let Some(t) = block.get("text").and_then(|t| t.as_str()) {
+                            if !t.is_empty() {
+                                chunks.push(StreamChunk::Delta(t.to_string()));
+                            }
+                        }
+                    }
+                    "tool_use" => {
+                        let id = block
+                            .get("id")
+                            .and_then(|s| s.as_str())
+                            .unwrap_or("")
+                            .to_string();
+                        let name = block
+                            .get("name")
+                            .and_then(|s| s.as_str())
+                            .unwrap_or("")
+                            .to_string();
+                        let input = block
+                            .get("input")
+                            .cloned()
+                            .unwrap_or_else(|| serde_json::json!({}));
+                        chunks.push(StreamChunk::ToolCallChunk(crate::agent::types::ToolCall {
+                            id,
+                            name,
+                            arguments: input,
+                        }));
+                    }
+                    _ => {}
+                }
+            }
+        }
+
+        if let Some(usage) = val.get("usage") {
+            let prompt_tokens = usage
+                .get("input_tokens")
+                .and_then(|u| u.as_u64())
+                .unwrap_or(0) as usize;
+            let completion_tokens = usage
+                .get("output_tokens")
+                .and_then(|u| u.as_u64())
+                .unwrap_or(0) as usize;
+            let cached_prompt_tokens = usage
+                .get("cache_read_input_tokens")
+                .and_then(|u| u.as_u64())
+                .unwrap_or(0) as usize;
+            if prompt_tokens > 0 || completion_tokens > 0 || cached_prompt_tokens > 0 {
+                chunks.push(StreamChunk::Usage {
+                    prompt_tokens,
+                    completion_tokens,
+                    cached_prompt_tokens,
+                });
+            }
+        }
+
+        chunks.push(StreamChunk::Done);
+        Ok(chunks)
+    }
 }
 
 #[async_trait]
@@ -928,24 +1068,64 @@ impl Provider for AnthropicProvider {
         let url = format!("{}/messages", self.base_url.trim_end_matches('/'));
         let request_bytes =
             Self::serialize_request_bytes(messages, tools, options, self.default_model())?;
+        let ipv4_client = shared_llm_http_client_ipv4();
+        let accept = if options.stream {
+            "text/event-stream, application/json"
+        } else {
+            "application/json"
+        };
 
-        let req_builder = self
-            .client
-            .post(&url)
-            .header("content-type", "application/json")
-            .header("x-api-key", &self.api_key)
-            .header(
-                "anthropic-version",
-                crate::constants::ANTHROPIC_VERSION_HEADER,
+        let resp = send_request_with_ipv4_fallback(&url, &self.client, &ipv4_client, |c| {
+            c.post(&url)
+                .header("content-type", "application/json")
+                .header("accept", accept)
+                .header("x-api-key", &self.api_key)
+                .header(
+                    "anthropic-version",
+                    crate::constants::ANTHROPIC_VERSION_HEADER,
+                )
+                .body(request_bytes.clone())
+        })
+        .await
+        .map_err(|e| classify_reqwest_stream_error("Anthropic", &e, false))?;
+
+        if !resp.status().is_success() {
+            let status = resp.status();
+            return Err(crate::agent::providers::handle_sse_status_error(
+                "Anthropic",
+                status,
+                resp,
             )
-            .body(request_bytes);
+            .await);
+        }
 
-        let event_source = EventSource::new(req_builder).map_err(|e| {
-            ProviderError::StreamDecode(format!("Failed to connect to Anthropic API: {}", e))
-        })?;
+        let content_type = resp
+            .headers()
+            .get(reqwest::header::CONTENT_TYPE)
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("")
+            .to_ascii_lowercase();
+
+        if !options.stream || content_type.contains("application/json") {
+            let raw_text = resp
+                .text()
+                .await
+                .map_err(|e| classify_reqwest_stream_error("Anthropic", &e, false))?;
+            let val: serde_json::Value = serde_json::from_str(&raw_text).map_err(|e| {
+                ProviderError::StreamDecode(format!("Anthropic JSON response parse error: {}", e))
+            })?;
+            let chunks = Self::parse_nonstreaming_json_chunks(&val)?;
+            let stream = async_stream::stream! {
+                for chunk in chunks {
+                    yield Ok(chunk);
+                }
+            };
+            return Ok(Box::pin(stream));
+        }
 
         let stream = async_stream::stream! {
-            let mut event_source = event_source;
+            let mut byte_stream = resp.bytes_stream();
+            let mut decoder = SseLineDecoder::new();
             let mut prompt_tokens = 0usize;
             let mut completion_tokens = 0usize;
             let mut cached_prompt_tokens = 0usize;
@@ -953,60 +1133,57 @@ impl Provider for AnthropicProvider {
             let mut tool_calls_accumulator: std::collections::BTreeMap<usize, (String, String, String)> =
                 std::collections::BTreeMap::new();
 
-            while let Some(event_res) = event_source.next().await {
-                match event_res {
-                    Ok(Event::Open) => {
-                        tracing::debug!("Anthropic SSE stream open");
-                    }
-                    Ok(Event::Message(message)) => {
-                        let parsed: std::result::Result<serde_json::Value, _> = serde_json::from_str(&message.data);
-                        let val = match parsed {
-                            Ok(v) => v,
-                            Err(e) => {
-                                tracing::debug!("Non-JSON SSE chunk from Anthropic: {}", e);
+            while let Some(chunk_res) = byte_stream.next().await {
+                match chunk_res {
+                    Ok(bytes) => {
+                        for frame in decoder.push_chunk(&bytes) {
+                            let data_trimmed = frame.data.trim();
+                            if data_trimmed.is_empty() {
                                 continue;
                             }
-                        };
+                            let parsed: std::result::Result<serde_json::Value, _> =
+                                serde_json::from_str(data_trimmed);
+                            let val = match parsed {
+                                Ok(v) => v,
+                                Err(e) => {
+                                    tracing::debug!("Non-JSON SSE chunk from Anthropic: {}", e);
+                                    continue;
+                                }
+                            };
 
-                        if let Some(err_obj) = val.get("error") {
-                            let err_msg = err_obj
-                                .get("message")
-                                .and_then(|m| m.as_str())
-                                .unwrap_or("Unknown Anthropic API error");
-                            yield Err(ProviderError::Api {
-                                status: 400,
-                                message: format!("Anthropic API error: {}", err_msg),
-                            }.into());
-                            break;
-                        }
-
-                        let chunks = Self::parse_anthropic_event(
-                            message.event.as_str(),
-                            &val,
-                            &mut tool_calls_accumulator,
-                            &mut prompt_tokens,
-                            &mut completion_tokens,
-                            &mut cached_prompt_tokens,
-                            &mut in_thinking_mode,
-                        );
-
-                        let mut is_done = false;
-                        for chunk in chunks {
-                            if chunk == StreamChunk::Done {
-                                is_done = true;
+                            if let Some(err_obj) = val.get("error") {
+                                let err_msg = err_obj
+                                    .get("message")
+                                    .and_then(|m| m.as_str())
+                                    .unwrap_or("Unknown Anthropic API error");
+                                yield Err(ProviderError::Api {
+                                    status: 400,
+                                    message: format!("Anthropic API error: {}", err_msg),
+                                }.into());
+                                return;
                             }
-                            yield Ok(chunk);
+
+                            let chunks = Self::parse_anthropic_event(
+                                frame.event.as_str(),
+                                &val,
+                                &mut tool_calls_accumulator,
+                                &mut prompt_tokens,
+                                &mut completion_tokens,
+                                &mut cached_prompt_tokens,
+                                &mut in_thinking_mode,
+                            );
+
+                            let mut is_done = false;
+                            for chunk in chunks {
+                                if chunk == StreamChunk::Done {
+                                    is_done = true;
+                                }
+                                yield Ok(chunk);
+                            }
+                            if is_done {
+                                return;
+                            }
                         }
-                        if is_done {
-                            break;
-                        }
-                    }
-                    Err(reqwest_eventsource::Error::StreamEnded) => {
-                        break;
-                    }
-                    Err(reqwest_eventsource::Error::InvalidStatusCode(status, resp)) => {
-                        yield Err(crate::agent::providers::handle_sse_status_error("Anthropic", status, resp).await);
-                        return;
                     }
                     Err(e) => {
                         let (completed, had_incomplete) =
@@ -1021,13 +1198,25 @@ impl Provider for AnthropicProvider {
                             );
                             break;
                         }
-                        if let Some(classified_err) =
-                            crate::agent::providers::classify_sse_stream_error("Anthropic", &e, had_incomplete)
-                        {
-                            yield Err(classified_err);
-                            return;
-                        }
-                        break;
+                        yield Err(classify_reqwest_stream_error("Anthropic", &e, had_incomplete));
+                        return;
+                    }
+                }
+            }
+
+            for frame in decoder.finish() {
+                if let Ok(val) = serde_json::from_str::<serde_json::Value>(frame.data.trim()) {
+                    let chunks = Self::parse_anthropic_event(
+                        frame.event.as_str(),
+                        &val,
+                        &mut tool_calls_accumulator,
+                        &mut prompt_tokens,
+                        &mut completion_tokens,
+                        &mut cached_prompt_tokens,
+                        &mut in_thinking_mode,
+                    );
+                    for chunk in chunks {
+                        yield Ok(chunk);
                     }
                 }
             }
@@ -1112,6 +1301,41 @@ mod tests {
             .post("http://127.0.0.1:1/v1/messages")
             .header("content-type", "application/json")
             .body(wire_bytes);
-        assert!(EventSource::new(req).is_ok());
+        assert!(reqwest_eventsource::EventSource::new(req).is_ok());
+    }
+
+    #[test]
+    fn test_anthropic_thinking_gate_and_claude_3_5_max_tokens_clamp() {
+        let msgs = vec![Message::user("hi")];
+        let opts_35 = CompletionOptions {
+            model: "claude-3-5-haiku-20241022".to_string(),
+            temperature: 0.2,
+            max_tokens: 16384,
+            thinking_budget: Some(4096),
+            ..Default::default()
+        };
+        let body_35 = AnthropicProvider::build_request_body(
+            &msgs,
+            &[],
+            &opts_35,
+            "claude-3-5-haiku-20241022",
+        );
+        assert!(
+            body_35.get("thinking").is_none(),
+            "Claude 3.5 Haiku must not receive thinking block"
+        );
+        assert_eq!(body_35["max_tokens"], 8192);
+
+        let opts_4 = CompletionOptions {
+            model: "claude-sonnet-4-20250514".to_string(),
+            temperature: 0.2,
+            max_tokens: 16384,
+            thinking_budget: Some(4096),
+            ..Default::default()
+        };
+        let body_4 =
+            AnthropicProvider::build_request_body(&msgs, &[], &opts_4, "claude-sonnet-4-20250514");
+        assert_eq!(body_4["thinking"]["type"], "enabled");
+        assert_eq!(body_4["temperature"], 1.0);
     }
 }

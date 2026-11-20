@@ -586,6 +586,48 @@ pub(crate) async fn execute_resume_if_requested(
     ))
 }
 
+/// Resolves the target `SubagentRole` (and optional inferred BM25 score) for `delegate_task`,
+/// honoring an explicit `role` over a semantic `category` (so `role="reviewer", category="quick"`
+/// preserves the read-only `Reviewer` role while still applying the `"quick"` budget cap).
+pub(crate) fn resolve_delegate_task_role(
+    args: &serde_json::Value,
+    task: &str,
+) -> (crate::agent::subagent::SubagentRole, Option<usize>) {
+    let explicit_selector = param::opt_str(args, "role")
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .or_else(|| {
+            param::opt_str(args, "category")
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+        });
+    if let Some(selector) = explicit_selector {
+        (
+            crate::agent::subagent::SubagentRole::from_str_loose(selector),
+            None,
+        )
+    } else {
+        let (r, score) = crate::agent::subagent::SubagentRole::infer_from_intent_scored(task, None);
+        (r, Some(score))
+    }
+}
+
+/// Extracts an explicit worktree isolation override (`isolate_branch`, `isolate_worktree`,
+/// or `workspace_mode` = `"worktree"` / `"shared"`).
+pub(crate) fn extract_explicit_isolate(args: &serde_json::Value) -> Option<bool> {
+    param::get_bool(args, "isolate_branch")
+        .or_else(|| param::get_bool(args, "isolate_worktree"))
+        .or_else(|| {
+            param::opt_str(args, "workspace_mode").and_then(|m| {
+                match m.trim().to_lowercase().as_str() {
+                    "worktree" => Some(true),
+                    "shared" => Some(false),
+                    _ => None,
+                }
+            })
+        })
+}
+
 pub async fn dispatch(
     tool_name: &str,
     args: &serde_json::Value,
@@ -598,26 +640,8 @@ pub async fn dispatch(
                 &["task", "prompt", "instructions"],
                 "delegate_task",
             )?;
-            let category_opt = param::opt_str(args, "category").or_else(|| param::opt_str(args, "role"));
-            let explicit_isolate = param::get_bool(args, "isolate_branch")
-                .or_else(|| param::get_bool(args, "isolate_worktree"))
-                .or_else(|| {
-                    param::opt_str(args, "workspace_mode").and_then(|m| match m.to_lowercase().as_str() {
-                        "worktree" => Some(true),
-                        "shared" => Some(false),
-                        _ => None,
-                    })
-                });
-            let (default_role, inferred_score) = if let Some(cat_str) = category_opt {
-                (
-                    crate::agent::subagent::SubagentRole::from_str_loose(cat_str),
-                    None,
-                )
-            } else {
-                let (r, score) =
-                    crate::agent::subagent::SubagentRole::infer_from_intent_scored(task, None);
-                (r, Some(score))
-            };
+            let explicit_isolate = extract_explicit_isolate(args);
+            let (default_role, inferred_score) = resolve_delegate_task_role(args, task);
             let inferred_note = inferred_score
                 .map(|score| {
                     format!(
@@ -1711,5 +1735,44 @@ mod tests {
 
         // Worktree MUST still exist
         assert!(crate::sandbox::GitWorktreeManager::locate_worktree(root, &agent_id).is_some());
+    }
+
+    #[test]
+    fn test_delegate_task_prioritizes_explicit_role_over_category_and_respects_isolate_false() {
+        let args = json!({
+            "task": "Review index.html, style.css, and app.js for accessibility and state bugs",
+            "category": "quick",
+            "role": "reviewer",
+            "isolate_branch": false
+        });
+
+        let (role, inferred_score) =
+            resolve_delegate_task_role(&args, args["task"].as_str().unwrap());
+        assert_eq!(role, crate::agent::subagent::SubagentRole::Reviewer);
+        assert!(!role.is_mutating());
+        assert!(inferred_score.is_none());
+
+        let app_cfg = crate::config::Config::default();
+        let (config, _todos, file_boundaries) =
+            build_subagent_config_from_args(&args, role, &app_cfg);
+        assert_eq!(config.role, crate::agent::subagent::SubagentRole::Reviewer);
+        assert_eq!(config.category.as_deref(), Some("quick"));
+
+        let explicit_isolate = extract_explicit_isolate(&args);
+        assert_eq!(explicit_isolate, Some(false));
+        assert!(!role.should_isolate_worktree(
+            args["task"].as_str().unwrap(),
+            &file_boundaries,
+            explicit_isolate
+        ));
+
+        // When role is omitted or empty, category still selects the role
+        let cat_only = json!({
+            "task": "Fix a typo",
+            "category": "quick",
+            "role": "  "
+        });
+        let (cat_role, _) = resolve_delegate_task_role(&cat_only, "Fix a typo");
+        assert_eq!(cat_role, crate::agent::subagent::SubagentRole::Coder);
     }
 }

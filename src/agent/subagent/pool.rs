@@ -320,28 +320,26 @@ impl SubagentPool {
         &self,
         id: &str,
         role: SubagentRole,
-        prompt: &str,
+        _prompt: &str,
         requested_worktree: bool,
         file_boundaries: &[String],
     ) -> (PathBuf, bool) {
         let cfg = crate::config::Config::load(Some(&self.workspace_root), None).unwrap_or_default();
         let policy = cfg.agent.minipub.worktree_isolation.trim().to_lowercase();
 
-        // Read-only roles (Scout, Architect, Planner, Vision, Reviewer, Security) and live QA tasks stay in shared workspace unless forced
+        // Respect the caller's resolved `requested_worktree` decision: every tool/orchestrator
+        // entry point already evaluates `role.should_isolate_worktree(prompt, file_boundaries, explicit_isolate)`.
+        // Re-evaluating `false` as `None` here previously clobbered explicit `isolate_branch=false` /
+        // `workspace_mode="shared"` overrides!
         let is_mutating = role.is_mutating();
-        let effective_request = role.should_isolate_worktree(
-            prompt,
-            file_boundaries,
-            if requested_worktree { Some(true) } else { None },
-        );
         let mut use_wt = match policy.as_str() {
             "never" => false,
             "always" => {
                 role.default_workspace_mode() == super::types::WorkspaceMode::Worktree
-                    || effective_request
+                    || requested_worktree
             }
             "file_leases" => false,
-            _ => effective_request,
+            _ => requested_worktree,
         };
 
         // If mutating in shared workspace with file_boundaries, try acquiring cooperative lease;
@@ -654,8 +652,10 @@ impl SubagentPool {
                     dev_handle
                         .update_status(if worker.cancel_flag.load(Ordering::SeqCst) {
                             crate::dev::models::DevProcessStatus::Stopped
-                        } else {
+                        } else if sub_res.success {
                             crate::dev::models::DevProcessStatus::Exited(Some(0))
+                        } else {
+                            crate::dev::models::DevProcessStatus::Exited(Some(1))
                         })
                         .await;
 
@@ -698,9 +698,7 @@ impl SubagentPool {
                         .append_log(format!("[{}] MiniPub execution error: {}", worker_id, e))
                         .await;
                     dev_handle
-                        .update_status(crate::dev::models::DevProcessStatus::Degraded(
-                            e.to_string(),
-                        ))
+                        .update_status(crate::dev::models::DevProcessStatus::Exited(Some(1)))
                         .await;
                     if actual_worktree {
                         let wt_mgr = crate::git::worktree::WorktreeManager::new(&ws_root);
@@ -2493,5 +2491,35 @@ mod tests {
 
         let drained = dev_reg.drain_steering_prompts();
         assert_eq!(drained, vec!["whats happening".to_string()]);
+    }
+
+    #[tokio::test]
+    async fn test_resolve_worker_isolation_respects_explicit_false_on_mutating_role() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let root = temp_dir.path();
+        // Initialize an unborn git repo (no commits yet — `git worktree add` would fail with
+        // `invalid reference: HEAD` if isolation were erroneously escalated)
+        std::process::Command::new("git")
+            .args(["init"])
+            .current_dir(root)
+            .output()
+            .unwrap();
+
+        let pool = SubagentPool::new(root);
+        let (effective_root, actual_wt) = pool
+            .resolve_worker_isolation(
+                "coder-1",
+                SubagentRole::Coder,
+                "Edit app.js in place",
+                false,
+                &[],
+            )
+            .await;
+
+        assert!(
+            !actual_wt,
+            "explicit isolate=false must not create a worktree"
+        );
+        assert_eq!(effective_root, root);
     }
 }

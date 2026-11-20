@@ -217,9 +217,11 @@ impl AgentLoop {
         session_id: &str,
         turn_id: usize,
     ) -> Result<(String, Vec<ToolCall>, usize, usize)> {
+        let mut nonstream_opts = options.clone();
+        nonstream_opts.stream = false;
         let mut stream = self
             .provider
-            .stream_completion(messages, tools, options)
+            .stream_completion(messages, tools, &nonstream_opts)
             .await?;
 
         let mut text = String::new();
@@ -1126,7 +1128,16 @@ impl AgentLoop {
                     total_tokens = total_tokens.saturating_add(*total_tokens_used);
                     for path in files_modified {
                         self.record_file_access(path);
+                        if !path.is_empty()
+                            && !self.pending_uncommitted_files.iter().any(|x| x == path)
+                        {
+                            self.pending_uncommitted_files.push(path.clone());
+                        }
                     }
+                }
+                AgentEvent::GitCommit { files, .. } => {
+                    self.pending_uncommitted_files
+                        .retain(|p| !files.iter().any(|c| c == p));
                 }
                 _ => {}
             }

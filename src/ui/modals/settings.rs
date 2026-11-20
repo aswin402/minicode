@@ -91,7 +91,7 @@ impl SettingsTab {
         match self {
             SettingsTab::Providers => (
                 "Providers & Primary Model",
-                "Select active provider and primary model across all 12 supported endpoints",
+                "Select active provider and primary model across all supported endpoints",
             ),
             SettingsTab::Fallbacks => (
                 "Fallback Models & Failover Chain",

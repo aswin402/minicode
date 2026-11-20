@@ -696,6 +696,7 @@ impl SubagentWorker {
                     role.badge().to_ascii_lowercase(),
                     id
                 )),
+                stream: app_cfg.agent.streaming,
             };
 
             let mut files_inspected = Vec::new();
@@ -712,6 +713,13 @@ impl SubagentWorker {
             let max_eval_iterations: usize = self.config.loop_max.clamp(1, 8);
             let mut elastic_extensions_granted: usize = 0;
             let mut last_extension_step_count: usize = 0;
+            let mut provider_retry_count: usize = 0;
+            let mut zero_edit_nudge_sent: bool = false;
+            // Deterministic 0..=2s jitter per worker so parallel fan-out workers never collide
+            // on the exact same retry timestamp after a shared HTTP 429 burst.
+            let worker_retry_jitter_secs: u64 = id.bytes().fold(0u64, |acc, b| {
+                acc.wrapping_mul(31).wrapping_add(u64::from(b))
+            }) % 3;
             let mut last_seen_swarm_msg_id: Option<String> = None;
             let mut seen_global_msg_ids: std::collections::HashSet<String> =
                 std::collections::HashSet::new();
@@ -928,11 +936,15 @@ impl SubagentWorker {
                     ));
                 }
 
-                // Estimate current context window tokens using process-wide cached BPE tokenizer
+                // Estimate current context window tokens using process-wide cached BPE tokenizer.
+                // Floor the soft compaction threshold at 24k tokens so small read-only reviews
+                // (e.g. 3 source files totaling ~10k tokens) never wipe their own read outputs and
+                // fall into a re-read amnesia loop.
                 let mut last_prompt_tokens = estimate_prompt_tokens(&messages);
-                let soft_compact_threshold = (live_token_budget
+                let soft_compact_threshold = ((live_token_budget
                     .saturating_mul(crate::constants::MINIPUB_SOFT_COMPACT_NUMERATOR))
-                    / crate::constants::MINIPUB_SOFT_COMPACT_DENOMINATOR.max(1);
+                    / crate::constants::MINIPUB_SOFT_COMPACT_DENOMINATOR.max(1))
+                .max(24_000);
                 if last_prompt_tokens > soft_compact_threshold
                     && messages.len() > crate::constants::MIN_COMPACTABLE_MESSAGES
                 {
@@ -963,12 +975,26 @@ impl SubagentWorker {
                 // If the worker hits its initial turn or token ceiling while actively making verified
                 // forward progress (executing distinct, non-looping tool steps without consecutive failures)
                 // and still has safe prompt context headroom, automatically extend its lease proportionally.
+                // Never override explicit Orchestrator turn caps (`explicit_max_turns`) or `"quick"` workers,
+                // and cap read-only workers to at most 1 extension so reviewers/scouts cannot spin indefinitely.
                 let turn_limit_reached = turns_executed >= live_max_turns && live_max_turns > 1;
                 let token_limit_reached = tokens_used >= live_token_budget && turns_executed > 1;
-                let max_elastic = crate::constants::MAX_MINIPUB_ELASTIC_EXTENSIONS;
+                let is_quick_category = self.config.category.as_deref().is_some_and(|c| {
+                    let norm = c.trim().to_ascii_lowercase().replace(['-', ' '], "_");
+                    norm == "quick" || norm == "unspecified_low"
+                });
+                let max_elastic = if self.config.explicit_max_turns || is_quick_category {
+                    0
+                } else if !role.is_mutating() {
+                    1
+                } else {
+                    crate::constants::MAX_MINIPUB_ELASTIC_EXTENSIONS
+                };
                 let safe_prompt_ceiling = crate::constants::CONTEXT_WINDOW_128K
                     .saturating_sub(crate::constants::DEFAULT_MINIPUB_TOKEN_BUDGET / 2);
+                let mutating_has_edits = !role.is_mutating() || !files_modified.is_empty();
                 if (turn_limit_reached || token_limit_reached)
+                    && mutating_has_edits
                     && elastic_extensions_granted < max_elastic
                     && transcript.steps.len() > last_extension_step_count
                     && last_prompt_tokens < safe_prompt_ceiling
@@ -1024,20 +1050,50 @@ impl SubagentWorker {
                     );
                 }
 
-                // On the final allowed turn (or when token budget is reached), pass empty tools so the
-                // worker synthesizes its findings into a final report instead of starting another tool call.
-                let is_synthesis_turn =
-                    (turns_executed >= live_max_turns && live_max_turns > 1) || budget_reached;
+                // Zero-edit spin guard for mutating roles (Frontend, Backend, Coder, etc.):
+                // Prevent a coder worker from burning its entire budget on read-only shell checks
+                // without applying edits.
+                let zero_edit_nudge_turn = (live_max_turns / 2).max(6);
+                let zero_edit_stop_turn = ((live_max_turns * 3) / 4).max(10);
+                let zero_edit_spin_stop = role.is_mutating()
+                    && files_modified.is_empty()
+                    && live_max_turns >= 12
+                    && turns_executed >= zero_edit_stop_turn;
+                if role.is_mutating()
+                    && files_modified.is_empty()
+                    && !zero_edit_nudge_sent
+                    && live_max_turns >= 10
+                    && turns_executed >= zero_edit_nudge_turn
+                    && !zero_edit_spin_stop
+                    && messages
+                        .last()
+                        .map(|m| m.role == crate::agent::types::Role::Tool)
+                        .unwrap_or(false)
+                {
+                    zero_edit_nudge_sent = true;
+                    messages.push(Message::user(format!(
+                        "[System: You have spent {}/{} turns inspecting without making any file edits. Stop running exploratory commands and apply your edits with `patch_file`/`write_file` now, or report `STATUS: BLOCKED` with the exact blocker.]",
+                        turns_executed, live_max_turns
+                    )));
+                }
+
+                // On the final allowed turn (or when token budget / zero-edit spin limit is reached),
+                // pass empty tools so the worker synthesizes its findings into a final report.
+                let is_synthesis_turn = (turns_executed >= live_max_turns && live_max_turns > 1)
+                    || budget_reached
+                    || zero_edit_spin_stop;
                 if is_synthesis_turn
                     && messages
                         .last()
                         .map(|m| m.role == crate::agent::types::Role::Tool)
                         .unwrap_or(false)
                 {
-                    messages.push(Message::user(
+                    let synth_msg = if zero_edit_spin_stop {
+                        "[System: Zero-edit turn threshold reached without any file modifications. Do not call any more tools. Conclude immediately with `STATUS: BLOCKED` and state the exact blocker and evidence gathered.]"
+                    } else {
                         "[System: Turn/token budget reached. Do not call any more tools. Synthesize all findings, evidence, and results gathered so far into your complete final report now.]"
-                            .to_string(),
-                    ));
+                    };
+                    messages.push(Message::user(synth_msg.to_string()));
                 }
                 let turn_tools: &[crate::agent::ToolSchema] = if is_synthesis_turn {
                     &[]
@@ -1055,8 +1111,61 @@ impl SubagentWorker {
                 let mut stream = match stream_res {
                     Ok(Ok(s)) => s,
                     Ok(Err(e)) => {
+                        if provider_retry_count < crate::constants::DEFAULT_MAX_RETRIES
+                            && e.is_retryable_provider_error()
+                        {
+                            provider_retry_count += 1;
+                            let delay_secs = e
+                                .retry_backoff_secs(provider_retry_count)
+                                .saturating_add(worker_retry_jitter_secs);
+                            tracing::warn!(
+                                minipub_id = %id,
+                                error = %e,
+                                retry = provider_retry_count,
+                                delay_secs,
+                                "MiniPub hit retryable provider error; backing off before retry"
+                            );
+                            {
+                                let mut info = self.info.write().await;
+                                info.last_activity_secs = now_unix_secs();
+                                info.status_message = Some(format!(
+                                    "Rate-limited/transient error; retrying in {}s ({}/{})",
+                                    delay_secs,
+                                    provider_retry_count,
+                                    crate::constants::DEFAULT_MAX_RETRIES
+                                ));
+                            }
+                            dev_registry
+                                .append_worker_log(
+                                    &id,
+                                    format!(
+                                        "[{}] Retryable error ({}) — backing off {}s (attempt {}/{})",
+                                        id,
+                                        e,
+                                        delay_secs,
+                                        provider_retry_count,
+                                        crate::constants::DEFAULT_MAX_RETRIES
+                                    ),
+                                )
+                                .await;
+                            let sleep_deadline = std::time::Instant::now()
+                                + std::time::Duration::from_secs(delay_secs);
+                            while std::time::Instant::now() < sleep_deadline {
+                                if self.cancel_flag.load(Ordering::SeqCst) {
+                                    break;
+                                }
+                                tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+                            }
+                            if self.cancel_flag.load(Ordering::SeqCst) {
+                                success = false;
+                                break;
+                            }
+                            turns_executed = turns_executed.saturating_sub(1);
+                            continue;
+                        }
                         if !retried_with_orchestrator_chain {
                             retried_with_orchestrator_chain = true;
+                            provider_retry_count = 0;
                             let orch_info = {
                                 let mut info = self.info.write().await;
                                 info.use_orchestrator_model = true;
@@ -1110,7 +1219,7 @@ impl SubagentWorker {
                 let mut iteration_text = String::new();
                 let mut pending_tool_calls: Vec<ToolCall> = Vec::new();
                 let mut stalled = false;
-                let mut stream_error: Option<String> = None;
+                let mut stream_error: Option<crate::error::MinicodeError> = None;
                 let mut turn_usage_reported = false;
 
                 loop {
@@ -1170,7 +1279,7 @@ impl SubagentWorker {
                         Ok(StreamChunk::Done) => break,
                         Err(e) => {
                             tracing::warn!(minipub_id = %id, error = ?e, "Error chunk in minipub stream");
-                            stream_error = Some(e.to_string());
+                            stream_error = Some(e);
                             break;
                         }
                     }
@@ -1183,12 +1292,66 @@ impl SubagentWorker {
                     tokens_used = last_prompt_tokens.saturating_add(cumulative_completion_tokens);
                 }
 
-                if let Some(err_msg) = stream_error {
+                if let Some(err) = stream_error {
                     if iteration_text.is_empty() && pending_tool_calls.is_empty() {
+                        if provider_retry_count < crate::constants::DEFAULT_MAX_RETRIES
+                            && err.is_retryable_provider_error()
+                        {
+                            provider_retry_count += 1;
+                            let delay_secs = err
+                                .retry_backoff_secs(provider_retry_count)
+                                .saturating_add(worker_retry_jitter_secs);
+                            tracing::warn!(
+                                minipub_id = %id,
+                                error = %err,
+                                retry = provider_retry_count,
+                                delay_secs,
+                                "MiniPub stream chunk hit retryable error; backing off before retry"
+                            );
+                            {
+                                let mut info = self.info.write().await;
+                                info.last_activity_secs = now_unix_secs();
+                                info.status_message = Some(format!(
+                                    "Rate-limited/transient stream error; retrying in {}s ({}/{})",
+                                    delay_secs,
+                                    provider_retry_count,
+                                    crate::constants::DEFAULT_MAX_RETRIES
+                                ));
+                            }
+                            dev_registry
+                                .append_worker_log(
+                                    &id,
+                                    format!(
+                                        "[{}] Retryable stream error ({}) — backing off {}s (attempt {}/{})",
+                                        id,
+                                        err,
+                                        delay_secs,
+                                        provider_retry_count,
+                                        crate::constants::DEFAULT_MAX_RETRIES
+                                    ),
+                                )
+                                .await;
+                            let sleep_deadline = std::time::Instant::now()
+                                + std::time::Duration::from_secs(delay_secs);
+                            while std::time::Instant::now() < sleep_deadline {
+                                if self.cancel_flag.load(Ordering::SeqCst) {
+                                    break;
+                                }
+                                tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+                            }
+                            if self.cancel_flag.load(Ordering::SeqCst) {
+                                success = false;
+                                break;
+                            }
+                            turns_executed = turns_executed.saturating_sub(1);
+                            continue;
+                        }
                         success = false;
-                        final_summary = format!("Model stream error: {}", err_msg);
+                        final_summary = format!("Model stream error: {}", err);
                         break;
                     }
+                } else {
+                    provider_retry_count = 0;
                 }
 
                 if stalled {
@@ -1624,7 +1787,8 @@ impl SubagentWorker {
                         // Lossless subagent context compression:
                         // 1. Strip older <thought>/<think> reasoning blocks beyond the last 2 assistant turns
                         // 2. Run semantic MicroCompactor (superseded/duplicate reads, mutation echoes, search condensation)
-                        // 3. Mask remaining bulky tool observations (> 6 messages behind current tail) via CcrCache-backed SmartDonutTruncator
+                        // 3. Mask remaining bulky tool observations ONLY when prompt tokens actually exceed
+                        //    `soft_compact_threshold` (>= 24k tokens) so short reviews never lose files they just read!
                         crate::context::auto_compact::AutoCompactor::strip_older_reasoning(
                             &mut messages,
                         );
@@ -1633,7 +1797,9 @@ impl SubagentWorker {
                                 &mut messages,
                                 2,
                             );
-                        if messages.len() > crate::constants::COMPACT_PRESERVE_RECENT_MESSAGES + 2 {
+                        if messages.len() > crate::constants::COMPACT_PRESERVE_RECENT_MESSAGES + 2
+                            && estimate_prompt_tokens(&messages) > soft_compact_threshold
+                        {
                             let cutoff = messages
                                 .len()
                                 .saturating_sub(crate::constants::COMPACT_PRESERVE_RECENT_MESSAGES);
@@ -1823,7 +1989,7 @@ impl SubagentWorker {
                     .map(|p| p.active_worker_count() == 0)
                     .unwrap_or(true)
             {
-                let _ = crate::tools::browser::BrowserManager::shutdown_live_engine().await;
+                let _ = crate::tools::browser::BrowserManager::shutdown_live_engine_opt(true).await;
                 let _ = crate::dev::registry::get_global_dev_registry()
                     .refresh_telemetry_cache()
                     .await;
@@ -1924,7 +2090,28 @@ fn is_making_forward_progress(
         }
     }
 
-    // 3. Require at least one successful step in the recent window
+    // 3. Detect multi-step re-read / revisit spin loops (e.g. reading the same files over and over):
+    // If >= 4 of the last 6 steps repeat exact `(tool_name, arguments)` already executed earlier,
+    // the worker is cycling instead of making net new progress.
+    if steps.len() >= 6 {
+        let split = steps.len() - 6;
+        let prior = &steps[..split];
+        let recent6 = &steps[split..];
+        let repeated_count = recent6
+            .iter()
+            .filter(|s| {
+                !crate::context::budget::micro_compact::is_mutation_tool(&s.tool_name)
+                    && prior
+                        .iter()
+                        .any(|p| p.tool_name == s.tool_name && p.arguments == s.arguments)
+            })
+            .count();
+        if repeated_count >= 4 {
+            return false;
+        }
+    }
+
+    // 4. Require at least one successful step in the recent window
     recent.iter().any(|s| s.success)
 }
 
@@ -2287,12 +2474,19 @@ fn append_session_wisdom_entry(
     existing.push('\n');
     existing.push_str(&entry);
 
-    // Keep notepad bounded (~6,000 bytes max) so it never bloats disk or prompt reads
+    // Keep notepad bounded (~6,000 bytes max) without ever slicing mid-word or mid-entry
     if existing.len() > 6_000 {
-        let keep_from = existing.floor_char_boundary(existing.len() - 4_800);
+        let raw_cut = existing.floor_char_boundary(existing.len().saturating_sub(4_800));
+        let tail = &existing[raw_cut..];
+        let snapped_offset = tail
+            .find("\n#### ")
+            .map(|i| i + 1)
+            .or_else(|| tail.find('\n').map(|i| i + 1))
+            .unwrap_or(0);
+        let keep_from = raw_cut + snapped_offset;
         existing = format!(
-            "# MiniPub Session Wisdom Notepad (Recent Entries)\n\n...\n{}",
-            &existing[keep_from..]
+            "# MiniPub Session Wisdom Notepad (Recent Entries)\n\n{}",
+            existing[keep_from..].trim_start_matches('\n')
         );
     }
 
@@ -2627,5 +2821,91 @@ mod tests {
             backup_mgr.latest_turn_id().is_some(),
             "Shared-mode subagent file write must create a BackupManager checkpoint"
         );
+    }
+
+    #[test]
+    fn test_session_wisdom_truncation_preserves_entry_boundaries() {
+        let dir = tempfile::tempdir().unwrap();
+        for i in 0..25 {
+            append_session_wisdom_entry(
+                dir.path(),
+                &format!("frontend-{i:02}"),
+                SubagentRole::Frontend,
+                "Update responsive table layout and verify zero horizontal overflow at 390px.",
+                &[format!("src/components/Section{i}.tsx")],
+                &["src/index.css".to_string()],
+                "STATUS: DONE\nReplaced forced min-width table with responsive stacked cards.\n<learning>Use a single semantic table DOM tree with responsive CSS instead of duplicating markup.</learning>",
+                true,
+            );
+        }
+
+        let wisdom_path = dir
+            .path()
+            .join(crate::constants::WORKSPACE_DIR_NAME)
+            .join(crate::constants::SESSION_WISDOM_FILE);
+        let content = std::fs::read_to_string(&wisdom_path).unwrap();
+        assert!(content.len() <= 6_000, "Wisdom notepad should stay bounded");
+        let after_header = content
+            .strip_prefix("# MiniPub Session Wisdom Notepad (Recent Entries)\n\n")
+            .expect("expected truncated header");
+        assert!(
+            after_header.starts_with("#### MiniPub `"),
+            "Truncated notepad must start cleanly on an entry boundary, not mid-word: {:?}",
+            &after_header[..after_header.len().min(80)]
+        );
+    }
+
+    #[test]
+    fn test_is_making_forward_progress_rejects_reread_spin_loop() {
+        use crate::agent::subagent::transcript::SubagentStepRecord;
+        let mk_read = |step: usize, path: &str, start: usize| SubagentStepRecord {
+            step_index: step,
+            turn: step,
+            tool_name: "read_file".to_string(),
+            arguments: serde_json::json!({ "path": path, "start_line": start }),
+            output_snippet: "ok".to_string(),
+            output_full: "ok".to_string(),
+            success: true,
+            duration_ms: 1,
+            timestamp_secs: 0,
+        };
+
+        // Distinct initial reads make genuine progress
+        let fresh = vec![
+            mk_read(1, "index.html", 1),
+            mk_read(2, "style.css", 1),
+            mk_read(3, "app.js", 1),
+            mk_read(4, "app.js", 200),
+            mk_read(5, "app.js", 400),
+            mk_read(6, "README.md", 1),
+        ];
+        assert!(is_making_forward_progress(&fresh));
+
+        // Cycling back through the exact same files/lines over and over is NOT forward progress
+        let mut looping = fresh;
+        looping.push(mk_read(7, "index.html", 1));
+        looping.push(mk_read(8, "style.css", 1));
+        looping.push(mk_read(9, "app.js", 1));
+        looping.push(mk_read(10, "app.js", 200));
+        looping.push(mk_read(11, "app.js", 400));
+        looping.push(mk_read(12, "README.md", 1));
+        assert!(
+            !is_making_forward_progress(&looping),
+            "Repeated identical read_file cycle must NOT be granted elastic turn extensions"
+        );
+    }
+
+    #[test]
+    fn test_explicit_max_turns_cap_is_preserved_by_worker_new() {
+        let dir = tempfile::tempdir().unwrap();
+        let long_prompt = "Review workspace changes:\n".repeat(250);
+        let cfg = SubagentConfig::for_role(SubagentRole::Reviewer).with_explicit_max_turns(Some(8));
+        let worker =
+            SubagentWorker::new("reviewer-cap-1".to_string(), long_prompt, cfg, dir.path());
+        assert_eq!(
+            worker.config.max_turns, 8,
+            "Explicit max_turns cap must not be inflated by dynamic scope scaling"
+        );
+        assert!(worker.config.explicit_max_turns);
     }
 }

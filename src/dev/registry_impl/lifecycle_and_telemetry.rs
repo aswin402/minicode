@@ -116,17 +116,110 @@ impl MiniDevRegistry {
 
     /// Graceful normal-exit teardown for CLI/TUI session completion.
     ///
-    /// When an interactive GUI browser window was launched and preserved for the user (`BrowserMode::Gui`),
-    /// detaches active `Frontend` / `Backend` daemon servers from teardown tracking so the live localhost
-    /// preview remains reachable in the user's open browser window, while still reaping all non-daemon
-    /// tasks, workers, swarms, headless browsers, and containers.
+    /// Unconditionally terminates all minicode-spawned browser engines, dev server daemons,
+    /// background tasks, workers, swarms, and containers so exiting `minicode` never leaks
+    /// orphan OS processes or occupied localhost ports. (Externally attached user browsers via
+    /// `DevToolsActivePort` have `external_attached = true` and are never killed.)
     pub async fn shutdown_for_exit(&self) -> Result<usize> {
-        let preserve_gui_session = matches!(
-            crate::tools::browser::BrowserManager::live_engine_mode().await,
-            Some(crate::tools::browser::BrowserMode::Gui)
-        );
-        let _ = crate::tools::browser::BrowserManager::shutdown_live_engine().await;
-        self.terminate_managed_processes(preserve_gui_session).await
+        let _ = crate::tools::browser::BrowserManager::shutdown_live_engine_opt(true).await;
+        self.terminate_managed_processes(false).await
+    }
+
+    /// Stops all active ephemeral background resources (webdev/backend/script daemons, stray
+    /// non-daemon tasks, and spawned browsers) once a turn/task completes cleanly.
+    ///
+    /// Leaves user-configured recurring `Cron` schedules intact. When `preserve_persistent_preview`
+    /// is `true` (e.g., user explicitly asked to start/keep a dev server or live GUI preview),
+    /// keeps live `Frontend`/`Backend` daemons and GUI browsers running while still closing
+    /// headless inspection browsers.
+    pub async fn cleanup_after_turn_completion(&self, preserve_persistent_preview: bool) -> usize {
+        let mut stopped = 0usize;
+
+        if preserve_persistent_preview {
+            let _ = crate::tools::browser::BrowserManager::shutdown_live_engine_opt(false).await;
+        } else {
+            if crate::tools::browser::BrowserManager::shutdown_live_engine_opt(true)
+                .await
+                .unwrap_or(false)
+            {
+                stopped += 1;
+            }
+
+            let targets: Vec<Arc<DevProcessHandle>> = {
+                let lock = self.processes.read().await;
+                lock.values()
+                    .filter(|h| {
+                        matches!(
+                            h.process_type,
+                            DevProcessType::Frontend
+                                | DevProcessType::Backend
+                                | DevProcessType::Script
+                                | DevProcessType::Docker
+                        )
+                    })
+                    .cloned()
+                    .collect()
+            };
+
+            let mut futs = Vec::new();
+            for handle in targets {
+                if handle.status.read().await.is_alive() {
+                    stopped += 1;
+                    let id = handle.id.clone();
+                    let pid = handle.pid();
+                    let pgid = handle.pgid();
+                    futs.push(async move {
+                        let _ = handle.terminate().await;
+                        (id, pid, pgid)
+                    });
+                }
+            }
+            for (id, pid, pgid) in futures::future::join_all(futs).await {
+                self.clear_detached_command(&id);
+                self.untrack_process_ids(pid, pgid);
+            }
+        }
+
+        let _ = self.refresh_telemetry_cache().await;
+        stopped
+    }
+
+    /// Terminates all currently running non-daemon background tasks (builds, tests, scripts,
+    /// timers) — used on turn cancellation (`Ctrl+C`) or fatal turn abort.
+    pub async fn stop_active_non_daemon_tasks(&self) -> usize {
+        let handles: Vec<Arc<DevProcessHandle>> = {
+            let lock = self.processes.read().await;
+            lock.values()
+                .filter(|h| {
+                    !h.is_daemon
+                        && !matches!(
+                            h.process_type,
+                            DevProcessType::Worker | DevProcessType::Swarm | DevProcessType::Cron
+                        )
+                })
+                .cloned()
+                .collect()
+        };
+        let mut stopped = 0usize;
+        let mut futs = Vec::new();
+        for handle in handles {
+            if handle.status.read().await.is_alive() {
+                stopped += 1;
+                let id = handle.id.clone();
+                let pid = handle.pid();
+                let pgid = handle.pgid();
+                futs.push(async move {
+                    let _ = handle.terminate().await;
+                    (id, pid, pgid)
+                });
+            }
+        }
+        for (id, pid, pgid) in futures::future::join_all(futs).await {
+            self.clear_detached_command(&id);
+            self.untrack_process_ids(pid, pgid);
+        }
+        let _ = self.refresh_telemetry_cache().await;
+        stopped
     }
 
     async fn terminate_managed_processes(&self, preserve_gui_daemons: bool) -> Result<usize> {
@@ -477,11 +570,15 @@ impl MiniDevRegistry {
         }
     }
 
-    /// Registers an external child PID (such as Chrome or a background subagent)
-    /// to ensure it is terminated on minicode exit.
+    /// Registers an external child PID (such as Chrome, Firefox, MiniBrowse, or a background subagent)
+    /// into BOTH `active_pids` and `active_pgids` (since spawned browsers run in `process_group(0)`)
+    /// to guarantee the entire helper/renderer process tree is terminated on exit.
     pub fn register_external_pid(&self, pid: u32) {
         if pid > 1 && pid != std::process::id() {
             if let Ok(mut set) = self.active_pids.lock() {
+                set.insert(pid);
+            }
+            if let Ok(mut set) = self.active_pgids.lock() {
                 set.insert(pid);
             }
             if let Ok(mut browsers) = self.browser_pids.try_write() {

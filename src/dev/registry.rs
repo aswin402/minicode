@@ -448,6 +448,66 @@ impl MiniDevRegistry {
         total_score
     }
 
+    /// Returns `true` only when the user's prompt explicitly asks to keep a live dev server or
+    /// GUI browser preview open after turn completion (e.g., `"keep the dev server running"`,
+    /// `"leave browser open"`, or a pure server-launch prompt like `"start the dev server"`).
+    /// Build/fix/verify tasks that spin up a server only for internal QA return `false` so
+    /// minicode automatically tears down temporary servers and browsers once the work finishes.
+    #[must_use]
+    pub fn user_prompt_requests_persistent_preview(prompt: &str) -> bool {
+        let lower = prompt.to_ascii_lowercase();
+        if lower.trim().is_empty() {
+            return false;
+        }
+        // Explicit preservation phrasing ("keep ... running", "leave ... open", "don't stop/kill")
+        if Self::analyze_termination_polarity(prompt, Some("server")) < 0
+            || Self::analyze_termination_polarity(prompt, Some("browser")) < 0
+        {
+            return true;
+        }
+        let words: HashSet<&str> = lower
+            .split(|c: char| !c.is_ascii_alphanumeric() && c != '_')
+            .filter(|w| !w.is_empty())
+            .collect();
+        let mentions_server_or_preview = words.iter().any(|&w| {
+            matches!(
+                w,
+                "server" | "localhost" | "preview" | "devserver" | "vite" | "uvicorn" | "serve"
+            )
+        }) || lower.contains("dev server")
+            || lower.contains("run dev")
+            || lower.contains("gui browser");
+        if !mentions_server_or_preview {
+            return false;
+        }
+        let asks_to_start_or_open = words.iter().any(|&w| {
+            matches!(
+                w,
+                "start" | "launch" | "run" | "open" | "serve" | "preview" | "keep" | "leave"
+            )
+        });
+        let has_build_or_edit_goal = words.iter().any(|&w| {
+            matches!(
+                w,
+                "build"
+                    | "create"
+                    | "implement"
+                    | "fix"
+                    | "refactor"
+                    | "write"
+                    | "edit"
+                    | "patch"
+                    | "update"
+                    | "redesign"
+                    | "scaffold"
+                    | "verify"
+                    | "test"
+                    | "audit"
+            )
+        });
+        asks_to_start_or_open && !has_build_or_edit_goal
+    }
+
     /// Returns `true` only when `prompt` carries positive un-negated termination polarity.
     pub fn user_prompt_authorizes_task_termination(prompt: &str) -> bool {
         Self::analyze_termination_polarity(prompt, None) > 0
@@ -662,16 +722,14 @@ impl MiniDevRegistry {
                             tracing::warn!("{}", alert_msg);
                             handle.append_log(&alert_msg).await;
                             handle
-                                .update_status(crate::dev::models::DevProcessStatus::Degraded(
-                                    format!(
-                                        "Killed by OOM Watchdog: {:.1}MB exceeded {:.1}MB ceiling",
-                                        usage.memory_rss_mb, limit_mb
-                                    ),
-                                ))
+                                .update_status(crate::dev::models::DevProcessStatus::Killed)
                                 .await;
 
                             // Gracefully terminate then kill runaway process group
                             let _ = handle.terminate().await;
+                            handle
+                                .update_status(crate::dev::models::DevProcessStatus::Killed)
+                                .await;
                             continue;
                         }
 
@@ -978,16 +1036,13 @@ impl MiniDevRegistry {
             }
             let status = handle.status.read().await.clone();
             let pid = handle.pid();
-            // For Worker processes, keep completed (`Exited(Some(0))`) entries visible unless explicitly stopped/killed
-            let keep_completed_worker = handle.process_type == DevProcessType::Worker
-                && matches!(status, DevProcessStatus::Exited(Some(0)));
-            if !status.is_alive() && !keep_completed_worker {
+            if !status.is_alive() {
                 continue;
             }
             if pid > 0
+                && pid != std::process::id()
                 && !crate::dev::ports::is_process_running(pid)
                 && !matches!(status, DevProcessStatus::Degraded(_))
-                && !keep_completed_worker
             {
                 continue;
             }

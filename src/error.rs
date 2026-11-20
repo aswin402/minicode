@@ -72,6 +72,22 @@ impl MinicodeError {
             _ => true,
         }
     }
+
+    /// Computes retry backoff delay in seconds, honoring server-provided `Retry-After` hints
+    /// on `ProviderError::RateLimited` (clamped to `1..=60` seconds) rather than burning
+    /// retries before the rate-limit window expires.
+    #[must_use]
+    pub fn retry_backoff_secs(&self, retry_attempt: usize) -> u64 {
+        let backoff_shift = retry_attempt.saturating_sub(1).min(4) as u32;
+        let exp_backoff =
+            crate::constants::RETRY_BACKOFF_SECS.saturating_mul(1u64 << backoff_shift);
+        match self {
+            MinicodeError::Provider(ProviderError::RateLimited {
+                retry_after_secs: Some(secs),
+            }) => exp_backoff.max((*secs).clamp(1, 60)),
+            _ => exp_backoff.min(60),
+        }
+    }
 }
 
 #[derive(Error, Debug)]

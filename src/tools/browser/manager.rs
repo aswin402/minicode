@@ -80,14 +80,18 @@ async fn kill_engine_process_tree(pid: u32) {
                 let _ = libc::kill(-(desc as i32), libc::SIGTERM);
             }
         }
-        tokio::time::sleep(Duration::from_millis(50)).await;
+        tokio::time::sleep(Duration::from_millis(60)).await;
+        let late_descendants = crate::dev::ports::find_all_descendants(pid);
         unsafe {
             let _ = libc::kill(-p_i32, libc::SIGKILL);
             let _ = libc::kill(p_i32, libc::SIGKILL);
-            for &desc in &descendants {
+            for &desc in descendants.iter().chain(late_descendants.iter()) {
                 let _ = libc::kill(desc as i32, libc::SIGKILL);
                 let _ = libc::kill(-(desc as i32), libc::SIGKILL);
             }
+            // Reap killed browser child immediately so it never lingers as a <defunct> zombie
+            let mut status = 0;
+            let _ = libc::waitpid(p_i32, &mut status, libc::WNOHANG);
         }
     }
     crate::dev::registry::get_global_dev_registry().unregister_external_pid(pid);
@@ -322,6 +326,11 @@ impl SharedEngine {
     }
 }
 
+/// Cooldown window before retrying a browser engine that failed startup/connect in this session.
+/// Set to 1 hour (cleared immediately if `browser.default_engine` is updated in settings) so a
+/// broken headless engine binary (e.g. Firefox without geckodriver) never stalls mid-session.
+const ENGINE_FAILURE_COOLDOWN: Duration = Duration::from_secs(3600);
+
 /// Multi-engine pool maintaining both the active general browser (`MiniBrowse` primary, or
 /// user-requested/configured `Chrome` / `Firefox` / `Safari`) and a dedicated `MiniBrowse`
 /// debug instance without closing the user's open browser windows.
@@ -329,6 +338,8 @@ impl SharedEngine {
 struct EnginePool {
     engines: HashMap<BrowserEngine, Arc<SharedEngine>>,
     active_general: Option<BrowserEngine>,
+    /// Engines that recently failed to spawn or establish CDP/WebDriver handshakes in this session.
+    failed_engines: HashMap<(BrowserEngine, BrowserMode), Instant>,
 }
 
 impl EnginePool {
@@ -342,6 +353,23 @@ impl EnginePool {
             return Some(mb);
         }
         self.engines.values().next()
+    }
+
+    fn is_in_failure_cooldown(&self, engine: BrowserEngine, mode: BrowserMode) -> bool {
+        self.failed_engines
+            .get(&(engine, mode))
+            .is_some_and(|ts| ts.elapsed() < ENGINE_FAILURE_COOLDOWN)
+    }
+
+    fn mark_engine_failed(&mut self, engine: BrowserEngine, mode: BrowserMode) {
+        self.failed_engines.insert((engine, mode), Instant::now());
+        if self.active_general == Some(engine) {
+            self.active_general = None;
+        }
+    }
+
+    fn clear_engine_failure(&mut self, engine: BrowserEngine, mode: BrowserMode) {
+        self.failed_engines.remove(&(engine, mode));
     }
 }
 
@@ -409,10 +437,10 @@ impl BrowserManager {
         let mut guard = LIVE_POOL.lock().await;
         let pool = guard.get_or_insert_with(EnginePool::default);
 
-        // Determine target engine candidate:
-        // - For General calls with no explicit per-call override and no env/config override,
+        // Determine sticky live candidate:
+        // - For General calls with no explicit per-call override and no env override,
         //   continue using `pool.active_general` if already alive (preserves ARIA ref continuity
-        //   after `browser_navigate(engine="firefox")` -> `browser_click(ref="@v1:e1")`).
+        //   and avoids retrying a broken `default_engine` once fallback succeeded).
         let sticky_candidate = if purpose == BrowserPurpose::General
             && explicit_engine.is_none()
             && std::env::var("MINICODE_BROWSER").is_err()
@@ -422,7 +450,11 @@ impl BrowserManager {
                 .and_then(|c| c.browser.default_engine)
                 .and_then(|s| parse_engine_name(&s));
             match (cfg_forced, pool.active_general) {
-                (Some(forced), Some(active)) if forced == active => Some(active),
+                (Some(forced), Some(active))
+                    if forced == active || pool.is_in_failure_cooldown(forced, mode) =>
+                {
+                    Some(active)
+                }
                 (None, Some(active)) => Some(active),
                 _ => None,
             }
@@ -430,116 +462,162 @@ impl BrowserManager {
             None
         };
 
-        let target_config = if let Some(sticky_eng) = sticky_candidate {
+        // Build ordered launch candidates: sticky live engine first (if any), followed by all
+        // installed engines in resolved priority order.
+        let mut candidates =
+            Self::discover_all_engines_for(purpose, mode, explicit_engine, workspace_root);
+        if let Some(sticky_eng) = sticky_candidate {
             if let Some(existing) = pool.engines.get(&sticky_eng) {
-                existing.process.config.clone()
-            } else {
-                Self::discover_engine_for(purpose, mode, explicit_engine, workspace_root)
-                    .ok_or_else(|| missing_engine_error(explicit_engine))?
+                let existing_cfg = existing.process.config.clone();
+                candidates.retain(|c| c.engine != sticky_eng);
+                candidates.insert(0, existing_cfg);
             }
-        } else {
-            Self::discover_engine_for(purpose, mode, explicit_engine, workspace_root)
-                .ok_or_else(|| missing_engine_error(explicit_engine))?
-        };
+        }
 
-        let chosen_engine = target_config.engine;
+        if candidates.is_empty() {
+            return Err(missing_engine_error(explicit_engine).into());
+        }
 
-        if let Some(existing) = pool.engines.get(&chosen_engine).cloned() {
-            let needs_gui_upgrade =
-                mode == BrowserMode::Gui && existing.effective_mode() == BrowserMode::Headless;
-            if needs_gui_upgrade {
-                if existing.process.config.engine == BrowserEngine::MiniBrowse {
-                    if let Ok(res) = existing.cdp.set_window_mode(true, false, None).await {
-                        if res.get("ok").and_then(|v| v.as_bool()).unwrap_or(false) {
-                            tracing::info!(
-                                "Promoted live MiniBrowse headless session to GUI window in-place (zero state loss)"
-                            );
-                            existing.set_gui_promoted(true);
-                            existing.set_aura_enabled(true);
-                            if purpose == BrowserPurpose::General {
-                                pool.active_general = Some(chosen_engine);
+        // Partition healthy vs recently-failed engines when caller did not pin an explicit engine:
+        // skip engines in failure cooldown while healthy fallbacks exist, keeping them only as a
+        // last resort so a broken default (e.g., Firefox headless WebDriver) never hangs every call
+        // for 8s or degrades to plain HTTP while MiniBrowse/Chrome are ready.
+        if explicit_engine.is_none() && candidates.len() > 1 {
+            let (healthy, cooling): (Vec<_>, Vec<_>) = candidates
+                .into_iter()
+                .partition(|c| !pool.is_in_failure_cooldown(c.engine, mode));
+            candidates = if healthy.is_empty() { cooling } else { healthy };
+        }
+
+        let mut last_err: Option<crate::error::MinicodeError> = None;
+
+        for mut launch_cfg in candidates {
+            let chosen_engine = launch_cfg.engine;
+
+            if let Some(existing) = pool.engines.get(&chosen_engine).cloned() {
+                let needs_gui_upgrade =
+                    mode == BrowserMode::Gui && existing.effective_mode() == BrowserMode::Headless;
+                if needs_gui_upgrade {
+                    if existing.process.config.engine == BrowserEngine::MiniBrowse {
+                        if let Ok(res) = existing.cdp.set_window_mode(true, false, None).await {
+                            if res.get("ok").and_then(|v| v.as_bool()).unwrap_or(false) {
+                                tracing::info!(
+                                    "Promoted live MiniBrowse headless session to GUI window in-place (zero state loss)"
+                                );
+                                existing.set_gui_promoted(true);
+                                existing.set_aura_enabled(true);
+                                if purpose == BrowserPurpose::General {
+                                    pool.active_general = Some(chosen_engine);
+                                }
+                                return Ok(existing);
                             }
-                            return Ok(existing);
                         }
                     }
-                }
-                tracing::info!(
-                    engine = %chosen_engine,
-                    "Upgrading pooled headless browser engine to GUI mode via restart"
-                );
-                if let Some(old) = pool.engines.remove(&chosen_engine) {
-                    if !old.process.external_attached {
-                        if let Some(pid) = old.process.pid() {
-                            kill_engine_process_tree(pid).await;
+                    tracing::info!(
+                        engine = %chosen_engine,
+                        "Upgrading pooled headless browser engine to GUI mode via restart"
+                    );
+                    if let Some(old) = pool.engines.remove(&chosen_engine) {
+                        if !old.process.external_attached {
+                            if let Some(pid) = old.process.pid() {
+                                kill_engine_process_tree(pid).await;
+                            }
                         }
                     }
-                }
-            } else {
-                let alive = existing
-                    .cdp
-                    .send_command(
-                        "Runtime.evaluate",
-                        serde_json::json!({ "expression": "1 + 1", "returnByValue": true }),
-                    )
-                    .await
-                    .is_ok();
-                if alive {
-                    if purpose == BrowserPurpose::General {
-                        pool.active_general = Some(chosen_engine);
+                } else {
+                    let alive = existing
+                        .cdp
+                        .send_command_with_timeout(
+                            "Runtime.evaluate",
+                            serde_json::json!({ "expression": "1 + 1", "returnByValue": true }),
+                            Duration::from_secs(2),
+                        )
+                        .await
+                        .is_ok();
+                    if alive {
+                        if purpose == BrowserPurpose::General {
+                            pool.active_general = Some(chosen_engine);
+                        }
+                        pool.clear_engine_failure(chosen_engine, mode);
+                        return Ok(existing);
                     }
-                    return Ok(existing);
-                }
-                tracing::warn!(engine = %chosen_engine, "Pooled browser engine died; relaunching");
-                if let Some(dead) = pool.engines.remove(&chosen_engine) {
-                    if !dead.process.external_attached {
-                        if let Some(pid) = dead.process.pid() {
-                            kill_engine_process_tree(pid).await;
+                    tracing::warn!(engine = %chosen_engine, "Pooled browser engine died; relaunching");
+                    if let Some(dead) = pool.engines.remove(&chosen_engine) {
+                        if !dead.process.external_attached {
+                            if let Some(pid) = dead.process.pid() {
+                                kill_engine_process_tree(pid).await;
+                            }
                         }
                     }
                 }
             }
-        }
 
-        let mut launch_cfg = target_config;
-        launch_cfg.mode = mode;
-        launch_cfg.cdp_port = find_available_port(BROWSER_CDP_BASE_PORT);
+            launch_cfg.mode = mode;
+            launch_cfg.cdp_port = find_available_port(BROWSER_CDP_BASE_PORT);
 
-        let mut proc = Self::spawn_engine(&launch_cfg).await?;
-        let cdp = match CdpClient::connect_for_engine(
-            &proc.cdp_http_url,
-            launch_cfg.engine,
-            launch_cfg.mode,
-        )
-        .await
-        {
-            Ok(cdp) => Arc::new(cdp),
-            Err(e) => {
-                let _ = proc.shutdown().await;
-                return Err(e);
+            let mut proc = match Self::spawn_engine(&launch_cfg).await {
+                Ok(p) => p,
+                Err(e) => {
+                    tracing::warn!(
+                        engine = %chosen_engine,
+                        mode = %mode,
+                        error = %e,
+                        "Failed to spawn browser engine; trying next fallback engine if available"
+                    );
+                    pool.mark_engine_failed(chosen_engine, mode);
+                    last_err = Some(e);
+                    continue;
+                }
+            };
+
+            let cdp = match CdpClient::connect_for_engine(
+                &proc.cdp_http_url,
+                launch_cfg.engine,
+                launch_cfg.mode,
+            )
+            .await
+            {
+                Ok(cdp) => Arc::new(cdp),
+                Err(e) => {
+                    tracing::warn!(
+                        engine = %chosen_engine,
+                        mode = %mode,
+                        error = %e,
+                        "Browser engine handshake failed; shutting down and trying next fallback engine"
+                    );
+                    let _ = proc.shutdown().await;
+                    pool.mark_engine_failed(chosen_engine, mode);
+                    last_err = Some(e);
+                    continue;
+                }
+            };
+
+            tracing::info!(
+                engine = %launch_cfg.engine,
+                purpose = ?purpose,
+                "Browser engine ready (persistent multi-engine pool)"
+            );
+            let is_gui = launch_cfg.mode == BrowserMode::Gui;
+            let handle = Arc::new(SharedEngine {
+                aura_enabled: std::sync::atomic::AtomicBool::new(is_gui),
+                gui_promoted: std::sync::atomic::AtomicBool::new(is_gui),
+                default_owner: std::sync::atomic::AtomicU8::new(SpaceOwner::Agent as u8),
+                process: proc,
+                cdp,
+                accessibility: Arc::new(tokio::sync::Mutex::new(AccessibilityManager::new())),
+                spaces: tokio::sync::Mutex::new(HashMap::new()),
+                started_at: Instant::now(),
+            });
+            pool.clear_engine_failure(chosen_engine, mode);
+            pool.engines.insert(chosen_engine, Arc::clone(&handle));
+            if purpose == BrowserPurpose::General || pool.active_general.is_none() {
+                pool.active_general = Some(chosen_engine);
             }
-        };
-        tracing::info!(
-            engine = %launch_cfg.engine,
-            purpose = ?purpose,
-            "Browser engine ready (persistent multi-engine pool)"
-        );
-        let is_gui = launch_cfg.mode == BrowserMode::Gui;
-        let handle = Arc::new(SharedEngine {
-            aura_enabled: std::sync::atomic::AtomicBool::new(is_gui),
-            gui_promoted: std::sync::atomic::AtomicBool::new(is_gui),
-            default_owner: std::sync::atomic::AtomicU8::new(SpaceOwner::Agent as u8),
-            process: proc,
-            cdp,
-            accessibility: Arc::new(tokio::sync::Mutex::new(AccessibilityManager::new())),
-            spaces: tokio::sync::Mutex::new(HashMap::new()),
-            started_at: Instant::now(),
-        });
-        pool.engines.insert(chosen_engine, Arc::clone(&handle));
-        if purpose == BrowserPurpose::General || pool.active_general.is_none() {
-            pool.active_general = Some(chosen_engine);
+            Self::record_live_activity(1, None, "ready");
+            return Ok(handle);
         }
-        Self::record_live_activity(1, None, "ready");
-        Ok(handle)
+
+        Err(last_err.unwrap_or_else(|| missing_engine_error(explicit_engine).into()))
     }
 
     /// Updates the preferred general engine pointer when the user changes `browser.default_engine`
@@ -548,6 +626,7 @@ impl BrowserManager {
         let mut guard = LIVE_POOL.lock().await;
         if let Some(ref mut pool) = *guard {
             pool.active_general = default_engine.and_then(parse_engine_name);
+            pool.failed_engines.clear();
         }
     }
 
@@ -995,9 +1074,24 @@ impl BrowserManager {
                 if !forced.trim().is_empty() && !forced.eq_ignore_ascii_case("auto") {
                     if let Some(engine) = parse_engine_name(forced) {
                         let mut list = vec![engine];
-                        // Keep MiniBrowse as resilient fallback if configured external browser is uninstalled
-                        if engine != BrowserEngine::MiniBrowse {
-                            list.push(BrowserEngine::MiniBrowse);
+                        // Keep full configured + default fallback chain (MiniBrowse, Chrome, etc.)
+                        // so a broken default engine degrades gracefully to another real browser
+                        // instead of falling all the way back to a plain HTTP reader.
+                        let configured_names = match mode {
+                            BrowserMode::Headless => &cfg.browser.headless_priority,
+                            BrowserMode::Gui => &cfg.browser.gui_priority,
+                        };
+                        for name in configured_names {
+                            if let Some(fb) = parse_engine_name(name) {
+                                if !list.contains(&fb) {
+                                    list.push(fb);
+                                }
+                            }
+                        }
+                        for &fb in default_priority {
+                            if !list.contains(&fb) {
+                                list.push(fb);
+                            }
                         }
                         return list;
                     }
@@ -1037,30 +1131,33 @@ impl BrowserManager {
     }
 
     /// Discovers an available browser binary for `purpose` (`General` vs `Debug`), `mode`, and optional `explicit_engine`.
-    pub fn discover_engine_for(
+    /// Discovers all installed browser binaries in priority order for `purpose`, `mode`,
+    /// and optional `explicit_engine`, enabling automatic fallback when a primary engine fails to start.
+    pub fn discover_all_engines_for(
         purpose: BrowserPurpose,
         mode: BrowserMode,
         explicit_engine: Option<BrowserEngine>,
         workspace_root: &Path,
-    ) -> Option<EngineConfig> {
+    ) -> Vec<EngineConfig> {
         let priority = Self::resolve_priority_chain(purpose, mode, explicit_engine, workspace_root);
+        let ws_hash = {
+            use std::collections::hash_map::DefaultHasher;
+            use std::hash::{Hash, Hasher};
+            let mut s = DefaultHasher::new();
+            workspace_root.hash(&mut s);
+            format!("{:08x}", s.finish() as u32)
+        };
 
+        let mut configs = Vec::new();
         for &engine in &priority {
             if let Some(binary_path) = find_binary_for_engine(engine) {
                 let port = find_available_port(BROWSER_CDP_BASE_PORT);
-                let ws_hash = {
-                    use std::collections::hash_map::DefaultHasher;
-                    use std::hash::{Hash, Hasher};
-                    let mut s = DefaultHasher::new();
-                    workspace_root.hash(&mut s);
-                    format!("{:08x}", s.finish() as u32)
-                };
                 let profile_dir = std::env::temp_dir()
                     .join("minicode")
                     .join("browser_profiles")
                     .join(format!("{}_{}_{}", ws_hash, engine.as_config_slug(), mode));
 
-                return Some(EngineConfig::new(
+                configs.push(EngineConfig::new(
                     engine,
                     mode,
                     port,
@@ -1069,8 +1166,20 @@ impl BrowserManager {
                 ));
             }
         }
+        configs
+    }
 
-        None
+    /// Discovers the highest-priority available browser binary for `purpose` (`General` vs `Debug`),
+    /// `mode`, and optional `explicit_engine`.
+    pub fn discover_engine_for(
+        purpose: BrowserPurpose,
+        mode: BrowserMode,
+        explicit_engine: Option<BrowserEngine>,
+        workspace_root: &Path,
+    ) -> Option<EngineConfig> {
+        Self::discover_all_engines_for(purpose, mode, explicit_engine, workspace_root)
+            .into_iter()
+            .next()
     }
 
     /// Prepares isolated profile directory with engine-specific preferences
@@ -1583,6 +1692,20 @@ mod tests {
             tmp.path(),
         );
         assert_eq!(general_chain[0], BrowserEngine::Firefox);
+        assert!(
+            general_chain.contains(&BrowserEngine::MiniBrowse)
+                && general_chain.contains(&BrowserEngine::Chrome),
+            "Forced default_engine must preserve full fallback chain (MiniBrowse + Chrome), got {:?}",
+            general_chain
+        );
+
+        let mut pool = EnginePool::default();
+        assert!(!pool.is_in_failure_cooldown(BrowserEngine::Firefox, BrowserMode::Headless));
+        pool.mark_engine_failed(BrowserEngine::Firefox, BrowserMode::Headless);
+        assert!(pool.is_in_failure_cooldown(BrowserEngine::Firefox, BrowserMode::Headless));
+        assert!(!pool.is_in_failure_cooldown(BrowserEngine::Chrome, BrowserMode::Headless));
+        pool.clear_engine_failure(BrowserEngine::Firefox, BrowserMode::Headless);
+        assert!(!pool.is_in_failure_cooldown(BrowserEngine::Firefox, BrowserMode::Headless));
 
         // Explicit per-call `engine="chrome"` or `engine="safari"` overrides general config
         let explicit_chrome = BrowserManager::resolve_priority_chain(

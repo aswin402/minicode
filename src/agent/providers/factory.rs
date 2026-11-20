@@ -49,8 +49,15 @@ const OPENAI_COMPAT_SPECS: &[OpenAiCompatSpec] = &[
         None,
     ),
     (
-        &["z.ai", "z_ai", "zhipu", "glm", "bigmodel"],
+        &["z.ai", "z_ai"],
         "z.ai",
+        crate::constants::ZAI_GLOBAL_BASE_URL,
+        crate::constants::ZHIPU_DEFAULT_MODEL,
+        None,
+    ),
+    (
+        &["zhipu", "glm", "bigmodel"],
+        "zhipu",
         crate::constants::ZHIPU_BASE_URL,
         crate::constants::ZHIPU_DEFAULT_MODEL,
         None,
@@ -167,8 +174,25 @@ pub fn create_provider_with_base_url(
                 Ok(Box::new(AnthropicProvider::new(api_key)))
             }
         }
-        "gemini" | "google" => Ok(Box::new(GeminiProvider::new(api_key))),
-        "openrouter" => Ok(Box::new(OpenAiCompatibleProvider::openrouter(api_key))),
+        "gemini" | "google" => {
+            if let Some(url) = custom_base_url {
+                Ok(Box::new(GeminiProvider::with_base_url(api_key, url)))
+            } else {
+                Ok(Box::new(GeminiProvider::new(api_key)))
+            }
+        }
+        "openrouter" => {
+            if let Some(url) = custom_base_url {
+                Ok(Box::new(OpenAiCompatibleProvider::new(
+                    "openrouter",
+                    api_key,
+                    url,
+                    crate::constants::OPENROUTER_DEFAULT_MODEL,
+                )))
+            } else {
+                Ok(Box::new(OpenAiCompatibleProvider::openrouter(api_key)))
+            }
+        }
         "openai" => {
             if let Some(url) = custom_base_url {
                 Ok(Box::new(OpenAiCompatibleProvider::new(

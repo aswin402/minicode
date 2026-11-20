@@ -179,7 +179,7 @@ impl PromptHistory {
         let mut global_recs = Vec::new();
 
         for rec in self.corpus.records() {
-            if is_slash_command_input(&rec.text) {
+            if crate::ui::prompt_corpus::is_excluded_from_prompt_history(&rec.text) {
                 continue;
             }
             if ws_hash != 0 && rec.workspace_hashes.contains(&ws_hash) {
@@ -206,10 +206,10 @@ impl PromptHistory {
     }
 
     /// Seeds a conversational prompt into in-memory history & LM during session hydration (without disk I/O).
-    /// Slash commands (`/...`) are structurally ignored.
+    /// Slash commands (`/...`), internal `[SYSTEM ...]` wakeups, and collapsed paste chips are excluded.
     pub fn seed_prompt(&mut self, prompt: &str) {
         let clean = prompt.trim();
-        if clean.is_empty() || is_slash_command_input(clean) {
+        if crate::ui::prompt_corpus::is_excluded_from_prompt_history(clean) {
             return;
         }
         let redacted = crate::security::redactor::redact_secrets(clean);
@@ -221,13 +221,13 @@ impl PromptHistory {
     }
 
     /// Records a newly submitted prompt into slot `0` and persists to global + workspace stores.
-    /// Slash commands (`/...`) are strictly ignored so `Up`/`Down` only recalls prompts.
+    /// Slash commands (`/...`), internal `[SYSTEM ...]` wakeups, and orphaned paste chips are excluded.
     pub fn record(&mut self, prompt: &str, workspace_root: Option<&Path>) {
         let clean = prompt.trim();
         self.reset_navigation();
         self.draft_stash.clear();
 
-        if clean.is_empty() || is_slash_command_input(clean) {
+        if crate::ui::prompt_corpus::is_excluded_from_prompt_history(clean) {
             return;
         }
 
@@ -248,7 +248,7 @@ impl PromptHistory {
     }
 
     fn insert_or_promote_memory_only(&mut self, text: String, add_count: u32, timestamp: u64) {
-        if is_slash_command_input(&text) {
+        if crate::ui::prompt_corpus::is_excluded_from_prompt_history(&text) {
             return;
         }
         let prev_count = if let Some(pos) = self.entries.iter().position(|e| e.text == text) {
@@ -275,7 +275,7 @@ impl PromptHistory {
         }
         let mut out = String::new();
         for entry in self.entries.iter().rev() {
-            if is_slash_command_input(&entry.text) {
+            if crate::ui::prompt_corpus::is_excluded_from_prompt_history(&entry.text) {
                 continue;
             }
             if let Ok(json) = serde_json::to_string(entry) {
@@ -2183,5 +2183,49 @@ mod tests {
         let menu_cands = engine.query_candidates(&trig_menu, None);
         assert!(!menu_cands.is_empty());
         assert_eq!(menu_cands[0].insert_text, "kaomoji");
+    }
+
+    #[test]
+    fn test_prompt_history_excludes_system_wakeups_and_collapsed_paste_chips() {
+        let dir = tempfile::tempdir().unwrap();
+        let ws = dir.path();
+
+        // Pre-seed legacy workspace prompt_history.jsonl with poisoned entries from minitest72
+        let legacy_path = ws.join(PROMPT_HISTORY_FILE);
+        std::fs::create_dir_all(legacy_path.parent().unwrap()).unwrap();
+        std::fs::write(
+            &legacy_path,
+            concat!(
+                "{\"text\":\"[Create a premium, modern… ..... +84 lines]\",\"count\":2,\"timestamp\":100}\n",
+                "{\"text\":\"[SYSTEM - ASYNC MINIPUB BOOMERANG COMPLETION WAKEUP (reviewer-2)]\\nDone\",\"count\":1,\"timestamp\":101}\n",
+                "{\"text\":\"continue\",\"count\":3,\"timestamp\":102}\n",
+            ),
+        )
+        .unwrap();
+
+        let mut hist = PromptHistory::new();
+        hist.load_from_workspace(ws);
+        assert_eq!(hist.entries.len(), 1);
+        assert_eq!(hist.entries[0].text, "continue");
+
+        // Attempting to seed or record internal wakeup prompts or paste chips must be ignored
+        hist.seed_prompt(
+            "[SYSTEM - ASYNC MINIPUB BOOMERANG COMPLETION WAKEUP (reviewer-2)]\nReport",
+        );
+        hist.seed_prompt("[SYSTEM - ASYNC MINITASK COMPLETION WAKEUP (build)]\nDone");
+        hist.record("[Create a premium, modern… ..... +84 lines]", Some(ws));
+        hist.record("[img 1]", Some(ws));
+        hist.record("build the landing page hero section", Some(ws));
+
+        let texts: Vec<&str> = hist.entries.iter().map(|e| e.text.as_str()).collect();
+        assert_eq!(
+            texts,
+            vec!["build the landing page hero section", "continue"]
+        );
+
+        let persisted = std::fs::read_to_string(&legacy_path).unwrap();
+        assert!(!persisted.contains("[SYSTEM"));
+        assert!(!persisted.contains("+84 lines"));
+        assert!(persisted.contains("build the landing page hero section"));
     }
 }
