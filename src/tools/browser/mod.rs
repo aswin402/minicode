@@ -892,11 +892,35 @@ impl BrowserController {
                 if target_url != "about:blank" {
                     validate_browser_url(target_url)?;
                 }
-                let id = cdp.create_tab(target_url, space_opt.is_none()).await?;
-                Ok(format!(
-                    "Opened new browser tab navigating to '{}' (ID: `{}`)",
-                    target_url, id
-                ))
+                if let Some(ref sp) = space_opt {
+                    if target_url != "about:blank" {
+                        let (reconciled_url, _) = reconcile_loopback_url(target_url).await;
+                        cdp.navigate(&reconciled_url).await?;
+                        Ok(format!(
+                            "Opened and navigated isolated Space `{}` tab to '{}' (ID: `{}` — ready for browser_eval/browser_screenshot)",
+                            sp.name, reconciled_url, sp.target_id
+                        ))
+                    } else {
+                        Ok(format!(
+                            "Initialized isolated Space `{}` tab at 'about:blank' (ID: `{}`)",
+                            sp.name, sp.target_id
+                        ))
+                    }
+                } else {
+                    let reconciled_url = if target_url != "about:blank" {
+                        reconcile_loopback_url(target_url).await.0
+                    } else {
+                        target_url.to_string()
+                    };
+                    let id = cdp.create_tab(&reconciled_url, true).await?;
+                    if reconciled_url != "about:blank" {
+                        let _ = cdp.navigate(&reconciled_url).await;
+                    }
+                    Ok(format!(
+                        "Opened new browser tab navigated to '{}' (ID: `{}`)",
+                        reconciled_url, id
+                    ))
+                }
             }
             "switch" => {
                 let id = target_id.ok_or_else(|| ToolError::InvalidArguments {
@@ -1047,9 +1071,20 @@ impl BrowserController {
         mode: BrowserMode,
         workspace_root: &Path,
     ) -> Result<String> {
+        Self::evaluate_js_with_timeout(script, mode, workspace_root, None).await
+    }
+
+    /// Evaluates JavaScript in the browser context with an optional timeout ceiling (1..=60s; default 25s).
+    pub async fn evaluate_js_with_timeout(
+        script: &str,
+        mode: BrowserMode,
+        workspace_root: &Path,
+        timeout_secs: Option<u64>,
+    ) -> Result<String> {
         let engine = BrowserManager::get_or_launch(mode, workspace_root).await?;
         let (cdp, _, _) = engine.active_session().await?;
-        cdp.evaluate_js_strict(script).await
+        cdp.evaluate_js_strict_with_timeout(script, timeout_secs)
+            .await
     }
 
     /// Resolves screenshot paths so relative paths always live inside `.minicode/screenshots/`
@@ -4388,6 +4423,27 @@ pub async fn reconcile_loopback_url(url: &str) -> (String, Option<String>) {
             .iter()
             .find(|&&p| crate::dev::ports::is_port_listening(p))
         {
+            // Do not silently hijack an explicit non-default port with a non-root subpath (e.g.
+            // `http://127.0.0.1:8099/minicode/` meant for a secondary static/Pages preview server)
+            // onto an unrelated Vite dev server whose SPA fallback would mask the dead port with 200 OK.
+            let was_shifted_from_req = matches!(
+                ds.port_resolution,
+                Some(crate::dev::models::PortResolution::Shifted { requested, .. })
+                    if requested == req_port
+            );
+            let is_non_root_subpath = !matches!(parsed.path(), "" | "/");
+            let is_standard_dev_port = matches!(
+                req_port,
+                3000 | 3001 | 4173 | 4200 | 5000 | 5173 | 5174 | 8000 | 8080
+            );
+            if active_port != req_port
+                && !was_shifted_from_req
+                && is_non_root_subpath
+                && !is_standard_dev_port
+            {
+                return (normalized, None);
+            }
+
             if let Some(host) = crate::dev::ports::resolve_listening_loopback_host(active_port) {
                 let _ = parsed.set_host(Some(host));
             }
@@ -4666,11 +4722,18 @@ mod tests {
             note_live
         );
 
-        // 3. Once `unregistered_listener` closes (port is dead), `reconcile_loopback_url` reconciles to `dev_port`!
+        // 3. Once `unregistered_listener` closes (port is dead), `reconcile_loopback_url` reconciles root `/` to `dev_port`...
         drop(unregistered_listener);
         let (reconciled_dead, note_dead) = reconcile_loopback_url(&req_url).await;
         assert_eq!(reconciled_dead, format!("http://127.0.0.1:{}/", dev_port));
         assert!(note_dead.is_some());
+
+        // 4. ...but MUST NOT silently hijack an explicit non-default port with a non-root subpath
+        //    (e.g. `http://127.0.0.1:<dead_port>/minicode/` meant for a separate static preview server).
+        let subpath_url = format!("http://127.0.0.1:{}/minicode/", live_port);
+        let (reconciled_sub, note_sub) = reconcile_loopback_url(&subpath_url).await;
+        assert_eq!(reconciled_sub, subpath_url);
+        assert!(note_sub.is_none());
 
         let _ = handle.terminate().await;
         drop(registered_listener);

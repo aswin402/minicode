@@ -878,6 +878,16 @@ impl BrowserManager {
         Ok(stopped_any)
     }
 
+    /// Returns `true` if any pooled managed browser engine is currently open in visible GUI mode.
+    pub async fn has_live_gui_engine() -> bool {
+        let guard = LIVE_POOL.lock().await;
+        guard.as_ref().is_some_and(|pool| {
+            pool.engines
+                .values()
+                .any(|e| !e.process.external_attached && e.effective_mode() == BrowserMode::Gui)
+        })
+    }
+
     /// Returns the execution mode (`Headless` or `Gui`) of the currently running primary general engine, if any.
     #[allow(dead_code)]
     pub async fn live_engine_mode() -> Option<BrowserMode> {

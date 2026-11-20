@@ -514,11 +514,26 @@ async fn test_completed_task_reaps_grandchild_and_turn_cleanup_stops_ephemeral_w
     assert!(!MiniDevRegistry::user_prompt_requests_persistent_preview(
         "Build and verify the landing page with Vite and browser QA"
     ));
+    assert!(!MiniDevRegistry::user_prompt_requests_persistent_preview(
+        "Create a premium, modern landing page for minicode"
+    ));
+    assert!(!MiniDevRegistry::user_prompt_requests_persistent_preview(
+        "stop the website server and close the browser"
+    ));
     assert!(MiniDevRegistry::user_prompt_requests_persistent_preview(
         "start the dev server and open it in browser"
     ));
     assert!(MiniDevRegistry::user_prompt_requests_persistent_preview(
         "fix the hero bug and keep the dev server running"
+    ));
+    assert!(MiniDevRegistry::user_prompt_requests_persistent_preview(
+        "so can u launch the page"
+    ));
+    assert!(MiniDevRegistry::user_prompt_requests_persistent_preview(
+        "hey i said can u run the website so i can see that"
+    ));
+    assert!(MiniDevRegistry::user_prompt_requests_persistent_preview(
+        "build the dashboard and open it in the browser so I can see"
     ));
 
     let stopped = registry.cleanup_after_turn_completion(false).await;

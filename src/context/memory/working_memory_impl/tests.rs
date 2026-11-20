@@ -4553,3 +4553,45 @@ fn test_minitest74_update_progress_resolves_task_dag_node_ids() {
 
     fs::remove_dir_all(temp_dir).ok();
 }
+
+#[test]
+fn test_minitest75_completed_substep_does_not_fuzzy_match_earlier_macro_step() {
+    let temp_dir =
+        std::env::temp_dir().join(format!("minicode_test_mt75_sub_{}", uuid::Uuid::new_v4()));
+    fs::create_dir_all(temp_dir.join("minikit_docs/core")).unwrap();
+    fs::create_dir_all(temp_dir.join(".minicode/plan")).unwrap();
+
+    let wm = WorkingMemory::new(&temp_dir);
+    let todo_md = r#"# Tasks & Milestone Roadmap: Landing Page
+
+## Active Milestone: Landing Page
+- [x] Core product sections: philosophy, performance, swarm, council — gate flow and fixes overview
+  - [x] Philosophy: gate pipeline diagram
+- [x] Verification: 3-viewport QA, lint, build, power_verify
+  - [x] bun run build and bun run lint clean
+  - [x] power_verify gate + fixes
+- [>] Deployment: GitHub Pages workflow and relative asset base
+  - [>] vite base './' + build sanity from subpath
+  - [ ] GitHub Actions Pages workflow
+"#;
+    fs::write(temp_dir.join("minikit_docs/core/todo.md"), todo_md).unwrap();
+    fs::write(
+        wm.task_plan_path(),
+        "# Task Plan: Deployment: GitHub Pages workflow and relative asset base\n\n> Created: 2026-11-20 16:00:00\n> Mode: subplan\n> Parent Step: Deployment: GitHub Pages workflow and relative asset base\n\n## Objectives & Steps:\n1. [>] vite base './' + build sanity from subpath\n2. [ ] GitHub Actions Pages workflow\n",
+    )
+    .unwrap();
+
+    let (modified, matched_title) = wm
+        .update_progress_detailed("power_verify gate + fixes", "completed")
+        .unwrap();
+    assert!(
+        !modified,
+        "already-completed substep should be a clean no-op"
+    );
+    assert_eq!(
+        matched_title, "power_verify gate + fixes",
+        "Must resolve to the exact completed substep instead of fuzzy-matching Macro Step #1"
+    );
+
+    fs::remove_dir_all(temp_dir).ok();
+}

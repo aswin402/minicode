@@ -1228,15 +1228,29 @@ impl CdpClient {
 
     /// Evaluates arbitrary JavaScript in the page context and returns `Err` if V8 throws an uncaught exception.
     pub async fn evaluate_js_strict(&self, script: &str) -> Result<String> {
-        self.evaluate_js_inner(script, true).await
+        self.evaluate_js_inner(script, true, None).await
+    }
+
+    /// Evaluates arbitrary JavaScript with an explicit timeout ceiling (1..=60s; default 25s).
+    pub async fn evaluate_js_strict_with_timeout(
+        &self,
+        script: &str,
+        timeout_secs: Option<u64>,
+    ) -> Result<String> {
+        self.evaluate_js_inner(script, true, timeout_secs).await
     }
 
     /// Evaluates arbitrary JavaScript in the page context and returns the stringified result
     pub async fn evaluate_js(&self, script: &str) -> Result<String> {
-        self.evaluate_js_inner(script, false).await
+        self.evaluate_js_inner(script, false, None).await
     }
 
-    async fn evaluate_js_inner(&self, script: &str, strict_exceptions: bool) -> Result<String> {
+    async fn evaluate_js_inner(
+        &self,
+        script: &str,
+        strict_exceptions: bool,
+        timeout_secs: Option<u64>,
+    ) -> Result<String> {
         let uses_console = script.contains("console.");
         let console_start_idx: usize = if uses_console {
             self.send_command(
@@ -1258,15 +1272,18 @@ impl CdpClient {
             0
         };
 
+        let effective_secs = timeout_secs.unwrap_or(25).clamp(1, 60);
         let safe_script = prepare_cdp_script(script);
         let res = self
-            .send_command(
+            .send_command_with_timeout(
                 "Runtime.evaluate",
                 json!({
                     "expression": safe_script,
                     "returnByValue": true,
-                    "awaitPromise": true
+                    "awaitPromise": true,
+                    "timeout": effective_secs * 1000
                 }),
+                Duration::from_secs(effective_secs + 2),
             )
             .await?;
 

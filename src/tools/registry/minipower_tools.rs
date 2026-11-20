@@ -540,6 +540,49 @@ fn extract_changed_files_from_diff(raw_diff: &str) -> Vec<String> {
     files
 }
 
+/// Lists untracked authored source files from `git status --porcelain --untracked-files=all`
+/// so fresh 0-commit repositories (where `git diff` is empty) still scope the Reviewer to real
+/// workspace files and tell it not to waste a turn calling `git_diff`.
+fn collect_untracked_workspace_files(workspace_root: &Path, limit: usize) -> Vec<String> {
+    let output = match std::process::Command::new("git")
+        .args(["status", "--porcelain", "--untracked-files=all"])
+        .current_dir(workspace_root)
+        .output()
+    {
+        Ok(o) if o.status.success() => o,
+        _ => return Vec::new(),
+    };
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let mut files = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    for line in stdout.lines() {
+        let Some(rest) = line.strip_prefix("?? ") else {
+            continue;
+        };
+        let clean = rest.trim().trim_matches('"').replace('\\', "/");
+        if clean.is_empty()
+            || clean.starts_with(".minicode/")
+            || clean.starts_with("node_modules/")
+            || clean.starts_with("dist/")
+            || clean.starts_with("target/")
+            || clean.ends_with(".lock")
+            || clean.ends_with("-lock.json")
+            || clean.ends_with(".png")
+            || clean.ends_with(".jpg")
+            || clean.ends_with(".svg")
+        {
+            continue;
+        }
+        if seen.insert(clean.clone()) {
+            files.push(clean);
+            if files.len() >= limit {
+                break;
+            }
+        }
+    }
+    files
+}
+
 async fn run_reviewer_subagent(
     workspace_root: &Path,
     stage: &str,
@@ -547,6 +590,7 @@ async fn run_reviewer_subagent(
     is_rereview: bool,
     static_report: &str,
     target_files: &[String],
+    has_tracked_diff: bool,
 ) -> String {
     let spec_path = crate::tools::minikit::resolve_doc_path(workspace_root, "spec.md");
     let spec_rel = spec_path
@@ -555,10 +599,18 @@ async fn run_reviewer_subagent(
         .display()
         .to_string();
     let is_git_repo = workspace_root.join(".git").exists();
-    let candidate_files: Vec<String> = if target_files.is_empty() {
-        rank_reviewer_workspace_files(workspace_root, 30)
+    let untracked_files = if is_git_repo && !has_tracked_diff && target_files.is_empty() {
+        collect_untracked_workspace_files(workspace_root, 30)
     } else {
+        Vec::new()
+    };
+    let all_untracked_only = is_git_repo && !has_tracked_diff && !untracked_files.is_empty();
+    let candidate_files: Vec<String> = if !target_files.is_empty() {
         target_files.to_vec()
+    } else if !untracked_files.is_empty() {
+        untracked_files
+    } else {
+        rank_reviewer_workspace_files(workspace_root, 30)
     };
     let files_hint = if candidate_files.is_empty() {
         String::new()
@@ -573,13 +625,15 @@ async fn run_reviewer_subagent(
                 .join("\n")
         )
     };
-    let step_one = if is_git_repo {
+    let step_one = if !is_git_repo {
+        "1. NOTE: This workspace has NO `.git` repository — do **NOT** call `git_diff` or git commands. Use `batch_read` / `read_file` directly on the workspace source files listed below.".to_string()
+    } else if all_untracked_only {
+        "1. NOTE: This is an initial repository where changes are untracked (`git diff` is empty) — do **NOT** waste a turn running `git_diff`. Inspect the untracked source files listed below directly with `batch_read` / `read_file`.".to_string()
+    } else {
         format!(
             "1. Inspect the {} changes with `git_diff` (and `batch_read` / `read_file` for context).",
             if staged_only { "staged" } else { "uncommitted" }
         )
-    } else {
-        "1. NOTE: This workspace has NO `.git` repository — do **NOT** call `git_diff` or git commands. Use `batch_read` / `read_file` directly on the workspace source files listed below.".to_string()
     };
     let static_excerpt: String = static_report.chars().take(4000).collect();
     let scoped_rereview_note = if is_rereview {
@@ -1458,6 +1512,7 @@ pub async fn dispatch(
                         format!("{formatted}\n---\n{reviewer_rubric}")
                     };
                     let diff_changed_files = extract_changed_files_from_diff(&raw_audited_diff);
+                    let has_tracked_diff = !diff_changed_files.is_empty();
                     let reviewer_target_files: Vec<String> = if !mp_task.target_files.is_empty() {
                         mp_task.target_files.clone()
                     } else {
@@ -1471,6 +1526,7 @@ pub async fn dispatch(
                             is_rereview,
                             &subagent_payload,
                             &reviewer_target_files,
+                            has_tracked_diff,
                         )
                         .await,
                     );

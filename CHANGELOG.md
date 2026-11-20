@@ -5,6 +5,28 @@ All notable changes to **minicode** will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.61] — 2026-11-20
+
+### Live GUI Preview & Dev-Server Preservation, Real MiniBrowse `Emulation.setEmulatedMedia` & Scoped Init Scripts, Configurable `browser_eval` Timeout, & `minitest75` Hardening
+
+#### 🖥️ Live GUI Browser & Persistent Preview Preservation (`src/dev/registry.rs`, `src/tools/browser/manager.rs`, `src/agent/loop.rs`, `src/dev/registry_impl/tests.rs`)
+- **Never Kill User-Requested Live Previews at Turn Boundary**:
+  - Expanded `MiniDevRegistry::user_prompt_requests_persistent_preview()` to recognize natural preview/launch requests (`website`/`site`/`page`/`app` + `run`/`launch`/`open`/`show`/`see`, and explicit viewing phrases like `"so i can see"` / `"open in browser"`), while still returning `false` on build/audit prompts and explicit stop/close requests.
+  - Added `BrowserManager::has_live_gui_engine()` and updated `AgentLoop::execute_turn` so any non-cancelled turn that intentionally leaves a live `BrowserMode::Gui` window open automatically preserves that window and its backing dev server unless the user explicitly asked to close/stop them.
+
+#### 🌐 MiniBrowse `Emulation.setEmulatedMedia`, Per-Tab IIFE Init Scripts, Configurable `browser_eval` Timeout & Space Tab Binding (`crates/minibrowse/src/{ffi,webview,server}.rs`, `crates/minibrowse/src/bridge.js`, `src/tools/browser/{driver,mod,interaction,page_agent}.rs`, `src/tools/registry/web_tools.rs`)
+- **Eliminated Phantom `"Script error."` Console Noise & Media-Query Workarounds**:
+  - Implemented real `Emulation.setEmulatedMedia` (`prefers-reduced-motion`, `prefers-color-scheme`, media type, live `matchMedia` `change` events, and reduced-motion CSS override) in `bridge.js`, `webview.rs`, and `server.rs`.
+  - Scoped `Page.addScriptToEvaluateOnNewDocument` per-tab/space (eliminating cross-space leaks), returned unique incrementing script identifiers, wrapped injected scripts in an IIFE `(function(){ ... })();` to prevent duplicate top-level `const`/`let` `SyntaxError` (`"Script error."`), and implemented `Page.removeScriptToEvaluateOnNewDocument` via `webkit_user_content_manager_remove_all_scripts` + clean script rebuild.
+  - Raised default `Runtime.evaluate` timeout (`25s` client / `35s` MiniBrowse, configurable via `browser_eval(timeout_secs=1..=60)`), eliminating 15-second timeouts during async playback probes.
+  - Fixed `browser_tabs(action="create", space=..., url=...)` to navigate and hydrate the isolated Space's bound tab directly so subsequent `browser_eval` calls see a live DOM immediately.
+  - Added Playwright `>> nth=N` selector support across MiniBrowse `bridge.js`, `PageAgent::resolveElement`, and `build_click_by_selector_js`; classified third-party cross-origin HTTP 403/429 API rate limits as warnings instead of critical app errors in `browser_qa_audit`; and prevented `reconcile_loopback_url` from silently hijacking explicit dead non-default subpath URLs (e.g. `:8099/minicode/`) onto an unrelated dev server's SPA fallback.
+
+#### 📋 Plan Substep Resolution & Initial-Repo Reviewer Scoping (`src/context/memory/working_memory_impl/{progress,tests}.rs`, `src/tools/registry/minipower_tools.rs`)
+- **Accurate Completed-Substep Matching & Zero-Commit Repo Reviews**:
+  - Updated `update_progress_detailed` to match already-completed indented substeps in `minikit_docs/core/todo.md` before falling back to macro-task overlap, and switched macro fallback matching to highest-score selection with stop-word filtering.
+  - Added `collect_untracked_workspace_files()` in `power_review` so fresh 0-commit repositories (where `git diff` is empty) list untracked source files directly and instruct the Reviewer to skip `git_diff`.
+
 ## [0.5.60] — 2026-11-20
 
 ### Todo Roadmap & DAG Node ID Hardening, MiniBrowse Headless Stability & Annotated Vision Fix, Reviewer Synthesis Preservation, & `minitest74` Fixes

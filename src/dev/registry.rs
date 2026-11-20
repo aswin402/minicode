@@ -465,25 +465,75 @@ impl MiniDevRegistry {
         {
             return true;
         }
+        // Explicit user stop/close request overrides preview heuristics
+        if Self::analyze_termination_polarity(prompt, None) > 0 {
+            return false;
+        }
         let words: HashSet<&str> = lower
             .split(|c: char| !c.is_ascii_alphanumeric() && c != '_')
             .filter(|w| !w.is_empty())
             .collect();
-        let mentions_server_or_preview = words.iter().any(|&w| {
+        let mentions_preview_target = words.iter().any(|&w| {
             matches!(
                 w,
-                "server" | "localhost" | "preview" | "devserver" | "vite" | "uvicorn" | "serve"
+                "server"
+                    | "localhost"
+                    | "preview"
+                    | "devserver"
+                    | "vite"
+                    | "uvicorn"
+                    | "serve"
+                    | "website"
+                    | "site"
+                    | "page"
+                    | "webpage"
+                    | "app"
+                    | "webapp"
+                    | "frontend"
+                    | "ui"
+                    | "demo"
+                    | "dashboard"
+                    | "browser"
+                    | "window"
             )
         }) || lower.contains("dev server")
             || lower.contains("run dev")
             || lower.contains("gui browser");
-        if !mentions_server_or_preview {
+        let explicit_user_viewing_intent = lower.contains("so i can see")
+            || lower.contains("so i can view")
+            || lower.contains("so i can check")
+            || lower.contains("let me see")
+            || lower.contains("let me view")
+            || lower.contains("let me preview")
+            || lower.contains("open it in browser")
+            || lower.contains("open it in the browser")
+            || lower.contains("open in browser")
+            || lower.contains("open in the browser")
+            || lower.contains("show me the website")
+            || lower.contains("show me the site")
+            || lower.contains("show me the page")
+            || lower.contains("show me the app");
+        if explicit_user_viewing_intent && (mentions_preview_target || lower.contains("run")) {
+            return true;
+        }
+        if !mentions_preview_target {
             return false;
         }
         let asks_to_start_or_open = words.iter().any(|&w| {
             matches!(
                 w,
-                "start" | "launch" | "run" | "open" | "serve" | "preview" | "keep" | "leave"
+                "start"
+                    | "launch"
+                    | "run"
+                    | "open"
+                    | "serve"
+                    | "preview"
+                    | "keep"
+                    | "leave"
+                    | "show"
+                    | "view"
+                    | "see"
+                    | "display"
             )
         });
         let has_build_or_edit_goal = words.iter().any(|&w| {

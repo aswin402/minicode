@@ -562,8 +562,49 @@ impl WorkingMemory {
             (op, UpdateFileOutcome::NotFound, macro_title)
         } else if has_active_subplan {
             let (op, title_p) = update_file(&self.task_plan_path(), None);
+            let matched_done_substep = if op == UpdateFileOutcome::NotFound
+                && is_done
+                && !clean_needle.is_empty()
+                && self.canonical_todo_path().exists()
+            {
+                // Before fuzzy-matching macro tasks (which can falsely collide on short words like
+                // "gate" inside an unrelated completed macro description), check if `clean_needle`
+                // directly matches an already-completed indented substep in `todo.md` (e.g. a
+                // substep of the previous macro step that was auto-reconciled by `power_verify`).
+                fs::read_to_string(self.canonical_todo_path())
+                    .ok()
+                    .and_then(|todo_text| {
+                        todo_text.lines().find_map(|line| {
+                            let is_indented = line.starts_with("  ") || line.starts_with('\t');
+                            if !is_indented {
+                                return None;
+                            }
+                            let item = Self::parse_task_line(0, line.trim())?;
+                            if item.status != TaskItemStatus::Completed {
+                                return None;
+                            }
+                            let sub_l = Self::sanitize_step_title(&item.title).to_ascii_lowercase();
+                            if sub_l == clean_needle
+                                || sub_l.contains(&clean_needle)
+                                || clean_needle.contains(&sub_l)
+                            {
+                                Some(item.title)
+                            } else {
+                                None
+                            }
+                        })
+                    })
+            } else {
+                None
+            };
             if op != UpdateFileOutcome::NotFound {
                 (op, UpdateFileOutcome::NotFound, title_p)
+            } else if let Some(done_sub_title) = matched_done_substep {
+                (
+                    UpdateFileOutcome::NotFound,
+                    UpdateFileOutcome::AlreadyInStatus,
+                    Some(done_sub_title),
+                )
             } else if let Some((active_m_idx, active_m_task)) = active_macro {
                 let matched_macro_idx = if let Some(idx) = target_index {
                     if idx > pre_plan_tasks.len() && idx <= pre_todo_tasks.len() {
@@ -572,28 +613,63 @@ impl WorkingMemory {
                         None
                     }
                 } else if !clean_needle.is_empty() {
-                    let needle_words: std::collections::HashSet<&str> =
-                        clean_needle.split_whitespace().collect();
-                    let matches_macro = |t: &super::TaskItem| -> bool {
+                    let meaningful_words = |s: &str| -> std::collections::HashSet<String> {
+                        s.split(|c: char| !c.is_ascii_alphanumeric() && c != '_')
+                            .filter(|w| {
+                                w.len() >= 2
+                                    && !matches!(
+                                        *w,
+                                        "and" | "the" | "for" | "with" | "from" | "into" | "to"
+                                    )
+                            })
+                            .map(str::to_string)
+                            .collect()
+                    };
+                    let needle_words = meaningful_words(&clean_needle);
+                    let score_macro = |t: &super::TaskItem| -> Option<usize> {
                         let tl = Self::sanitize_step_title(&t.title).to_ascii_lowercase();
+                        if tl == clean_needle {
+                            return Some(10_000);
+                        }
                         if tl.contains(&clean_needle) || clean_needle.contains(&tl) {
-                            return true;
+                            return Some(5_000);
                         }
                         if needle_words.is_empty() {
-                            return false;
+                            return None;
                         }
-                        let item_words: std::collections::HashSet<&str> =
-                            tl.split_whitespace().collect();
+                        let item_words = meaningful_words(&tl);
                         let common = needle_words.intersection(&item_words).count();
-                        common * 2 >= needle_words.len()
+                        if common * 2 >= needle_words.len()
+                            && (common >= 2 || needle_words.len() == 1)
+                        {
+                            Some(common * 100)
+                        } else {
+                            None
+                        }
                     };
                     if is_done {
                         pre_todo_tasks
                             .iter()
-                            .position(|t| t.status != TaskItemStatus::Completed && matches_macro(t))
-                            .or_else(|| pre_todo_tasks.iter().position(matches_macro))
+                            .enumerate()
+                            .filter(|(_, t)| t.status != TaskItemStatus::Completed)
+                            .filter_map(|(i, t)| score_macro(t).map(|sc| (i, sc)))
+                            .max_by_key(|(_, sc)| *sc)
+                            .map(|(i, _)| i)
+                            .or_else(|| {
+                                pre_todo_tasks
+                                    .iter()
+                                    .enumerate()
+                                    .filter_map(|(i, t)| score_macro(t).map(|sc| (i, sc)))
+                                    .max_by_key(|(_, sc)| *sc)
+                                    .map(|(i, _)| i)
+                            })
                     } else {
-                        pre_todo_tasks.iter().position(matches_macro)
+                        pre_todo_tasks
+                            .iter()
+                            .enumerate()
+                            .filter_map(|(i, t)| score_macro(t).map(|sc| (i, sc)))
+                            .max_by_key(|(_, sc)| *sc)
+                            .map(|(i, _)| i)
                     }
                 } else {
                     None

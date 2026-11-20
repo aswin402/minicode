@@ -320,7 +320,15 @@ pub const PAGE_PROBE_JS: &str = r###"(function() {
             // 2. Explicit CSS selector (direct selector call when clean is empty, or name-verified selector_hint when accompanying a ref)
             if (selector) {
                 try {
-                    var bySel = document.querySelector(selector);
+                    var nthM = /^(.*?)\s*>>\s*nth=(\d+)\s*$/i.exec(selector);
+                    var bySel = null;
+                    if (nthM) {
+                        var nthList = document.querySelectorAll(nthM[1].trim());
+                        var nthIdx = parseInt(nthM[2], 10);
+                        bySel = (nthIdx >= 0 && nthIdx < nthList.length) ? nthList[nthIdx] : null;
+                    } else {
+                        bySel = document.querySelector(selector);
+                    }
                     if (bySel && (clean.length === 0 || matchesTargetName(bySel))) return bySel;
                 } catch (_) {}
             }
@@ -2001,16 +2009,25 @@ impl PageAgent {
 
         // 4. Runtime Console and Network errors
         let debug_report = cdp.debug_collector().format_report();
+        let page_host = url::Url::parse(url)
+            .ok()
+            .and_then(|u| u.host_str().map(str::to_ascii_lowercase));
         let mut console_errors = Vec::new();
         let mut network_errors = Vec::new();
+        let mut third_party_rate_limits = Vec::new();
 
         for line in debug_report.lines() {
             if line.contains("[ERROR]") || line.contains("[exception]") {
                 console_errors.push(line.to_string());
                 error_count += 1;
             } else if line.contains("[HTTP 4") || line.contains("[HTTP 5") {
-                network_errors.push(line.to_string());
-                error_count += 1;
+                if is_third_party_rate_limit_line(line, page_host.as_deref()) {
+                    third_party_rate_limits.push(line.to_string());
+                    warn_count += 1;
+                } else {
+                    network_errors.push(line.to_string());
+                    error_count += 1;
+                }
             }
         }
 
@@ -2029,6 +2046,13 @@ impl PageAgent {
                     network_errors.len()
                 ));
             }
+        }
+        if !third_party_rate_limits.is_empty() {
+            recommendations.push(format!(
+                "{} third-party external API request(s) returned HTTP 403/429 (likely rate-limited); verify graceful UI fallback.",
+                third_party_rate_limits.len()
+            ));
+            network_errors.extend(third_party_rate_limits);
         }
 
         // 5. Taste-Skill v2.1 Layout & Typography warnings
@@ -2253,6 +2277,35 @@ impl PageAgent {
     }
 }
 
+/// Returns `true` when a debug-collector network failure line represents a third-party
+/// cross-origin API rate-limit (`HTTP 403` or `HTTP 429` whose host differs from `page_host`),
+/// so external rate-limits (e.g. `api.github.com` 403 on a `127.0.0.1` site) surface as
+/// warnings rather than falsely failing localhost QA audits as critical app defects.
+fn is_third_party_rate_limit_line(line: &str, page_host: Option<&str>) -> bool {
+    if !(line.contains("[HTTP 403]") || line.contains("[HTTP 429]")) {
+        return false;
+    }
+    let Some(page_h) = page_host.map(str::to_ascii_lowercase) else {
+        return false;
+    };
+    let req_url_opt = line
+        .split_whitespace()
+        .find(|tok| tok.starts_with("http://") || tok.starts_with("https://"))
+        .map(|tok| tok.trim_end_matches([',', ';', ')', '`', '"', '\'']));
+    let Some(req_url) = req_url_opt else {
+        return false;
+    };
+    let Ok(parsed) = url::Url::parse(req_url) else {
+        return false;
+    };
+    let Some(req_host) = parsed.host_str().map(str::to_ascii_lowercase) else {
+        return false;
+    };
+    let is_same_loopback = matches!(page_h.as_str(), "localhost" | "127.0.0.1" | "::1")
+        && matches!(req_host.as_str(), "localhost" | "127.0.0.1" | "::1");
+    !is_same_loopback && req_host != page_h
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2425,5 +2478,23 @@ mod tests {
         assert!(resolve_slice.contains("bySel && (clean.length === 0 || matchesTargetName(bySel))"));
         assert!(PAGE_PROBE_JS.contains("isUniqueSelector"));
         assert!(PAGE_PROBE_JS.contains("parts.join(' > ')"));
+    }
+
+    #[test]
+    fn test_is_third_party_rate_limit_line_classification() {
+        let gh_403 = "• `[HTTP 403]` GET https://api.github.com/repos/aswin402/minicode — API rate limit exceeded";
+        assert!(is_third_party_rate_limit_line(gh_403, Some("127.0.0.1")));
+        assert!(is_third_party_rate_limit_line(gh_403, Some("localhost")));
+
+        // Same-origin 403 or any 404/500 must remain a hard error
+        let local_403 = "• `[HTTP 403]` GET http://localhost:4173/api/admin — Forbidden";
+        assert!(!is_third_party_rate_limit_line(
+            local_403,
+            Some("127.0.0.1")
+        ));
+        let ext_404 = "• `[HTTP 404]` GET https://cdn.example.com/missing.js — Not Found";
+        assert!(!is_third_party_rate_limit_line(ext_404, Some("127.0.0.1")));
+        let ext_500 = "• `[HTTP 500]` GET https://api.github.com/repos/x/y — Server Error";
+        assert!(!is_third_party_rate_limit_line(ext_500, Some("127.0.0.1")));
     }
 }

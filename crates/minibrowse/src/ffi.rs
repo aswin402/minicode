@@ -278,6 +278,7 @@ pub struct WebKitGtkApi {
     ) -> *mut c_void,
     pub webkit_user_script_unref: unsafe extern "C" fn(*mut c_void),
     pub webkit_user_content_manager_add_script: unsafe extern "C" fn(*mut c_void, *mut c_void),
+    pub webkit_user_content_manager_remove_all_scripts: Option<unsafe extern "C" fn(*mut c_void)>,
     pub webkit_user_content_manager_register_script_message_handler:
         unsafe extern "C" fn(*mut c_void, *const c_char) -> c_int,
     pub g_bytes_new: Option<unsafe extern "C" fn(*const c_void, usize) -> *mut c_void>,
@@ -577,6 +578,10 @@ impl WebKitGtkApi {
                     &handles,
                     "webkit_user_content_manager_add_script",
                 )?,
+                webkit_user_content_manager_remove_all_scripts: load_opt_sym(
+                    &handles,
+                    "webkit_user_content_manager_remove_all_scripts",
+                ),
                 webkit_user_content_manager_register_script_message_handler: load_sym(
                     &handles,
                     "webkit_user_content_manager_register_script_message_handler",

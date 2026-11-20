@@ -70,6 +70,15 @@ pub enum BrowserBackendCmd {
     },
     AddInitScript {
         source: String,
+        reply: oneshot::Sender<Result<String, String>>,
+    },
+    RemoveInitScript {
+        identifier: String,
+        reply: oneshot::Sender<Result<(), String>>,
+    },
+    SetEmulatedMedia {
+        media: Option<String>,
+        features: Vec<(String, String)>,
         reply: oneshot::Sender<Result<(), String>>,
     },
     SetViewport {
@@ -337,6 +346,36 @@ pub fn spawn_browser_backend(opts: LaunchOptions) -> Result<BrowserEngineHandle,
 //  Adaptive Two-Gear & Multi-Tab Supervisor
 // ─────────────────────────────────────────────────────────────────────────────
 
+#[derive(Debug, Clone, Default)]
+struct EmulatedMediaState {
+    media: Option<String>,
+    features: Vec<(String, String)>,
+}
+
+impl EmulatedMediaState {
+    fn is_empty(&self) -> bool {
+        self.media.as_deref().unwrap_or("").trim().is_empty() && self.features.is_empty()
+    }
+}
+
+fn wrap_init_script_iife(source: &str) -> String {
+    format!("(function(){{\n{source}\n}})();")
+}
+
+fn build_emulated_media_js(em: &EmulatedMediaState) -> String {
+    let media_lit = serde_json::to_string(em.media.as_deref().unwrap_or(""))
+        .unwrap_or_else(|_| "\"\"".to_string());
+    let feats_val: Vec<Value> = em
+        .features
+        .iter()
+        .map(|(k, v)| json!({ "name": k, "value": v }))
+        .collect();
+    let feats_lit = serde_json::to_string(&feats_val).unwrap_or_else(|_| "[]".to_string());
+    format!(
+        "window.__minibrowse && window.__minibrowse.setEmulatedMedia({media_lit}, {feats_lit});"
+    )
+}
+
 struct Gear0Tab {
     context_id: Option<String>,
     page: PureRustPageState,
@@ -345,6 +384,8 @@ struct Gear0Tab {
     last_screenshot_dhash: Option<u64>,
     last_active: std::time::Instant,
     suspended: bool,
+    init_scripts: Vec<(String, String)>,
+    emulated_media: EmulatedMediaState,
 }
 
 #[derive(Debug, Default)]
@@ -491,7 +532,20 @@ enum WebKitActorCmd {
         reply: oneshot::Sender<Result<Value, String>>,
     },
     AddInitScript {
+        target_id: String,
+        id: String,
         source: String,
+        reply: oneshot::Sender<Result<String, String>>,
+    },
+    RemoveInitScript {
+        target_id: String,
+        identifier: String,
+        reply: oneshot::Sender<Result<(), String>>,
+    },
+    SetEmulatedMedia {
+        target_id: String,
+        media: Option<String>,
+        features: Vec<(String, String)>,
         reply: oneshot::Sender<Result<(), String>>,
     },
     SetViewport {
@@ -575,7 +629,7 @@ struct SupervisorState {
     resource_profile: ResourceProfile,
     mock_routes: Vec<MockRoute>,
     blocked_patterns: Vec<String>,
-    init_scripts: Vec<String>,
+    next_init_script_id: u64,
     visual_baselines: HashMap<String, RawFrame>,
     last_pointer: Option<(i32, i32, bool)>,
     telemetry: Arc<EngineTelemetry>,
@@ -612,6 +666,8 @@ impl SupervisorState {
                         last_screenshot_dhash: None,
                         last_active: std::time::Instant::now(),
                         suspended: false,
+                        init_scripts: Vec::new(),
+                        emulated_media: EmulatedMediaState::default(),
                     },
                 );
                 self.active_target_id = "main".to_string();
@@ -644,14 +700,28 @@ impl SupervisorState {
                     } else {
                         "webkit2gtk-gui"
                     });
-                    // Replay init scripts, resource profile, and network policies into fresh Gear 1
-                    for src in &self.init_scripts {
-                        let (tx, rx) = oneshot::channel();
-                        let _ = wk.send(WebKitActorCmd::AddInitScript {
-                            source: src.clone(),
-                            reply: tx,
-                        });
-                        let _ = rx.await;
+                    // Replay per-tab init scripts & emulated media, plus resource profile and network policies into fresh Gear 1
+                    for (tid, tab) in &self.tabs {
+                        if !tab.emulated_media.is_empty() {
+                            let (tx, rx) = oneshot::channel();
+                            let _ = wk.send(WebKitActorCmd::SetEmulatedMedia {
+                                target_id: tid.clone(),
+                                media: tab.emulated_media.media.clone(),
+                                features: tab.emulated_media.features.clone(),
+                                reply: tx,
+                            });
+                            let _ = rx.await;
+                        }
+                        for (sid, src) in &tab.init_scripts {
+                            let (tx, rx) = oneshot::channel();
+                            let _ = wk.send(WebKitActorCmd::AddInitScript {
+                                target_id: tid.clone(),
+                                id: sid.clone(),
+                                source: src.clone(),
+                                reply: tx,
+                            });
+                            let _ = rx.await;
+                        }
                     }
                     let (ptx, prx) = oneshot::channel();
                     let _ = wk.send(WebKitActorCmd::SetPolicies {
@@ -1047,6 +1117,8 @@ async fn run_adaptive_supervisor(
             last_screenshot_dhash: None,
             last_active: std::time::Instant::now(),
             suspended: false,
+            init_scripts: Vec::new(),
+            emulated_media: EmulatedMediaState::default(),
         },
     );
 
@@ -1070,7 +1142,7 @@ async fn run_adaptive_supervisor(
         resource_profile: ResourceProfile::Full,
         mock_routes: Vec::new(),
         blocked_patterns: Vec::new(),
-        init_scripts: Vec::new(),
+        next_init_script_id: 1,
         visual_baselines: HashMap::new(),
         last_pointer: None,
         telemetry: Arc::new(EngineTelemetry::default()),
@@ -1469,9 +1541,57 @@ async fn handle_supervisor_cmd(sup: &mut SupervisorState, cmd: BrowserBackendCmd
         }
 
         BrowserBackendCmd::AddInitScript { source, reply } => {
-            sup.init_scripts.push(source.clone());
+            let id = sup.next_init_script_id.to_string();
+            sup.next_init_script_id += 1;
+            let target_id = sup.active_target_id.clone();
+            sup.active_tab_mut()
+                .init_scripts
+                .push((id.clone(), source.clone()));
             if let Some(ref wk) = sup.webkit {
-                let _ = wk.send(WebKitActorCmd::AddInitScript { source, reply });
+                let _ = wk.send(WebKitActorCmd::AddInitScript {
+                    target_id,
+                    id,
+                    source,
+                    reply,
+                });
+            } else {
+                let _ = reply.send(Ok(id));
+            }
+        }
+
+        BrowserBackendCmd::RemoveInitScript { identifier, reply } => {
+            let target_id = sup.active_target_id.clone();
+            sup.active_tab_mut()
+                .init_scripts
+                .retain(|(id, _)| id != &identifier);
+            if let Some(ref wk) = sup.webkit {
+                let _ = wk.send(WebKitActorCmd::RemoveInitScript {
+                    target_id,
+                    identifier,
+                    reply,
+                });
+            } else {
+                let _ = reply.send(Ok(()));
+            }
+        }
+
+        BrowserBackendCmd::SetEmulatedMedia {
+            media,
+            features,
+            reply,
+        } => {
+            let target_id = sup.active_target_id.clone();
+            sup.active_tab_mut().emulated_media = EmulatedMediaState {
+                media: media.clone(),
+                features: features.clone(),
+            };
+            if let Some(ref wk) = sup.webkit {
+                let _ = wk.send(WebKitActorCmd::SetEmulatedMedia {
+                    target_id,
+                    media,
+                    features,
+                    reply,
+                });
             } else {
                 let _ = reply.send(Ok(()));
             }
@@ -2073,6 +2193,8 @@ async fn handle_supervisor_cmd(sup: &mut SupervisorState, cmd: BrowserBackendCmd
                     last_screenshot_dhash: None,
                     last_active: std::time::Instant::now(),
                     suspended: false,
+                    init_scripts: Vec::new(),
+                    emulated_media: EmulatedMediaState::default(),
                 },
             );
             sup.active_target_id = tid.clone();
@@ -2673,6 +2795,8 @@ struct WebKitTabSlot {
     frozen_surface: *mut c_void,
     frozen_url: String,
     frozen_title: String,
+    init_scripts: Vec<(String, String)>,
+    emulated_media: EmulatedMediaState,
 }
 
 struct WebKitActorState {
@@ -2690,7 +2814,6 @@ struct WebKitActorState {
     resource_profile: ResourceProfile,
     mock_routes: Vec<MockRoute>,
     blocked_patterns: Vec<String>,
-    init_scripts: Vec<String>,
     last_user_input: std::time::Instant,
     cmd_rx: mpsc::Receiver<WebKitActorCmd>,
     events_tx: broadcast::Sender<BrowserBackendEvent>,
@@ -2865,7 +2988,6 @@ fn run_webkit_thread(
             resource_profile: ResourceProfile::Full,
             mock_routes: Vec::new(),
             blocked_patterns: Vec::new(),
-            init_scripts: Vec::new(),
             last_user_input: std::time::Instant::now(),
             cmd_rx,
             events_tx,
@@ -2965,9 +3087,6 @@ unsafe fn build_slot_webview_and_ucm(
         );
     }
     inject_user_script(&state.api, ucm, BRIDGE_JS);
-    for script_src in &state.init_scripts {
-        inject_user_script(&state.api, ucm, script_src);
-    }
     if !state.compiled_filter.is_null() {
         if let Some(add_filter) = state.api.webkit_user_content_manager_add_filter {
             add_filter(ucm, state.compiled_filter);
@@ -3195,6 +3314,8 @@ unsafe fn create_webkit_tab_slot(
             frozen_surface: ptr::null_mut(),
             frozen_url: String::new(),
             frozen_title: String::new(),
+            init_scripts: Vec::new(),
+            emulated_media: EmulatedMediaState::default(),
         },
     );
 }
@@ -3550,6 +3671,24 @@ unsafe fn inject_user_script(api: &WebKitGtkApi, ucm: *mut c_void, source: &str)
         if !script.is_null() {
             (api.webkit_user_content_manager_add_script)(ucm, script);
             (api.webkit_user_script_unref)(script);
+        }
+    }
+}
+
+unsafe fn rebuild_slot_user_scripts(api: &WebKitGtkApi, slot: &WebKitTabSlot) {
+    if slot.ucm.is_null() {
+        return;
+    }
+    if let Some(remove_all) = api.webkit_user_content_manager_remove_all_scripts {
+        remove_all(slot.ucm);
+        inject_user_script(api, slot.ucm, BRIDGE_JS);
+        if !slot.emulated_media.is_empty() {
+            let media_js = build_emulated_media_js(&slot.emulated_media);
+            inject_user_script(api, slot.ucm, &media_js);
+        }
+        for (_, script_src) in &slot.init_scripts {
+            let wrapped = wrap_init_script_iife(script_src);
+            inject_user_script(api, slot.ucm, &wrapped);
         }
     }
 }
@@ -4111,11 +4250,76 @@ unsafe fn handle_webkit_command(state: &mut WebKitActorState, cmd: WebKitActorCm
             ensure_active_slot_thawed(state, true);
             start_webkit_js_eval_inner(state, &expression, unwrap_val, reply);
         }
-        WebKitActorCmd::AddInitScript { source, reply } => {
-            state.init_scripts.push(source.clone());
-            for slot in state.tabs.values() {
+        WebKitActorCmd::AddInitScript {
+            target_id,
+            id,
+            source,
+            reply,
+        } => {
+            let tid = if state.tabs.contains_key(&target_id) {
+                target_id
+            } else {
+                state.active_target_id.clone()
+            };
+            if let Some(slot) = state.tabs.get_mut(&tid) {
+                slot.init_scripts.push((id.clone(), source.clone()));
                 if !slot.ucm.is_null() {
-                    inject_user_script(&state.api, slot.ucm, &source);
+                    let wrapped = wrap_init_script_iife(&source);
+                    inject_user_script(&state.api, slot.ucm, &wrapped);
+                }
+            }
+            let _ = reply.send(Ok(id));
+        }
+        WebKitActorCmd::RemoveInitScript {
+            target_id,
+            identifier,
+            reply,
+        } => {
+            let tid = if state.tabs.contains_key(&target_id) {
+                target_id
+            } else {
+                state.active_target_id.clone()
+            };
+            if let Some(slot) = state.tabs.get_mut(&tid) {
+                slot.init_scripts.retain(|(sid, _)| sid != &identifier);
+                rebuild_slot_user_scripts(&state.api, slot);
+            }
+            let _ = reply.send(Ok(()));
+        }
+        WebKitActorCmd::SetEmulatedMedia {
+            target_id,
+            media,
+            features,
+            reply,
+        } => {
+            let tid = if state.tabs.contains_key(&target_id) {
+                target_id
+            } else {
+                state.active_target_id.clone()
+            };
+            let live_js = {
+                if let Some(slot) = state.tabs.get_mut(&tid) {
+                    slot.emulated_media = EmulatedMediaState { media, features };
+                    rebuild_slot_user_scripts(&state.api, slot);
+                    Some((slot.webview, build_emulated_media_js(&slot.emulated_media)))
+                } else {
+                    None
+                }
+            };
+            if let Some((webview, js)) = live_js {
+                if !webview.is_null() {
+                    if let Ok(c_js) = CString::new(js) {
+                        (state.api.webkit_web_view_evaluate_javascript)(
+                            webview,
+                            c_js.as_ptr(),
+                            -1,
+                            ptr::null(),
+                            ptr::null(),
+                            ptr::null_mut(),
+                            None,
+                            ptr::null_mut(),
+                        );
+                    }
                 }
             }
             let _ = reply.send(Ok(()));
@@ -5109,4 +5313,38 @@ pub fn sample_process_tree_memory() -> ProcessTreeMemory {
 #[must_use]
 pub fn current_rss_mb() -> f64 {
     sample_process_tree_memory().tree_rss_mb
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_wrap_init_script_iife_isolates_top_level_consts() {
+        let src = "const _mm = window.matchMedia.bind(window); window.__ok = true;";
+        let wrapped = wrap_init_script_iife(src);
+        assert!(wrapped.starts_with("(function(){\n"));
+        assert!(wrapped.ends_with("\n})();"));
+        assert!(wrapped.contains(src));
+    }
+
+    #[test]
+    fn test_build_emulated_media_js_serializes_features_and_clear_state() {
+        let empty = EmulatedMediaState::default();
+        assert!(empty.is_empty());
+        assert_eq!(
+            build_emulated_media_js(&empty),
+            "window.__minibrowse && window.__minibrowse.setEmulatedMedia(\"\", []);"
+        );
+
+        let reduced = EmulatedMediaState {
+            media: Some("screen".to_string()),
+            features: vec![("prefers-reduced-motion".to_string(), "reduce".to_string())],
+        };
+        assert!(!reduced.is_empty());
+        let js = build_emulated_media_js(&reduced);
+        assert!(js.contains("setEmulatedMedia(\"screen\""));
+        assert!(js.contains("prefers-reduced-motion"));
+        assert!(js.contains("reduce"));
+    }
 }

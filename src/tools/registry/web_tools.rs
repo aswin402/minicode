@@ -371,6 +371,10 @@ pub fn get_schemas() -> Vec<ToolSchema> {
                         "type": "string",
                         "description": "The JavaScript expression or async workflow snippet to execute"
                     },
+                    "timeout_secs": {
+                        "type": "integer",
+                        "description": "Optional execution timeout in seconds (1-60, default 25) for long-running async scripts or animation probes"
+                    },
                     "engine": engine,
                     "space": space,
                     "mode": mode
@@ -1204,8 +1208,12 @@ async fn dispatch_known(
         }
         "browser_eval" => {
             let script = require_str(args, "script", "browser_eval")?;
+            let timeout_secs = args
+                .get("timeout_secs")
+                .and_then(|v| v.as_u64().or_else(|| v.as_f64().map(|f| f as u64)));
             let mode = resolve_browser_mode(args).await;
-            BrowserController::evaluate_js(script, mode, workspace_root).await?
+            BrowserController::evaluate_js_with_timeout(script, mode, workspace_root, timeout_secs)
+                .await?
         }
         "browser_screenshot" => {
             let path_opt = opt_str(args, "path");

@@ -1771,7 +1771,15 @@ fn build_click_by_selector_js(selector: &str) -> String {
     format!(
         r#"(function() {{
             const p = {payload};
-            const target = document.querySelector(p.selector);
+            const nthMatch = /^(.*?)\s*>>\s*nth=(\d+)\s*$/i.exec(p.selector);
+            let target = null;
+            if (nthMatch) {{
+                const all = document.querySelectorAll(nthMatch[1].trim());
+                const idx = parseInt(nthMatch[2], 10);
+                target = idx >= 0 && idx < all.length ? all[idx] : null;
+            }} else {{
+                target = document.querySelector(p.selector);
+            }}
             if (!target) return 'Error: Element matching selector "' + p.selector + '" not found in DOM';
             {JS_CLICK_DISPATCH_BODY}
         }})()"#

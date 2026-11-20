@@ -3195,10 +3195,17 @@ impl AgentLoop {
         }
 
         let effective_human_prompt = self.last_human_prompt.as_deref().unwrap_or(user_prompt);
-        let preserve_preview =
+        let prompt_requests_preview =
             crate::dev::registry::MiniDevRegistry::user_prompt_requests_persistent_preview(
                 effective_human_prompt,
             );
+        let gui_browser_open = crate::tools::browser::BrowserManager::has_live_gui_engine().await;
+        let prompt_requests_stop =
+            crate::dev::registry::MiniDevRegistry::user_prompt_authorizes_task_termination(
+                effective_human_prompt,
+            );
+        let preserve_preview =
+            prompt_requests_preview || (gui_browser_open && !prompt_requests_stop);
         if was_cancelled || circuit_tripped {
             self.cleanup_turn_background_resources(false, true).await;
         } else if !background_still_in_flight {

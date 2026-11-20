@@ -728,10 +728,28 @@
     };
   }
 
+  function parseNthSelector(selector) {
+    var m = /^(.*?)\s*>>\s*nth=(\d+)\s*$/i.exec(selector);
+    if (!m) return null;
+    return { base: m[1].trim(), idx: parseInt(m[2], 10) };
+  }
+
+  function querySelectorSingle(root, selector, nth) {
+    if (nth !== null) {
+      var list = root.querySelectorAll(selector);
+      return nth >= 0 && nth < list.length ? list[nth] : null;
+    }
+    return root.querySelector(selector);
+  }
+
   function queryAcrossFramesAndShadow(selector) {
     if (!selector) return null;
+    var parsed = parseNthSelector(selector);
+    var css = parsed ? parsed.base : selector;
+    var nth = parsed ? parsed.idx : null;
+    if (!css) return null;
     try {
-      var topHit = document.querySelector(selector);
+      var topHit = querySelectorSingle(document, css, nth);
       if (topHit) return topHit;
     } catch (_) {
       return null;
@@ -740,14 +758,14 @@
     for (var d = 0; d < docs.length; d++) {
       var curDoc = docs[d].doc;
       try {
-        var found = curDoc.querySelector(selector);
+        var found = querySelectorSingle(curDoc, css, nth);
         if (found) return found;
       } catch (_) {}
       var all = curDoc.querySelectorAll ? curDoc.querySelectorAll("*") : [];
       for (var i = 0; i < all.length; i++) {
         if (all[i].shadowRoot) {
           try {
-            var sHit = all[i].shadowRoot.querySelector(selector);
+            var sHit = querySelectorSingle(all[i].shadowRoot, css, nth);
             if (sHit) return sHit;
           } catch (_) {}
         }
@@ -2470,8 +2488,175 @@
     window.ego = agentSdk;
   }
 
+  // ── CDP Emulation.setEmulatedMedia Support (prefers-reduced-motion, prefers-color-scheme, etc.) ──
+  var emulatedMediaState = {
+    media: "",
+    features: {},
+    lists: []
+  };
+  var origMatchMedia =
+    typeof window.matchMedia === "function"
+      ? window.matchMedia.bind(window)
+      : null;
+
+  function evalEmulatedMediaQuery(query, nativeMatches) {
+    var q = String(query || "").trim().toLowerCase();
+    var hasEmulated =
+      Boolean(emulatedMediaState.media) ||
+      Object.keys(emulatedMediaState.features).length > 0;
+    if (!hasEmulated) return nativeMatches;
+
+    var matchedAny = false;
+    var feats = emulatedMediaState.features;
+    for (var fname in feats) {
+      if (!Object.prototype.hasOwnProperty.call(feats, fname)) continue;
+      var fval = String(feats[fname] || "").trim().toLowerCase();
+      if (!fval) continue;
+      var re = new RegExp("\\(\\s*" + fname.replace(/[.*+?^${}()|[\]\\]/g, "\\$&") + "\\s*:\\s*([^)]+)\\)", "i");
+      var m = re.exec(q);
+      if (m) {
+        matchedAny = true;
+        var wanted = m[1].trim().toLowerCase();
+        if (wanted !== fval) return false;
+      }
+    }
+    if (emulatedMediaState.media) {
+      var emType = emulatedMediaState.media.toLowerCase();
+      if (q === emType || q.indexOf(emType + " ") === 0) {
+        matchedAny = true;
+      } else if (
+        (q === "print" || q.indexOf("print ") === 0 || q === "screen" || q.indexOf("screen ") === 0) &&
+        q.indexOf(emType) !== 0
+      ) {
+        return false;
+      }
+    }
+    return matchedAny ? true : nativeMatches;
+  }
+
+  function syncEmulatedMediaStyle() {
+    try {
+      var reduced =
+        String(emulatedMediaState.features["prefers-reduced-motion"] || "")
+          .trim()
+          .toLowerCase() === "reduce";
+      var styleId = "__minibrowse_emulated_media_css";
+      var existing = document.getElementById(styleId);
+      if (reduced) {
+        if (!existing) {
+          existing = document.createElement("style");
+          existing.id = styleId;
+          existing.textContent =
+            "*, *::before, *::after { animation-duration: 0.001ms !important; animation-iteration-count: 1 !important; transition-duration: 0.001ms !important; scroll-behavior: auto !important; }";
+          (document.head || document.documentElement).appendChild(existing);
+        }
+      } else if (existing && existing.parentNode) {
+        existing.parentNode.removeChild(existing);
+      }
+    } catch (_) {}
+  }
+
+  if (origMatchMedia) {
+    window.matchMedia = function (query) {
+      var nativeMql = origMatchMedia(query);
+      var listeners = [];
+      var onchangeHandler = null;
+      var wrapper = {
+        media: nativeMql ? nativeMql.media : String(query || ""),
+        get matches() {
+          return evalEmulatedMediaQuery(query, nativeMql ? Boolean(nativeMql.matches) : false);
+        },
+        get onchange() {
+          return onchangeHandler;
+        },
+        set onchange(fn) {
+          onchangeHandler = typeof fn === "function" ? fn : null;
+        },
+        addEventListener: function (type, fn) {
+          if (type === "change" && typeof fn === "function" && listeners.indexOf(fn) === -1) {
+            listeners.push(fn);
+          }
+          if (nativeMql && typeof nativeMql.addEventListener === "function") {
+            try { nativeMql.addEventListener(type, fn); } catch (_) {}
+          }
+        },
+        removeEventListener: function (type, fn) {
+          if (type === "change") {
+            var idx = listeners.indexOf(fn);
+            if (idx >= 0) listeners.splice(idx, 1);
+          }
+          if (nativeMql && typeof nativeMql.removeEventListener === "function") {
+            try { nativeMql.removeEventListener(type, fn); } catch (_) {}
+          }
+        },
+        addListener: function (fn) {
+          wrapper.addEventListener("change", fn);
+        },
+        removeListener: function (fn) {
+          wrapper.removeEventListener("change", fn);
+        },
+        dispatchEvent: function (ev) {
+          var copy = listeners.slice();
+          for (var i = 0; i < copy.length; i++) {
+            try { copy[i](ev); } catch (_) {}
+          }
+          if (onchangeHandler) {
+            try { onchangeHandler(ev); } catch (_) {}
+          }
+          return true;
+        },
+        __mbNotifyIfChanged: function () {
+          var now = wrapper.matches;
+          if (now !== entry.lastMatches) {
+            entry.lastMatches = now;
+            var ev = { type: "change", matches: now, media: wrapper.media };
+            wrapper.dispatchEvent(ev);
+          }
+        }
+      };
+      var entry = { wrapper: wrapper, lastMatches: wrapper.matches };
+      emulatedMediaState.lists.push(entry);
+      if (emulatedMediaState.lists.length > 256) {
+        emulatedMediaState.lists.shift();
+      }
+      return wrapper;
+    };
+  }
+
+  function setEmulatedMedia(media, features) {
+    emulatedMediaState.media = typeof media === "string" ? media.trim() : "";
+    var nextFeatures = {};
+    if (Array.isArray(features)) {
+      for (var i = 0; i < features.length; i++) {
+        var f = features[i];
+        if (f && typeof f.name === "string") {
+          var k = f.name.trim().toLowerCase();
+          var v = typeof f.value === "string" ? f.value.trim().toLowerCase() : "";
+          if (k && v) nextFeatures[k] = v;
+        }
+      }
+    } else if (features && typeof features === "object") {
+      for (var key in features) {
+        if (!Object.prototype.hasOwnProperty.call(features, key)) continue;
+        var val = String(features[key] || "").trim().toLowerCase();
+        if (key && val) nextFeatures[key.toLowerCase()] = val;
+      }
+    }
+    emulatedMediaState.features = nextFeatures;
+    syncEmulatedMediaStyle();
+    if (document.readyState === "loading") {
+      document.addEventListener("DOMContentLoaded", syncEmulatedMediaStyle, { once: true });
+    }
+    var listCopy = emulatedMediaState.lists.slice();
+    for (var j = 0; j < listCopy.length; j++) {
+      try { listCopy[j].wrapper.__mbNotifyIfChanged(); } catch (_) {}
+    }
+    return { media: emulatedMediaState.media, features: emulatedMediaState.features };
+  }
+
   window.__minibrowse = {
     sdk: agentSdk,
+    setEmulatedMedia: setEmulatedMedia,
     extractTables: extractStructuredTables,
     isPlayingMedia: isPlayingMedia,
     trimMediaAndCaches: trimMediaAndCaches,

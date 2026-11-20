@@ -622,8 +622,44 @@ async fn dispatch_cdp_method(
         | "Fetch.fulfillRequest"
         | "Fetch.failRequest"
         | "Emulation.setTouchEmulationEnabled"
-        | "Emulation.setEmulatedMedia"
         | "Emulation.setFocusEmulationEnabled" => Ok(json!({})),
+
+        "Emulation.setEmulatedMedia" => {
+            let media = params
+                .get("media")
+                .and_then(Value::as_str)
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty());
+            let features: Vec<(String, String)> = params
+                .get("features")
+                .and_then(Value::as_array)
+                .map(|arr| {
+                    arr.iter()
+                        .filter_map(|item| {
+                            let name = item.get("name")?.as_str()?.trim();
+                            let value = item.get("value")?.as_str()?.trim();
+                            if name.is_empty() || value.is_empty() {
+                                None
+                            } else {
+                                Some((name.to_string(), value.to_string()))
+                            }
+                        })
+                        .collect()
+                })
+                .unwrap_or_default();
+            let (tx, rx) = oneshot::channel();
+            send_to_target(
+                engine,
+                target_scope,
+                BrowserBackendCmd::SetEmulatedMedia {
+                    media,
+                    features,
+                    reply: tx,
+                },
+            )?;
+            let _ = rx.await;
+            Ok(json!({}))
+        }
 
         "Page.handleJavaScriptDialog" | "MiniBrowse.configureDialog" => {
             let accept = params
@@ -662,8 +698,30 @@ async fn dispatch_cdp_method(
                 target_scope,
                 BrowserBackendCmd::AddInitScript { source, reply: tx },
             )?;
+            let identifier = rx
+                .await
+                .ok()
+                .and_then(Result::ok)
+                .unwrap_or_else(|| "1".to_string());
+            Ok(json!({ "identifier": identifier }))
+        }
+        "Page.removeScriptToEvaluateOnNewDocument" => {
+            let identifier = params
+                .get("identifier")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .to_string();
+            let (tx, rx) = oneshot::channel();
+            send_to_target(
+                engine,
+                target_scope,
+                BrowserBackendCmd::RemoveInitScript {
+                    identifier,
+                    reply: tx,
+                },
+            )?;
             let _ = rx.await;
-            Ok(json!({ "identifier": "1" }))
+            Ok(json!({}))
         }
         "Page.navigate" => {
             let url = params
@@ -780,6 +838,11 @@ async fn dispatch_cdp_method(
                 .and_then(Value::as_str)
                 .unwrap_or("")
                 .to_string();
+            let timeout_ms = params
+                .get("timeout")
+                .and_then(|v| v.as_u64().or_else(|| v.as_f64().map(|f| f as u64)))
+                .map(|ms| ms.clamp(1_000, 60_000))
+                .unwrap_or(35_000);
             let (tx, rx) = oneshot::channel();
             send_to_target(
                 engine,
@@ -789,7 +852,7 @@ async fn dispatch_cdp_method(
                     reply: tx,
                 },
             )?;
-            match tokio::time::timeout(Duration::from_secs(15), rx).await {
+            match tokio::time::timeout(Duration::from_millis(timeout_ms), rx).await {
                 Ok(Ok(Ok(val))) => Ok(val),
                 Ok(Ok(Err(e))) => Err((-32000, e)),
                 _ => Err((
