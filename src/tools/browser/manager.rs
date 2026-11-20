@@ -1357,7 +1357,7 @@ user_pref("datareporting.policy.dataSubmissionEnabled", false);
             cmd.env("OBSCURA_MODULE_BUDGET_MS", "5000");
         }
 
-        let child = cmd.spawn().map_err(|e| {
+        let mut child = cmd.spawn().map_err(|e| {
             ToolError::CommandExec(format!(
                 "Failed to spawn {} ({}): {}",
                 config.engine,
@@ -1384,6 +1384,18 @@ user_pref("datareporting.policy.dataSubmissionEnabled", false);
         let status_url = format!("{}/status", cdp_http_url);
 
         while start.elapsed() < timeout {
+            if let Ok(Some(exit_status)) = child.try_wait() {
+                if let Some(pid) = child.id() {
+                    crate::dev::registry::get_global_dev_registry().unregister_external_pid(pid);
+                }
+                return Err(ToolError::CommandExec(format!(
+                    "{} ({}) exited immediately during startup (status: {})",
+                    config.engine,
+                    config.binary_path.display(),
+                    exit_status
+                ))
+                .into());
+            }
             if config.engine == BrowserEngine::Safari {
                 if let Ok(resp) = client.get(&status_url).send().await {
                     if resp.status().is_success() {
@@ -1550,11 +1562,11 @@ fn find_binary_for_engine(engine: BrowserEngine) -> Option<PathBuf> {
         BrowserEngine::Safari => &["safaridriver"],
         BrowserEngine::Obscura => &["obscura"],
         BrowserEngine::Firefox => &[
+            "geckodriver",
             "firefox",
             "firefox-esr",
             "firefox-developer-edition",
             "firefox-nightly",
-            "geckodriver",
         ],
         BrowserEngine::Chrome => &[
             "google-chrome",

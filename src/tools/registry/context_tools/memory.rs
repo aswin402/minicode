@@ -1166,6 +1166,8 @@ pub async fn dispatch(
                 any_modified |= modified;
                 resolved_titles.push(title);
             }
+            let _ =
+                crate::agent::boulder::BoulderState::sync_from_workspace(workspace_root, false, 3);
             let step_label = resolved_titles.join("', '");
             let remaining_hint = wm.format_remaining_tasks_hint();
             if let Some(summary) = wm.read_active_plan_summary() {

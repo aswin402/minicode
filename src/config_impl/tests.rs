@@ -711,3 +711,46 @@ fn test_load_global_dotenv_respects_newer_toml_and_imports_missing_keys() {
     std::env::remove_var("CEREBRAS_API_KEY");
     std::env::remove_var("AGNES_API_KEY");
 }
+
+#[test]
+fn test_saving_cleared_optional_fields_removes_stale_browser_engine_and_fallbacks() {
+    let dir = tempfile::tempdir().unwrap();
+    let cfg_path = dir.path().join("config.toml");
+
+    // Pre-seed disk with stale browser.default_engine = "firefox", fallback_1, and api_keys
+    std::fs::write(
+        &cfg_path,
+        "[provider]\ndefault = \"minimax\"\nmodel = \"MiniMax-M2.7\"\nthinking_budget = 8192\n\n[provider.fallback_1]\nprovider = \"openrouter\"\nmodel = \"deepseek/deepseek-chat\"\n\n[provider.api_keys]\nminimax = \"sk-keep-secret\"\n\n[browser]\ndefault_engine = \"firefox\"\nheadless_priority = [\"minibrowse\", \"chrome\", \"firefox\"]\n",
+    )
+    .unwrap();
+
+    // Reset default_engine, fallback_1, and thinking_budget back to None (auto / cleared)
+    let mut cfg = Config::default();
+    cfg.provider.default = "minimax".to_string();
+    cfg.provider.model = "MiniMax-M2.7".to_string();
+    cfg.browser.default_engine = None;
+    cfg.provider.fallback_1 = None;
+    cfg.provider.thinking_budget = None;
+
+    cfg.write_config_to_path_with_options(&cfg_path, false)
+        .unwrap();
+
+    let saved_raw = std::fs::read_to_string(&cfg_path).unwrap();
+    assert!(
+        !saved_raw.contains("default_engine"),
+        "Cleared browser.default_engine = None must remove stale 'firefox' from disk:\n{saved_raw}"
+    );
+    assert!(
+        !saved_raw.contains("fallback_1"),
+        "Cleared provider.fallback_1 = None must remove stale fallback from disk:\n{saved_raw}"
+    );
+    assert!(
+        !saved_raw.contains("thinking_budget"),
+        "Cleared provider.thinking_budget = None must remove stale budget from disk:\n{saved_raw}"
+    );
+    // Protected api_keys map must still be preserved!
+    assert!(
+        saved_raw.contains("sk-keep-secret"),
+        "Protected [provider.api_keys] must still be preserved:\n{saved_raw}"
+    );
+}

@@ -498,52 +498,53 @@ pub struct VerificationReport {
 
 impl VerificationReport {
     /// Formats a human-readable scorecard of the 4 verification gates.
+    /// Honestly reports `GateStatus::Skipped` even when `all_passed == true` so agents never
+    /// claim a test suite passed when no tests were executed.
     #[must_use]
     pub fn format_report(&self) -> String {
+        let format_line = |name: &str, status: &GateStatus| -> String {
+            match status {
+                GateStatus::Passed => format!("  ✔ **{}**: Passed\n", name),
+                GateStatus::Skipped { reason } => {
+                    format!("  ○ **{}**: Skipped ({})\n", name, reason)
+                }
+                GateStatus::Failed {
+                    reason,
+                    actionable_remediation,
+                    ..
+                } => {
+                    format!(
+                        "  ❌ **{}**: {}\n     ╰── Remediation: {}\n",
+                        name, reason, actionable_remediation
+                    )
+                }
+            }
+        };
+
         let mut out = String::new();
         if self.all_passed {
-            out.push_str("⚡ **MiniPower Verification Barrier: All 4 Gates Passed!**\n\n");
-            out.push_str("  ✔ **Gate 1**: AST Syntax & Scoped Compiler Integrity\n");
-            out.push_str("  ✔ **Gate 2**: Reproducer & Regression Test Suite\n");
-            out.push_str("  ✔ **Gate 3**: Structural Integrity & Conflict Markers\n");
-            out.push_str("  ✔ **Gate 4**: Diff Sanity (Zero Secrets & Debug Residue)\n\n");
-            out.push_str("All pre-completion verification gates passed cleanly.");
+            out.push_str("⚡ **MiniPower Verification Barrier: All Active Gates Passed!**\n\n");
         } else {
             out.push_str("⚡ **MiniPower Verification Barrier: Verification Failed**\n\n");
-            let format_line = |name: &str, status: &GateStatus| -> String {
-                match status {
-                    GateStatus::Passed => format!("  ✔ **{}**: Passed\n", name),
-                    GateStatus::Skipped { reason } => {
-                        format!("  ○ **{}**: Skipped ({})\n", name, reason)
-                    }
-                    GateStatus::Failed {
-                        reason,
-                        actionable_remediation,
-                        ..
-                    } => {
-                        format!(
-                            "  ❌ **{}**: {}\n     ╰── Remediation: {}\n",
-                            name, reason, actionable_remediation
-                        )
-                    }
-                }
-            };
-            out.push_str(&format_line(
-                "Gate 1 (AST Syntax & Compiler)",
-                &self.gate1_syntax_compiler,
-            ));
-            out.push_str(&format_line(
-                "Gate 2 (Reproducer & Tests)",
-                &self.gate2_reproducer_test,
-            ));
-            out.push_str(&format_line(
-                "Gate 3 (Structural Integrity)",
-                &self.gate3_regression_conflicts,
-            ));
-            out.push_str(&format_line(
-                "Gate 4 (Diff Sanity)",
-                &self.gate4_diff_sanity,
-            ));
+        }
+        out.push_str(&format_line(
+            "Gate 1 (AST Syntax & Compiler)",
+            &self.gate1_syntax_compiler,
+        ));
+        out.push_str(&format_line(
+            "Gate 2 (Reproducer & Tests)",
+            &self.gate2_reproducer_test,
+        ));
+        out.push_str(&format_line(
+            "Gate 3 (Structural Integrity)",
+            &self.gate3_regression_conflicts,
+        ));
+        out.push_str(&format_line(
+            "Gate 4 (Diff Sanity)",
+            &self.gate4_diff_sanity,
+        ));
+        if self.all_passed {
+            out.push_str("\nAll active pre-completion verification gates passed cleanly.");
         }
         out
     }
@@ -2214,5 +2215,24 @@ mod tests {
         assert_eq!(report.gate1_syntax_compiler, GateStatus::Passed);
         assert_eq!(report.gate3_regression_conflicts, GateStatus::Passed);
         assert_eq!(report.gate4_diff_sanity, GateStatus::Passed);
+
+        // When Gate 2 is Skipped (no test suite), format_report must report Skipped honestly
+        let report_with_skip = VerificationReport {
+            gate1_syntax_compiler: GateStatus::Passed,
+            gate2_reproducer_test: GateStatus::Skipped {
+                reason: "No test runner detected in workspace",
+            },
+            gate3_regression_conflicts: GateStatus::Passed,
+            gate4_diff_sanity: GateStatus::Passed,
+            all_passed: true,
+        };
+        let rendered = report_with_skip.format_report();
+        assert!(
+            rendered.contains(
+                "○ **Gate 2 (Reproducer & Tests)**: Skipped (No test runner detected in workspace)"
+            ),
+            "Skipped Gate 2 must not be falsely rendered as Passed:\n{rendered}"
+        );
+        assert!(rendered.contains("✔ **Gate 1 (AST Syntax & Compiler)**: Passed"));
     }
 }

@@ -1405,16 +1405,6 @@ pub async fn dispatch(
 
                 let review_dir = workspace_root.join(".minicode/plan");
                 let _ = std::fs::create_dir_all(&review_dir);
-                let review_state = json!({
-                    "passed": actionable_count == 0,
-                    "actionable_findings": actionable_count,
-                    "minor_findings": minor_findings.len(),
-                    "timestamp": chrono::Utc::now().to_rfc3339(),
-                });
-                let _ = std::fs::write(
-                    review_dir.join("last_review.json"),
-                    serde_json::to_string_pretty(&review_state).unwrap_or_default(),
-                );
 
                 let explicit_subagent = args.get("subagent_review").and_then(|v| v.as_bool());
                 let has_live_runtime = crate::agent::subagent::has_live_non_mock_runtime();
@@ -1457,6 +1447,17 @@ pub async fn dispatch(
                 let reviewer_still_running = should_run_subagent_review
                     && crate::agent::subagent::try_get_global_subagent_pool()
                         .is_some_and(|p| p.active_worker_count() > 0);
+                let review_state = json!({
+                    "passed": actionable_count == 0 && !reviewer_still_running,
+                    "pending_reviewer": reviewer_still_running,
+                    "actionable_findings": actionable_count,
+                    "minor_findings": minor_findings.len(),
+                    "timestamp": chrono::Utc::now().to_rfc3339(),
+                });
+                let _ = std::fs::write(
+                    review_dir.join("last_review.json"),
+                    serde_json::to_string_pretty(&review_state).unwrap_or_default(),
+                );
                 if actionable_count > 0 {
                     let wm = crate::context::working_memory::WorkingMemory::new(workspace_root);
                     let plan_hint = wm.format_remaining_tasks_hint();
@@ -1475,7 +1476,7 @@ pub async fn dispatch(
                         formatted.push_str(&format!("\n{}\n", plan_hint));
                     }
                     formatted.push_str(
-                        "\n► Next Step (Async Reviewer Running): Static review passed with 0 HIGH/MEDIUM findings, and the Reviewer MiniPub subagent is running asynchronously in `minitask`. Do **NOT** call `archive_plan` yet and do **NOT** block in `await` — conclude your turn concisely so the TUI stays non-blocking; `minicode` will automatically wake you via Boomerang notification as soon as the Reviewer completes.\n",
+                        "\n► Next Step (Async Reviewer PENDING — Do NOT declare final completion yet): Static pre-check passed with 0 HIGH/MEDIUM findings, and the deep LLM Reviewer MiniPub subagent is still running asynchronously in `minitask`. Do **NOT** call `archive_plan` and do **NOT** claim code review is complete yet — briefly inform the user that the Reviewer subagent is running in the background and pause; `minicode` will automatically wake you via Boomerang notification as soon as the Reviewer completes.\n",
                     );
                 } else {
                     let wm = crate::context::working_memory::WorkingMemory::new(workspace_root);
@@ -1549,6 +1550,11 @@ pub async fn dispatch(
                 let _ = std::fs::write(
                     verify_dir.join("last_verify.json"),
                     serde_json::to_string_pretty(&verify_state).unwrap_or_default(),
+                );
+                let _ = crate::agent::boulder::BoulderState::sync_from_workspace(
+                    workspace_root,
+                    false,
+                    3,
                 );
                 let _ = MiniPowerEngine::append_sdd_ledger(
                     workspace_root,

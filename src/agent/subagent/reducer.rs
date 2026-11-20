@@ -660,5 +660,15 @@ mod tests {
             .orchestrator_action_hint("coder-1")
             .unwrap();
         assert!(hint.contains("resume_id=\"coder-1\""));
+
+        // Trailing STATUS: DONE_WITH_CONCERNS past line 12 (e.g. end of long Reviewer report)
+        let long_reviewer_report = format!(
+            "## Spec Compliance\n{}\nSTATUS: DONE_WITH_CONCERNS\n",
+            "Detailed finding line checking component compliance.\n".repeat(20)
+        );
+        assert_eq!(
+            WorkerReportStatus::parse_from_summary(&long_reviewer_report, true),
+            WorkerReportStatus::DoneWithConcerns
+        );
     }
 }

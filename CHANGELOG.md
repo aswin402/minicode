@@ -5,6 +5,28 @@ All notable changes to **minicode** will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.59] — 2026-11-20
+
+### Deterministic Background `minitask` / Browser Teardown & Zero-Lost Async Boomerang Wakeup, MiniBrowse Default Persistence & Exact 1:1 Headless DPI, & `minitest73` Verification / Reviewer / Memory Hardening
+
+#### 🧹 Zero-Lost Async Boomerang Wakeup & Guaranteed Background `minitask` / Browser Cleanup (`src/app/mod.rs`, `src/agent/{loop,loop_impl/session_state}.rs`, `src/dev/registry_impl/lifecycle_and_telemetry.rs`)
+- **Fixed Lost `Notify::notify_waiters()` Wakeups & Leaked Dev Servers**:
+  - Added zero-lost-wakeup continuation checks in `App::run` before `tokio::select!`, immediately after draining `event_rx` (`TurnEnd` / `SubagentCompleted`), and immediately after closing any modal so background `MiniPub` / `minitask` completions never stall idle and always fire the follow-up turn (running `archive_plan`, Git auto-commit, and final cleanup).
+  - Tracked `AgentLoop::last_human_prompt` across synthetic `[SYSTEM ...]` wakeup turns so persistent-preview checks evaluate the real human prompt; expanded `cleanup_after_turn_completion(false)` to also stop lingering `Timer` tasks; added `cleanup_ephemeral_qa_resources()` to immediately reap temporary QA dev servers and headless browsers while read-only background subagents (`Reviewer`, `Scout`, `Architect`, `Planner`, `Security`) finish; and aligned `Esc` turn interruption with `Ctrl+C` full background teardown.
+
+#### 🌐 MiniBrowse Default-Engine Persistence, Fast-Fail Dead Firefox & 1:1 Headless DPI (`src/config_impl/load_and_merge.rs`, `src/tools/browser/manager.rs`, `crates/minibrowse/src/{ffi,webview}.rs`)
+- **Fixed `/settings` Optional Field Reset Resurrection & 1.1× Viewport Shrinkage**:
+  - Added `prune_cleared_optional_fields()` in `Config::write_config_to_path_with_options` so resetting `browser.default_engine = None` (`auto (MiniBrowse primary)`) or clearing `fallback_1` / `fallback_2` / `global_last_fallback` / `thinking_budget` / `reasoning_effort` actually removes the stale key from disk instead of resurrecting it from the previous file.
+  - Added `child.try_wait()` inside `BrowserManager::spawn_engine` so crashed engines (e.g. confined Snap Firefox) fail fast in `<150ms` instead of hanging 8 seconds, and preferred `geckodriver` before bare `firefox`.
+  - Locked `minibrowse` headless mode to `GDK_SCALE=1`, `GDK_DPI_SCALE=1`, `gtk-xft-dpi = 96 * 1024`, and `webkit_web_view_set_zoom_level(1.0)` so `1440×900`, `768×1024`, and `390×844` render at exact 1:1 CSS pixels instead of 10%-shrunk host Wayland/GNOME scaling.
+
+#### 🛡️ `minitest73` Forensic Hardening (`src/agent/{subagent/types,orchestrator,verification_barrier}.rs`, `src/tools/registry/{minipower_tools,context_tools/memory}.rs`, `src/context/budget/auto_compact.rs`)
+- **Accurate Reviewer Verdict Parsing, Honest Gate Reporting & Clean Engineering Notes**:
+  - Fixed `WorkerReportStatus::parse_from_summary` to scan the full report so trailing `STATUS: DONE_WITH_CONCERNS` verdicts past line 12 are never misclassified as `DONE`.
+  - Fixed `MultiAgentOrchestrator::format_result` and `power_review` so async Reviewer handoffs render `⏳ Running Asynchronously` (instead of `✔ Finished (Tokens: 0)`) and keep `last_review.json` pending (`passed: false`) until the Reviewer completes.
+  - Updated `AutoCompactor::extract_turn_summary` to strip injected `<skill>` / `<workspace_context>` / `[SYSTEM ...]` blocks and template fragments (`{skill_dir}`, trailing `:`) so raw skill text no longer pollutes `.minicode/NOTES.md` or `CONTINUITY.md`.
+  - Synced `.minicode/boulder.json` inside `update_progress`, `power_verify`, and async-yield turn exits, and updated `VerificationReport::format_report` to honestly display `○ Skipped (<reason>)` for skipped gates even when all active gates pass.
+
 ## [0.5.58] — 2026-11-20
 
 ### Unified Global Settings & Credentials Sync (`/settings` ↔ `minicode setup`), Full 23-Provider Setup Catalog & Windowed Selector Scrolling

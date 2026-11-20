@@ -3,7 +3,7 @@
 //! Compiles on 100% pure Rust without `-dev` C headers or `pkg-config`, dynamically probing
 //! `4.1` -> `4.0` shared objects at runtime and degrading cleanly on headless servers without X11/Wayland.
 
-use std::ffi::{c_char, c_int, c_ulong, c_void, CString};
+use std::ffi::{c_char, c_int, c_long, c_ulong, c_void, CString};
 
 #[repr(C)]
 pub struct GError {
@@ -104,9 +104,11 @@ pub fn tune_allocator_env_with_webgl(headless: bool, webgl: bool) {
     }
 
     if headless {
+        // Unconditionally lock headless scale to 1.0 so host Wayland/GNOME desktop fractional
+        // scaling or text-scaling-factor (e.g. 1.1x) never shrinks CSS viewports (e.g. 1440->1309).
+        std::env::set_var("GDK_SCALE", "1");
+        std::env::set_var("GDK_DPI_SCALE", "1");
         for &(key, val) in &[
-            ("GDK_SCALE", "1"),
-            ("GDK_DPI_SCALE", "1"),
             ("JSC_forceRAMSize", "100663296"),
             ("JSC_useFTLJIT", "0"),
             ("JSC_useWasmFastMemory", "0"),
@@ -228,6 +230,9 @@ pub struct WebKitGtkApi {
     pub gtk_widget_get_allocated_height: unsafe extern "C" fn(*mut c_void) -> c_int,
     pub gtk_widget_get_window: Option<unsafe extern "C" fn(*mut c_void) -> *mut c_void>,
     pub gdk_window_get_state: Option<unsafe extern "C" fn(*mut c_void) -> u32>,
+    pub gtk_settings_get_default: Option<unsafe extern "C" fn() -> *mut c_void>,
+    pub gtk_settings_set_long_property:
+        Option<unsafe extern "C" fn(*mut c_void, *const c_char, c_long, *const c_char)>,
 
     pub cairo_image_surface_create: unsafe extern "C" fn(c_int, c_int, c_int) -> *mut c_void,
     pub cairo_create: unsafe extern "C" fn(*mut c_void) -> *mut c_void,
@@ -311,6 +316,7 @@ pub struct WebKitGtkApi {
         Option<unsafe extern "C" fn(*mut c_void, c_int)>,
     pub webkit_settings_set_user_agent: Option<unsafe extern "C" fn(*mut c_void, *const c_char)>,
     pub webkit_web_view_is_playing_audio: Option<unsafe extern "C" fn(*mut c_void) -> c_int>,
+    pub webkit_web_view_set_zoom_level: Option<unsafe extern "C" fn(*mut c_void, f64)>,
     pub webkit_web_view_terminate_web_process: Option<unsafe extern "C" fn(*mut c_void)>,
     pub webkit_web_context_clear_cache: Option<unsafe extern "C" fn(*mut c_void)>,
     pub webkit_website_data_manager_new_ephemeral: Option<unsafe extern "C" fn() -> *mut c_void>,
@@ -478,6 +484,11 @@ impl WebKitGtkApi {
                 )?,
                 gtk_widget_get_window: load_opt_sym(&handles, "gtk_widget_get_window"),
                 gdk_window_get_state: load_opt_sym(&handles, "gdk_window_get_state"),
+                gtk_settings_get_default: load_opt_sym(&handles, "gtk_settings_get_default"),
+                gtk_settings_set_long_property: load_opt_sym(
+                    &handles,
+                    "gtk_settings_set_long_property",
+                ),
                 cairo_image_surface_create: load_sym(&handles, "cairo_image_surface_create")?,
                 cairo_create: load_sym(&handles, "cairo_create")?,
                 cairo_destroy: load_sym(&handles, "cairo_destroy")?,
@@ -644,6 +655,10 @@ impl WebKitGtkApi {
                 webkit_web_view_is_playing_audio: load_opt_sym(
                     &handles,
                     "webkit_web_view_is_playing_audio",
+                ),
+                webkit_web_view_set_zoom_level: load_opt_sym(
+                    &handles,
+                    "webkit_web_view_set_zoom_level",
                 ),
                 webkit_web_view_terminate_web_process: load_opt_sym(
                     &handles,

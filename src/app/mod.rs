@@ -784,6 +784,18 @@ impl<'a> App<'a> {
                 }
             };
             let dev_registry = crate::dev::registry::get_global_dev_registry();
+            // Zero-lost-wakeup guard: if a background MiniPub or minitask finished while
+            // `event_rx.recv()` or a modal was active (so `Notify::notify_waiters()` fired before
+            // we re-entered `tokio::select!`), dispatch the continuation wakeup immediately!
+            if !self.is_working && !self.modal.is_active() && dev_registry.is_continuation_armed() {
+                let bg_flags = self
+                    .sync_background_telemetry_and_continuation(&control_tx)
+                    .await;
+                if !bg_flags.is_empty() {
+                    scheduler.mark_dirty(bg_flags | crate::ui::DirtyFlags::STATUS);
+                    continue;
+                }
+            }
             let pool_notified_fut = async {
                 match pool_opt {
                     Some(pool) => pool.notified().await,
@@ -1302,6 +1314,12 @@ impl<'a> App<'a> {
                         }
                         next_event = event_rx.try_recv().ok();
                         }
+                        if !self.is_working && !self.modal.is_active() {
+                            let bg_flags = self
+                                .sync_background_telemetry_and_continuation(&control_tx)
+                                .await;
+                            scheduler.mark_dirty(bg_flags | crate::ui::DirtyFlags::STATUS);
+                        }
                     }
 
                     // Handle user keyboard and mouse events from terminal
@@ -1434,6 +1452,12 @@ impl<'a> App<'a> {
                                 // Modal is active — intercept keyboard navigation
                                 if self.modal.is_active() {
                                     self.handle_modal_key(key_event, &control_tx).await;
+                                    if !self.modal.is_active() && !self.is_working {
+                                        let bg_flags = self
+                                            .sync_background_telemetry_and_continuation(&control_tx)
+                                            .await;
+                                        scheduler.mark_dirty(bg_flags | crate::ui::DirtyFlags::STATUS);
+                                    }
                                     continue;
                                 }
 
@@ -1788,11 +1812,19 @@ impl<'a> App<'a> {
                                         if let Some(token) = self.cancel_token.take() {
                                             token.cancel();
                                         }
+                                        if let Some(pool) =
+                                            crate::agent::subagent::try_get_global_subagent_pool()
+                                        {
+                                            pool.kill_all().await;
+                                        }
+                                        let _ = dev_reg.stop_active_non_daemon_tasks().await;
+                                        let _ = crate::tools::browser::BrowserManager::shutdown_live_engine_opt(true).await;
+                                        let _ = dev_reg.refresh_telemetry_cache().await;
                                         self.is_working = false;
                                         self.current_activity = None;
                                         self.work_start = None;
                                         self.timeline.finalize_open_entries_on_turn_end();
-                                        self.timeline.add_status("⏹ Turn interrupted by user (Esc)".to_string());
+                                        self.timeline.add_status("⏹ Turn interrupted by user (Esc) — stopped active subagents, tasks & browser".to_string());
                                         self.timeline.auto_scroll.set(true);
                                         continue;
                                     } else if self.timeline.has_selection() {
@@ -2094,9 +2126,20 @@ impl<'a> App<'a> {
                         crate::ui::AgentActivity::Thinking,
                         control_tx,
                     );
+                    dispatched_wakeup = true;
                     dirty |= crate::ui::DirtyFlags::TIMELINE_LAYOUT
                         | crate::ui::DirtyFlags::STATUS
                         | crate::ui::DirtyFlags::OVERLAY;
+                }
+            }
+
+            if !dispatched_wakeup {
+                let active_workers = crate::agent::subagent::try_get_global_subagent_pool()
+                    .map(|p| p.active_worker_count())
+                    .unwrap_or(0);
+                let active_tasks = dev_registry.active_non_daemon_task_count().await;
+                if active_workers == 0 && active_tasks == 0 {
+                    dev_registry.set_continuation_armed(false);
                 }
             }
         }

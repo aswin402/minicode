@@ -726,7 +726,12 @@ impl AutoCompactor {
 
             match msg.role {
                 Role::User | Role::Assistant => {
-                    let clean_body = Self::strip_thought_tags(&msg.content);
+                    // Never scrape synthetic `[SYSTEM ...]` reminders/wakeups as architectural decisions
+                    if msg.role == Role::User && msg.content.trim_start().starts_with("[SYSTEM") {
+                        continue;
+                    }
+                    let clean_body =
+                        Self::strip_injected_prompt_blocks(&Self::strip_thought_tags(&msg.content));
                     for line in clean_body.lines() {
                         let clean = line
                             .trim()
@@ -735,6 +740,9 @@ impl AutoCompactor {
                             .trim_start_matches('•')
                             .trim();
                         if clean.len() < 12 || clean.len() > COMPACT_MAX_DECISION_CHARS {
+                            continue;
+                        }
+                        if Self::is_noise_decision_fragment(clean) {
                             continue;
                         }
                         raw_decision_candidates.push((msg.role == Role::User, clean.to_string()));
@@ -1041,6 +1049,47 @@ impl AutoCompactor {
             out.push_str(&content[copy_from..]);
         }
         out.trim().to_string()
+    }
+
+    /// Strips injected prompt scaffolding (`<skill ...>`, `<active_skills>`, `<workspace_context>`,
+    /// `<system-reminder>`, `<recommended_miniblocks>`, `<minipub_boomerang_report>`, etc.) so
+    /// raw skill guidelines never pollute `.minicode/NOTES.md` or `CONTINUITY.md`.
+    #[must_use]
+    pub fn strip_injected_prompt_blocks(content: &str) -> String {
+        const INJECTED_TAG_PAIRS: &[(&str, &str)] = &[
+            ("<skill", "</skill>"),
+            ("<active_skills", "</active_skills>"),
+            ("<active-skills", "</active-skills>"),
+            ("<workspace_context", "</workspace_context>"),
+            ("<system-reminder", "</system-reminder>"),
+            ("<system_reminder", "</system_reminder>"),
+            ("<recommended_miniblocks", "</recommended_miniblocks>"),
+            ("<minipub_boomerang_report", "</minipub_boomerang_report>"),
+            (
+                "<completed_background_tasks",
+                "</completed_background_tasks>",
+            ),
+            ("<active_minipub_workers", "</active_minipub_workers>"),
+            ("<file-operations", "</file-operations>"),
+        ];
+        Self::strip_xml_tag_blocks(content, INJECTED_TAG_PAIRS, true)
+    }
+
+    /// Rejects skill template placeholders, heading stubs ending with `:`, and generic agent
+    /// prompt instructions so only genuine architectural decisions enter `key_decisions`.
+    fn is_noise_decision_fragment(clean: &str) -> bool {
+        if clean.starts_with('#')
+            || clean.ends_with(':')
+            || clean.contains("{skill_dir}")
+            || clean.contains("SKILL.md")
+        {
+            return true;
+        }
+        let lower = clean.to_ascii_lowercase();
+        lower.starts_with("guidelines & invariants")
+            || lower.starts_with("core ui taste & anti-slop")
+            || lower.starts_with("always spawn a subagent")
+            || lower.starts_with("if `mktemp` is not available")
     }
 
     /// Strips XML thinking tags (`<thought>`, `<think>`, `<thinking>`, `<reasoning>`, `<antThinking>`, `<scratchpad>`)
@@ -1783,6 +1832,41 @@ mod tests {
         assert!(
             after <= (crate::constants::COMPACT_PRACTICAL_TIER2_CEILING_TOKENS * 4) / 5,
             "Expected substantial headroom <= 176K after KV reset, got {after}"
+        );
+    }
+
+    #[test]
+    fn test_extract_turn_summary_strips_injected_skill_blocks_and_template_noise() {
+        let msgs = vec![
+            Message::user(
+                "Build the auth module.\n\
+                 <skill name=\"frontend-design\">\n\
+                 - `{skill_dir}/implementation.md`\n\
+                 - If `mktemp` is not available (e.g., native Windows), use PowerShell:\n\
+                 - Always spawn a subagent for implementation — even for a single design.\n\
+                 - Core UI Taste & Anti-Slop Invariants:\n\
+                 </skill>\n\
+                 <workspace_context>\n\
+                 Always use strict mode.\n\
+                 </workspace_context>\n\
+                 Decision: use Argon2id for password hashing in `src/auth/hash.rs`.",
+            ),
+            Message::user("[SYSTEM - ASYNC MINIPUB BOOMERANG COMPLETION WAKEUP]\nAlways verify."),
+        ];
+
+        let summary = AutoCompactor::extract_turn_summary(&msgs, 1, 1);
+        for d in &summary.decisions {
+            assert!(
+                !d.contains("{skill_dir}")
+                    && !d.contains("mktemp")
+                    && !d.contains("spawn a subagent"),
+                "Injected skill/template text leaked into extracted decisions: {d}"
+            );
+        }
+        assert!(
+            summary.decisions.iter().any(|d| d.contains("Argon2id")),
+            "Expected genuine architectural decision to be preserved, got {:?}",
+            summary.decisions
         );
     }
 }

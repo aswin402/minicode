@@ -581,6 +581,7 @@ impl Config {
         let mut final_val = if let Ok(existing_str) = std::fs::read_to_string(path) {
             if let Ok(mut existing_val) = toml::from_str::<toml::Value>(&existing_str) {
                 merge_config_preserving_existing_maps(&mut existing_val, &new_val);
+                prune_cleared_optional_fields(&mut existing_val, self);
                 existing_val
             } else {
                 new_val
@@ -1104,6 +1105,38 @@ impl Config {
             if !ponytail_level.trim().is_empty() {
                 self.agent.ponytail_level = ponytail_level.trim().to_lowercase();
             }
+        }
+    }
+}
+
+/// Removes explicitly cleared (`None`) optional config keys from the merged TOML tree so
+/// resetting fields like `browser.default_engine`, `provider.fallback_1`, or `thinking_budget`
+/// in `/settings` actually deletes the stale value on disk instead of resurrecting it from the
+/// prior file. Protected credential/endpoint maps and unknown forward-compatible keys remain untouched.
+fn prune_cleared_optional_fields(target: &mut toml::Value, cfg: &Config) {
+    let toml::Value::Table(root) = target else {
+        return;
+    };
+    if let Some(toml::Value::Table(browser)) = root.get_mut("browser") {
+        if cfg.browser.default_engine.is_none() {
+            browser.remove("default_engine");
+        }
+    }
+    if let Some(toml::Value::Table(provider)) = root.get_mut("provider") {
+        if cfg.provider.fallback_1.is_none() {
+            provider.remove("fallback_1");
+        }
+        if cfg.provider.fallback_2.is_none() {
+            provider.remove("fallback_2");
+        }
+        if cfg.provider.global_last_fallback.is_none() {
+            provider.remove("global_last_fallback");
+        }
+        if cfg.provider.thinking_budget.is_none() {
+            provider.remove("thinking_budget");
+        }
+        if cfg.provider.reasoning_effort.is_none() {
+            provider.remove("reasoning_effort");
         }
     }
 }

@@ -97,6 +97,9 @@ pub struct AgentLoop {
     pub(super) last_provider_call_at: Option<std::time::Instant>,
     /// Whether the host runs an idle reactive wakeup loop (true in Interactive TUI mode, false in one-shot CLI mode).
     async_idle_wakeup_enabled: bool,
+    /// Most recent explicit human prompt in this session (ignoring synthetic `[SYSTEM ...]` wakeups),
+    /// preserved across async Boomerang wakeup turns so turn-end cleanup checks real user intent.
+    pub(super) last_human_prompt: Option<String>,
     /// RAII Guard registering this active agent process in the runtime registry.
     _active_guard: Option<crate::logging::ActiveSessionGuard>,
 }
@@ -215,6 +218,7 @@ impl AgentLoop {
             kv_watermark_idx: 0,
             last_provider_call_at: None,
             async_idle_wakeup_enabled: false,
+            last_human_prompt: None,
             _active_guard: active_guard,
         }
     }
@@ -343,6 +347,9 @@ impl AgentLoop {
             dev_reg.record_user_prompt(user_prompt, active_procs > 0 || active_workers > 0);
             TurnPromptGuard
         };
+        if !user_prompt.trim().is_empty() && !user_prompt.trim().starts_with("[SYSTEM") {
+            self.last_human_prompt = Some(user_prompt.trim().to_string());
+        }
 
         // Synchronize active model context window globally for tool execution & donut truncation (Phase 117)
         let model_token_limit = self.compactor.model_token_limit();
@@ -2546,6 +2553,11 @@ impl AgentLoop {
                                 } else {
                                     self.messages.push(Message::assistant(clean_text));
                                 }
+                                let _ = crate::agent::boulder::BoulderState::sync_from_workspace(
+                                    &self.workspace_root,
+                                    is_ralph_loop,
+                                    max_boulder_nudges,
+                                );
                                 break;
                             }
                         }
@@ -3182,15 +3194,47 @@ impl AgentLoop {
             );
         }
 
+        let effective_human_prompt = self.last_human_prompt.as_deref().unwrap_or(user_prompt);
+        let preserve_preview =
+            crate::dev::registry::MiniDevRegistry::user_prompt_requests_persistent_preview(
+                effective_human_prompt,
+            );
         if was_cancelled || circuit_tripped {
             self.cleanup_turn_background_resources(false, true).await;
         } else if !background_still_in_flight {
-            let preserve_preview =
-                crate::dev::registry::MiniDevRegistry::user_prompt_requests_persistent_preview(
-                    user_prompt,
-                );
             self.cleanup_turn_background_resources(preserve_preview, false)
                 .await;
+        } else if !background_tasks_active && !preserve_preview {
+            // Even while read-only background subagents (e.g., `power_review` Reviewer, Scout,
+            // Architect, Planner, Security) are finishing in the background, tear down temporary
+            // QA dev servers and headless browsers immediately so they never linger idle.
+            let only_readonly_workers = crate::agent::subagent::try_get_global_subagent_pool()
+                .is_some_and(|pool| {
+                    let snaps = pool.snapshot_subagents();
+                    let active: Vec<_> = snaps.iter().filter(|w| w.state.is_active()).collect();
+                    !active.is_empty()
+                        && active.iter().all(|w| {
+                            matches!(
+                                w.role,
+                                crate::agent::subagent::types::SubagentRole::Reviewer
+                                    | crate::agent::subagent::types::SubagentRole::Scout
+                                    | crate::agent::subagent::types::SubagentRole::Architect
+                                    | crate::agent::subagent::types::SubagentRole::Planner
+                                    | crate::agent::subagent::types::SubagentRole::Security
+                            )
+                        })
+                });
+            if only_readonly_workers {
+                let stopped = crate::dev::registry::get_global_dev_registry()
+                    .cleanup_ephemeral_qa_resources(false)
+                    .await;
+                if stopped > 0 {
+                    tracing::info!(
+                        stopped,
+                        "Cleaned up temporary QA dev server / headless browser while read-only background subagent finishes"
+                    );
+                }
+            }
         }
 
         let end_event = AgentEvent::TurnEnd {

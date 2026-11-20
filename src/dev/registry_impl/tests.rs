@@ -555,4 +555,34 @@ async fn test_completed_task_reaps_grandchild_and_turn_cleanup_stops_ephemeral_w
         DevProcessStatus::Stopped,
         "terminate() must always clear Degraded status to Stopped"
     );
+
+    // 4. Verify cleanup_ephemeral_qa_resources kills a lingering script/webdev daemon immediately
+    //    (e.g. when the main turn yields while only a read-only Reviewer subagent finishes)
+    let qa_req = SpawnDevRequest {
+        command: "sleep 30".to_string(),
+        name: Some("qa-vite-daemon".to_string()),
+        process_type: DevProcessType::Script,
+        working_dir: None,
+        extra_env: HashMap::new(),
+        port_hint: None,
+        max_memory_mb: None,
+        port_policy: None,
+        restart_policy: Some(crate::dev::models::RestartPolicy::Never),
+    };
+    let (qa_sum, qa_handle) = registry
+        .spawn_with_options(temp.path(), qa_req, true)
+        .await
+        .expect("spawn qa script daemon");
+    let qa_pid = qa_handle.pid();
+    assert!(crate::dev::ports::is_process_running(qa_pid));
+
+    let qa_stopped = registry.cleanup_ephemeral_qa_resources(false).await;
+    assert!(qa_stopped >= 1, "Expected QA script daemon to be stopped");
+    assert!(
+        !crate::dev::ports::is_process_running(qa_pid),
+        "QA script daemon PID {} must be killed",
+        qa_pid
+    );
+    let qa_after = registry.get(&qa_sum.id).await.expect("qa summary");
+    assert_eq!(qa_after.status, DevProcessStatus::Stopped);
 }

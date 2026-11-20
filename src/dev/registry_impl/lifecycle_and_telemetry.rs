@@ -125,8 +125,8 @@ impl MiniDevRegistry {
         self.terminate_managed_processes(false).await
     }
 
-    /// Stops all active ephemeral background resources (webdev/backend/script daemons, stray
-    /// non-daemon tasks, and spawned browsers) once a turn/task completes cleanly.
+    /// Stops all active ephemeral background resources (webdev/backend/script daemons, timers,
+    /// stray non-daemon tasks, and spawned browsers) once a turn/task completes cleanly.
     ///
     /// Leaves user-configured recurring `Cron` schedules intact. When `preserve_persistent_preview`
     /// is `true` (e.g., user explicitly asked to start/keep a dev server or live GUI preview),
@@ -155,6 +155,7 @@ impl MiniDevRegistry {
                                 | DevProcessType::Backend
                                 | DevProcessType::Script
                                 | DevProcessType::Docker
+                                | DevProcessType::Timer
                         )
                     })
                     .cloned()
@@ -181,6 +182,56 @@ impl MiniDevRegistry {
         }
 
         let _ = self.refresh_telemetry_cache().await;
+        stopped
+    }
+
+    /// Reaps temporary QA webdev/script servers and headless browsers immediately when the main
+    /// turn finishes while only read-only background subagents (e.g., `Reviewer`, `Scout`,
+    /// `Architect`, `Planner`, `Security`) remain in flight.
+    pub async fn cleanup_ephemeral_qa_resources(&self, preserve_persistent_preview: bool) -> usize {
+        if preserve_persistent_preview {
+            let _ = crate::tools::browser::BrowserManager::shutdown_live_engine_opt(false).await;
+            return 0;
+        }
+        let mut stopped = 0usize;
+        if crate::tools::browser::BrowserManager::shutdown_live_engine_opt(false)
+            .await
+            .unwrap_or(false)
+        {
+            stopped += 1;
+        }
+        let targets: Vec<Arc<DevProcessHandle>> = {
+            let lock = self.processes.read().await;
+            lock.values()
+                .filter(|h| {
+                    matches!(
+                        h.process_type,
+                        DevProcessType::Frontend | DevProcessType::Backend | DevProcessType::Script
+                    )
+                })
+                .cloned()
+                .collect()
+        };
+        let mut futs = Vec::new();
+        for handle in targets {
+            if handle.status.read().await.is_alive() {
+                stopped += 1;
+                let id = handle.id.clone();
+                let pid = handle.pid();
+                let pgid = handle.pgid();
+                futs.push(async move {
+                    let _ = handle.terminate().await;
+                    (id, pid, pgid)
+                });
+            }
+        }
+        for (id, pid, pgid) in futures::future::join_all(futs).await {
+            self.clear_detached_command(&id);
+            self.untrack_process_ids(pid, pgid);
+        }
+        if stopped > 0 {
+            let _ = self.refresh_telemetry_cache().await;
+        }
         stopped
     }
 

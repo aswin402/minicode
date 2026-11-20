@@ -811,10 +811,11 @@ impl WorkerReportStatus {
         }
     }
 
-    /// Single-pass table-driven parser over `<status>...</status>` tags and leading `STATUS:` lines.
-    /// Falls back to `Blocked` on failure and `Done` on success when no explicit status is found.
+    /// Single-pass table-driven parser over `<status>...</status>` tags and explicit `STATUS:` lines
+    /// anywhere in `summary` (supporting both leading headers and trailing verdicts such as
+    /// `STATUS: DONE_WITH_CONCERNS`). Falls back to `Blocked` on failure and `Done` on success.
     pub fn parse_from_summary(summary: &str, success: bool) -> Self {
-        Self::parse_explicit_within(summary, 12).unwrap_or(if success {
+        Self::parse_explicit(summary).unwrap_or(if success {
             WorkerReportStatus::Done
         } else {
             WorkerReportStatus::Blocked
@@ -830,7 +831,7 @@ impl WorkerReportStatus {
 
     fn parse_explicit_within(summary: &str, max_lines: usize) -> Option<Self> {
         let lower = summary.to_ascii_lowercase();
-        if let Some(s_idx) = lower.find("<status>") {
+        if let Some(s_idx) = lower.rfind("<status>") {
             let after = &lower[s_idx + 8..];
             if let Some(e_idx) = after.find("</status>") {
                 let token = after[..e_idx].trim();
@@ -842,6 +843,7 @@ impl WorkerReportStatus {
             }
         }
 
+        let mut matched: Option<Self> = None;
         for line in lower.lines().take(max_lines) {
             let cleaned = line
                 .trim()
@@ -854,12 +856,13 @@ impl WorkerReportStatus {
                 let val = rest.trim().trim_matches(['*', '`', '[', ']', ' ']);
                 for &(pat, status) in Self::TOKEN_TABLE {
                     if val.starts_with(pat) {
-                        return Some(status);
+                        matched = Some(status);
+                        break;
                     }
                 }
             }
         }
-        None
+        matched
     }
 
     /// Returns an actionable Orchestrator continuation hint when a worker finishes with non-trivial status.

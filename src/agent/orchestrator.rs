@@ -102,11 +102,23 @@ impl MultiAgentOrchestrator {
 
     /// Formats the SubAgentResult into a clean markdown summary for parent LLM tool results.
     pub fn format_result(result: &SubAgentResult) -> String {
-        let status_emoji = if result.success { "✔" } else { "✗" };
-        let mut out = format!(
-            "{} SubAgent Task [{}] Finished (Tokens: {})\n",
-            status_emoji, result.task_id, result.tokens_used
-        );
+        let is_async_running = result.tokens_used == 0
+            && (result.final_summary.contains("Running Asynchronously")
+                || result
+                    .final_summary
+                    .contains("still executing uninterrupted"));
+        let mut out = if is_async_running {
+            format!(
+                "⏳ SubAgent Task [{}] Running Asynchronously in `minitask` (awaiting Boomerang completion)\n",
+                result.task_id
+            )
+        } else {
+            let status_emoji = if result.success { "✔" } else { "✗" };
+            format!(
+                "{} SubAgent Task [{}] Finished (Tokens: {})\n",
+                status_emoji, result.task_id, result.tokens_used
+            )
+        };
 
         if let Some(ref branch) = result.worktree_branch {
             out.push_str(&format!("Branch: {}\n", branch));
