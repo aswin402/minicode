@@ -709,6 +709,7 @@ impl SubagentWorker {
             let mut success = true;
             let mut step_counter = 0;
             let mut thought_only_nudges: usize = 0;
+            let mut synthesis_nudges: usize = 0;
             let mut eval_iterations: usize = 0;
             let max_eval_iterations: usize = self.config.loop_max.clamp(1, 8);
             let mut elastic_extensions_granted: usize = 0;
@@ -1415,6 +1416,18 @@ impl SubagentWorker {
                     if is_synthesis_turn {
                         if !clean_iteration_text.trim().is_empty() {
                             messages.push(Message::assistant(clean_iteration_text));
+                            break;
+                        }
+                        if synthesis_nudges < 2 {
+                            synthesis_nudges += 1;
+                            turns_executed = turns_executed.saturating_sub(1);
+                            if !iteration_text.trim().is_empty() {
+                                messages.push(Message::assistant(iteration_text));
+                            }
+                            messages.push(Message::user(
+                                "[System: Your synthesis turn returned no visible report (only internal thoughts or a tool call while tools are disabled). Do NOT call any tools — output your complete visible final report now and end with `STATUS: DONE` or `STATUS: DONE_WITH_CONCERNS`.]".to_string(),
+                            ));
+                            continue;
                         }
                         break;
                     }
@@ -1780,7 +1793,12 @@ impl SubagentWorker {
                             && !pruned_output.starts_with("<fetch-blocked")
                             && !pruned_output.starts_with('⏭')
                         {
-                            extract_tool_image_attachments(&self.workspace_root, &tool_name, &args)
+                            extract_tool_image_attachments(
+                                &self.workspace_root,
+                                &tool_name,
+                                &args,
+                                Some(&tool_res.output),
+                            )
                         } else {
                             Vec::new()
                         };
@@ -1846,7 +1864,10 @@ impl SubagentWorker {
                 matches!(info.state, SubagentState::Terminated)
             };
             if final_summary.trim().is_empty() && !last_preamble_text.trim().is_empty() {
-                final_summary = last_preamble_text;
+                final_summary = format!(
+                    "⚠️ Subagent reached its turn/token budget before emitting a final synthesis report.\n\nLast in-progress note: {}\n\nSTATUS: DONE_WITH_CONCERNS",
+                    last_preamble_text.trim()
+                );
             }
             if was_cancelled {
                 success = false;
@@ -2161,12 +2182,28 @@ fn extract_prompt_image_attachments(
     attachments
 }
 
+/// Parses a saved screenshot path from `browser_screenshot` output when no explicit `path` arg was supplied
+/// (e.g. `"Screenshot saved to '/abs/path/.minicode/screenshots/screenshot_20261120_121700.png' (148704 bytes)"`).
+fn extract_screenshot_path_from_output(output: &str) -> Option<&str> {
+    let prefix = "Screenshot saved to '";
+    let start = output.find(prefix)? + prefix.len();
+    let rest = &output[start..];
+    let end = rest.find('\'')?;
+    let path = rest[..end].trim();
+    if path.is_empty() {
+        None
+    } else {
+        Some(path)
+    }
+}
+
 /// Extracts `ImageAttachment`s when the orchestrator or a MiniPub worker invokes `read_file`,
 /// `browser_screenshot`, `browser_batch` (screenshot steps), or `batch_read` on an image asset.
 pub(crate) fn extract_tool_image_attachments(
     workspace_root: &std::path::Path,
     tool_name: &str,
     args: &serde_json::Value,
+    tool_output: Option<&str>,
 ) -> Vec<crate::agent::types::ImageAttachment> {
     match tool_name {
         "read_file" => {
@@ -2191,7 +2228,8 @@ pub(crate) fn extract_tool_image_attachments(
             let rel_path = args
                 .get("path")
                 .or_else(|| args.get("file_path"))
-                .and_then(|v| v.as_str());
+                .and_then(|v| v.as_str())
+                .or_else(|| tool_output.and_then(extract_screenshot_path_from_output));
             if rel_path.is_some() {
                 let resolved = crate::tools::browser::BrowserController::resolve_screenshot_path(
                     workspace_root,
@@ -2907,5 +2945,38 @@ mod tests {
             "Explicit max_turns cap must not be inflated by dynamic scope scaling"
         );
         assert!(worker.config.explicit_max_turns);
+    }
+
+    #[test]
+    fn test_extract_tool_image_attachments_auto_generated_browser_screenshot() {
+        let dir = tempfile::tempdir().unwrap();
+        let shots = dir.path().join(".minicode/screenshots");
+        std::fs::create_dir_all(&shots).unwrap();
+        let shot_path = shots.join("screenshot_20261120_121700.png");
+        // Minimal valid 1x1 PNG bytes
+        let png_bytes: &[u8] = &[
+            0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 0x00, 0x00, 0x00, 0x0D, 0x49, 0x48,
+            0x44, 0x52, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0x08, 0x02, 0x00, 0x00,
+            0x00, 0x90, 0x77, 0x53, 0xDE,
+        ];
+        std::fs::write(&shot_path, png_bytes).unwrap();
+
+        let output = format!(
+            "Screenshot saved to '{}' ({} bytes)\n💡 Note: Screenshot is ALREADY attached",
+            shot_path.display(),
+            png_bytes.len()
+        );
+        let atts = extract_tool_image_attachments(
+            dir.path(),
+            "browser_screenshot",
+            &serde_json::json!({ "annotate": true, "mode": "headless" }),
+            Some(&output),
+        );
+        assert_eq!(
+            atts.len(),
+            1,
+            "Auto-generated browser_screenshot without explicit path arg must still attach image"
+        );
+        assert_eq!(atts[0].media_type, "image/png");
     }
 }

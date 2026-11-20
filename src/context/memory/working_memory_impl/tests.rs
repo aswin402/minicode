@@ -4393,3 +4393,163 @@ fn test_minitest67_substep_projection_comma_artifact_clauses_and_bipartite_bindi
         subs7
     );
 }
+
+#[test]
+fn test_minitest74_deferred_headings_never_hijack_plan_or_corrupt_todo() {
+    let temp_dir =
+        std::env::temp_dir().join(format!("minicode_test_mt74_{}", uuid::Uuid::new_v4()));
+    fs::create_dir_all(temp_dir.join("minikit_docs/core")).unwrap();
+    fs::create_dir_all(temp_dir.join(".minicode/plan")).unwrap();
+
+    let wm = WorkingMemory::new(&temp_dir);
+    let todo_path = temp_dir.join("minikit_docs/core/todo.md");
+    let todo_md = r#"# Tasks & Milestone Roadmap: Roadmap
+
+> Updated: 2026-11-20 12:52:00
+
+## Active Milestone: Roadmap
+- [x] Deploy to GitHub Pages (workflow + `base` path in `vite.config.ts`).
+- [x] Optional `/docs` route with install, configuration and provider setup guides.
+
+## Shipped — Landing page foundation
+- [x] Design system + global CSS.
+- [x] Hero with live terminal playback.
+
+## Deferred — not started
+- [ ] Real testimonial content once it exists (community block is already reserved).
+- [ ] Screenshots or a short GIF in the hero terminal.
+- [ ] Dark/light theme switch.
+
+## Next — optional, not started
+- [ ] Future interactive playground.
+"#;
+    fs::write(&todo_path, todo_md).unwrap();
+    fs::write(
+        wm.task_plan_path(),
+        "# Task Plan: Roadmap\n\n> Created: 2026-11-20 12:37:02\n> Mode: direct\n\n## Objectives & Steps:\n1. [x] Deploy to GitHub Pages (workflow + `base` path in `vite.config.ts`).\n2. [>] Optional `/docs` route with install, configuration and provider setup guides.\n",
+    )
+    .unwrap();
+
+    // 1. Neither `Deferred — not started` nor `Next — optional, not started` may be marked active!
+    let milestones = wm.read_roadmap_milestones();
+    assert!(
+        milestones.iter().all(|m| !m.is_active),
+        "Deferred/optional sections must never be auto-promoted as active: {:?}",
+        milestones
+            .iter()
+            .filter(|m| m.is_active)
+            .map(|m| (&m.id, &m.title))
+            .collect::<Vec<_>>()
+    );
+
+    // 2. Completing `"active"` updates step #2 in task_plan.md and must NOT touch Deferred items in todo.md!
+    let (modified, title) = wm.update_progress_detailed("active", "completed").unwrap();
+    assert!(modified);
+    assert!(title.contains("/docs"));
+    let todo_after = fs::read_to_string(&todo_path).unwrap();
+    assert!(
+        todo_after.contains("- [ ] Real testimonial content once it exists"),
+        "Deferred testimonial item must NEVER be marked [x] completed!\n{}",
+        todo_after
+    );
+    assert!(
+        !todo_after.contains("- [>] Screenshots or a short GIF"),
+        "Deferred item must NEVER be auto-promoted to [>]!\n{}",
+        todo_after
+    );
+
+    // 3. Plan summary and remaining hint must both agree: 2/2 completed, zero split-brain!
+    let summary = wm.read_active_plan_summary().unwrap();
+    assert_eq!(summary.completed_tasks, 2);
+    assert_eq!(summary.total_tasks, 2);
+    assert!(summary.active_task.is_none());
+    let hint = wm.format_remaining_tasks_hint();
+    assert!(
+        hint.contains("All 2/2 tasks are already marked `[x]` Completed"),
+        "got: {hint}"
+    );
+
+    // 4. Dropping a step inside an active milestone must preserve `## Shipped` and `## Deferred` sections!
+    let todo_with_drop_target = todo_md.replace(
+        "- [x] Optional `/docs` route with install, configuration and provider setup guides.",
+        "- [>] Optional `/docs` route with install, configuration and provider setup guides.\n- [ ] Extra removable step",
+    );
+    fs::write(&todo_path, &todo_with_drop_target).unwrap();
+    let dropped = wm
+        .drop_step_in_place("Extra removable step", Some("not needed"))
+        .unwrap();
+    assert_eq!(dropped, "Extra removable step");
+    let todo_after_drop = fs::read_to_string(&todo_path).unwrap();
+    assert!(
+        todo_after_drop.contains("## Shipped — Landing page foundation"),
+        "drop_step_in_place must preserve ## Shipped section!\n{}",
+        todo_after_drop
+    );
+    assert!(
+        todo_after_drop.contains("## Deferred — not started"),
+        "drop_step_in_place must preserve ## Deferred section!\n{}",
+        todo_after_drop
+    );
+    assert!(
+        !todo_after_drop.contains("Extra removable step"),
+        "Dropped step should be removed from active milestone"
+    );
+
+    fs::remove_dir_all(temp_dir).ok();
+}
+
+#[test]
+fn test_minitest74_update_progress_resolves_task_dag_node_ids() {
+    let temp_dir =
+        std::env::temp_dir().join(format!("minicode_test_dag_id_{}", uuid::Uuid::new_v4()));
+    fs::create_dir_all(temp_dir.join(".minicode/plan")).unwrap();
+
+    let wm = WorkingMemory::new(&temp_dir);
+    wm.init_plan(
+        "Landing page",
+        &[
+            "Design system + global CSS".to_string(),
+            "Compact fixed nav and footer".to_string(),
+        ],
+    )
+    .unwrap();
+    let dag = crate::context::memory::task_dag::PlanDag {
+        title: "Landing page".to_string(),
+        explicit_dependencies: true,
+        nodes: vec![
+            crate::context::memory::task_dag::PlanDagNode {
+                id: "t1_tokens".to_string(),
+                title: "Design system + global CSS".to_string(),
+                description: "Tokens".to_string(),
+                substeps: vec![],
+                target_files: vec![],
+                depends_on: vec![],
+                role: None,
+                verify_cmd: None,
+                status: TaskItemStatus::InProgress,
+            },
+            crate::context::memory::task_dag::PlanDagNode {
+                id: "t2_shell".to_string(),
+                title: "Compact fixed nav and footer".to_string(),
+                description: "Shell".to_string(),
+                substeps: vec![],
+                target_files: vec![],
+                depends_on: vec!["t1_tokens".to_string()],
+                role: None,
+                verify_cmd: None,
+                status: TaskItemStatus::Pending,
+            },
+        ],
+        created_at: "2026-11-20T00:00:00Z".to_string(),
+        updated_at: "2026-11-20T00:00:00Z".to_string(),
+    };
+    dag.save(&temp_dir).unwrap();
+
+    let (modified, title) = wm
+        .update_progress_detailed("t1_tokens", "completed")
+        .unwrap();
+    assert!(modified);
+    assert_eq!(title, "Design system + global CSS");
+
+    fs::remove_dir_all(temp_dir).ok();
+}

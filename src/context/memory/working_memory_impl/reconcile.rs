@@ -4777,11 +4777,30 @@ impl WorkingMemory {
     /// ONLY the remaining uncompleted task numbers/titles (if any) so the agent never wastes turns
     /// calling `update_progress` on steps that were already auto-reconciled to `[x]`.
     pub fn format_remaining_tasks_hint(&self) -> String {
-        let tasks = self.read_parsed_tasks();
+        let is_subplan = self.is_tactical_subplan();
+        let tasks = if is_subplan {
+            self.read_parsed_tasks()
+        } else {
+            let plan_tasks = self.read_task_plan_tasks();
+            let plan_has_open = plan_tasks.iter().any(|t| {
+                t.status == TaskItemStatus::InProgress || t.status == TaskItemStatus::Pending
+            });
+            if !plan_tasks.is_empty() && plan_has_open {
+                plan_tasks
+            } else if let Some(active_m) = self
+                .read_roadmap_milestones()
+                .into_iter()
+                .find(|m| m.is_active && !m.tasks.is_empty())
+            {
+                active_m.tasks
+            } else {
+                self.read_parsed_tasks()
+            }
+        };
         if tasks.is_empty() {
             return String::new();
         }
-        let macro_prefix = if self.is_tactical_subplan() {
+        let macro_prefix = if is_subplan {
             self.read_roadmap_milestones()
                 .into_iter()
                 .find(|m| m.is_active && m.tasks.len() > 1)

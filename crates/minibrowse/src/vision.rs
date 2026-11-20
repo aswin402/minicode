@@ -188,10 +188,22 @@ pub fn draw_annotations_bgra(
         if item.w <= 2 || item.h <= 2 {
             continue;
         }
-        let x0 = item.x.clamp(0, w_i32 - 2);
-        let y0 = item.y.clamp(0, h_i32 - 2);
-        let x1 = (item.x + item.w).clamp(x0 + 2, w_i32 - 1);
-        let y1 = (item.y + item.h).clamp(y0 + 2, h_i32 - 1);
+        // Skip boxes outside or barely grazing the visible frame so clamping never
+        // produces inverted bounds (`min > max`) or stacks offscreen badges on edges.
+        let right = item.x.saturating_add(item.w);
+        let bottom = item.y.saturating_add(item.h);
+        if item.x >= w_i32 - 2 || item.y >= h_i32 - 2 || right <= 2 || bottom <= 2 {
+            continue;
+        }
+        let max_origin_x = (w_i32 - 3).max(0);
+        let max_origin_y = (h_i32 - 3).max(0);
+        let x0 = item.x.clamp(0, max_origin_x);
+        let y0 = item.y.clamp(0, max_origin_y);
+        let x1 = right.min(w_i32 - 1);
+        let y1 = bottom.min(h_i32 - 1);
+        if x1 < x0 + 2 || y1 < y0 + 2 {
+            continue;
+        }
         let (r, g, b) = PALETTE[idx % PALETTE.len()];
 
         // 2px border outline
@@ -885,5 +897,55 @@ mod tests {
         assert!(diff.mismatch_pct > 0.1);
         assert!(!diff.changed_regions.is_empty());
         assert!(diff.diff_png.starts_with(b"\x89PNG\r\n\x1a\n"));
+    }
+
+    #[test]
+    fn test_draw_annotations_skips_offscreen_and_boundary_boxes_without_panicking() {
+        let mut frame = synthesize_gear0_frame(390, 844, &[], "https://example.com/mobile");
+        let stride = (frame.width as usize) * 4;
+        let boxes = vec![
+            // Exactly at bottom edge boundary (`y == h - 2`), previously panicked in `clamp(844, 843)`
+            AnnotationBox {
+                label: "e1".to_string(),
+                x: 16,
+                y: 842,
+                w: 120,
+                h: 40,
+            },
+            // Far below fold (scrollable page)
+            AnnotationBox {
+                label: "e2".to_string(),
+                x: 20,
+                y: 2500,
+                w: 200,
+                h: 48,
+            },
+            // Above fold / negative coordinates
+            AnnotationBox {
+                label: "e3".to_string(),
+                x: -100,
+                y: -200,
+                w: 80,
+                h: 32,
+            },
+            // Partially visible top-edge box (should draw cleanly)
+            AnnotationBox {
+                label: "e4".to_string(),
+                x: 10,
+                y: -10,
+                w: 100,
+                h: 44,
+            },
+            // Right-edge boundary (`x == w - 2`)
+            AnnotationBox {
+                label: "e5".to_string(),
+                x: 388,
+                y: 100,
+                w: 60,
+                h: 30,
+            },
+        ];
+        draw_annotations_bgra(&mut frame.bgra, frame.width, frame.height, stride, &boxes);
+        assert_eq!(frame.bgra.len(), stride * (frame.height as usize));
     }
 }

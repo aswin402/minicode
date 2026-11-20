@@ -906,6 +906,7 @@ impl AgentLoop {
                 &self.workspace_root,
                 &tool_call.name,
                 &tool_call.arguments,
+                Some(&tool_result.output),
             );
             if !tool_images.is_empty() {
                 tool_msg = tool_msg.with_images(tool_images);

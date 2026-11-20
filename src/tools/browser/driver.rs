@@ -2608,15 +2608,23 @@ pub fn prepare_cdp_script(script: &str) -> String {
 
     // Auto-invoke Playwright/Puppeteer-style uninvoked arrow or function expressions:
     // e.g. `() => { ... }`, `async () => { ... }`, `function() { ... }`, `async function() { ... }`
-    // Also repair unparenthesized `() => { ... }()` where the caller appended `()` without outer `(...)`.
-    if is_uninvoked_function_expression(trimmed_no_semi) {
-        return format!("({})()", trimmed_no_semi);
-    }
+    // First repair malformed block-body IIFEs missing the opening `(` (`async () => { ... })()`)
+    // or missing both outer parens (`() => { ... }()`), while leaving concise-body arrow
+    // expressions that legitimately end in a call (e.g. `() => document.title.trim()`) intact.
     if let Some(stripped) = trimmed_no_semi.strip_suffix("()") {
         let without_call = stripped.trim_end();
-        if is_uninvoked_function_expression(without_call) {
+        if without_call.ends_with('}') && is_uninvoked_function_expression(without_call) {
             return format!("({})()", without_call);
         }
+        if let Some(without_dangling_close) = without_call.strip_suffix(')') {
+            let candidate = without_dangling_close.trim_end();
+            if candidate.ends_with('}') && is_uninvoked_function_expression(candidate) {
+                return format!("({})()", candidate);
+            }
+        }
+    }
+    if is_uninvoked_function_expression(trimmed_no_semi) {
+        return format!("({})()", trimmed_no_semi);
     }
 
     let has_await = trimmed.contains("await ") || trimmed.starts_with("await ");
@@ -3246,6 +3254,18 @@ mod tests {
         assert_eq!(
             prep_unparen,
             "(() => { const el = document.getElementById('swarm'); return { top: 96 }; })()"
+        );
+
+        // Missing leading `(` on IIFE with trailing `})()` (minitest74 L459/L607/L818)
+        let missing_open_async = "async () => { await Promise.resolve(); return { ok: true }; })()";
+        assert_eq!(
+            prepare_cdp_script(missing_open_async),
+            "(async () => { await Promise.resolve(); return { ok: true }; })()"
+        );
+        let missing_open_sync = "() => { return document.title; })()";
+        assert_eq!(
+            prepare_cdp_script(missing_open_sync),
+            "(() => { return document.title; })()"
         );
 
         // JSON.stringify wrapping an async IIFE (minitest22 #148)

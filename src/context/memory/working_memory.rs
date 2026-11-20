@@ -842,6 +842,40 @@ impl WorkingMemory {
         tasks
     }
 
+    /// Returns `true` when a markdown roadmap section heading explicitly marks a non-active,
+    /// deferred, optional, future, or out-of-scope list (e.g. `## Next — optional, not started`,
+    /// `## Deferred — not started`, `## Future Ideas`, `## Explicitly not done`).
+    /// These sections stay visible for documentation and `/todo`, but must NEVER be auto-promoted
+    /// into an active execution milestone or mutated by `update_progress(step="active")`.
+    pub(crate) fn is_non_active_roadmap_heading(id: &str, title: &str) -> bool {
+        let combined = format!("{} {}", id, title).to_ascii_lowercase();
+        let trimmed = combined.trim();
+        if trimmed.starts_with("active milestone") {
+            return false;
+        }
+        const NON_ACTIVE_MARKERS: &[&str] = &[
+            "deferred",
+            "optional",
+            "not started",
+            "backlog",
+            "future",
+            "wishlist",
+            "ideas",
+            "out of scope",
+            "out-of-scope",
+            "non-goals",
+            "non goals",
+            "explicitly not done",
+            "not done",
+            "someday",
+            "stretch",
+            "nice to have",
+            "nice-to-have",
+            "parking lot",
+        ];
+        NON_ACTIVE_MARKERS.iter().any(|m| trimmed.contains(m))
+    }
+
     /// Parses roadmap milestones and their tasks from canonical `todo.md`
     /// (falling back to `task_plan.md` or the latest archived plan in `.minicode/plan/archive/`).
     pub fn read_roadmap_milestones(&self) -> Vec<MilestonePhase> {
@@ -928,13 +962,17 @@ impl WorkingMemory {
             milestones.push(make_milestone(current_id, current_title, current_tasks));
         }
 
-        // Determine active milestone dynamically:
-        // 1. First milestone with any InProgress task
-        // 2. Otherwise, first milestone with any Pending task
-        // 3. If all tasks across all milestones are completed, no milestone is active!
-        if let Some(active_idx) = milestones.iter().position(|m| m.in_progress_tasks > 0) {
+        // Determine active milestone dynamically (ignoring deferred/optional/backlog documentation sections):
+        // 1. First eligible milestone with any InProgress task
+        // 2. Otherwise, first eligible milestone with any Pending task
+        // 3. If all eligible tasks across active milestones are completed, no milestone is active!
+        if let Some(active_idx) = milestones.iter().position(|m| {
+            m.in_progress_tasks > 0 && !Self::is_non_active_roadmap_heading(&m.id, &m.title)
+        }) {
             milestones[active_idx].is_active = true;
-        } else if let Some(pending_idx) = milestones.iter().position(|m| m.pending_tasks > 0) {
+        } else if let Some(pending_idx) = milestones.iter().position(|m| {
+            m.pending_tasks > 0 && !Self::is_non_active_roadmap_heading(&m.id, &m.title)
+        }) {
             milestones[pending_idx].is_active = true;
         }
 
@@ -1191,10 +1229,7 @@ impl WorkingMemory {
             .any(|t| t.status == TaskItemStatus::InProgress || t.status == TaskItemStatus::Pending);
 
         let milestones = self.read_roadmap_milestones();
-        let active_milestone = milestones
-            .iter()
-            .find(|m| m.in_progress_tasks > 0)
-            .or_else(|| milestones.iter().find(|m| m.pending_tasks > 0));
+        let active_milestone = milestones.iter().find(|m| m.is_active);
 
         // 1. If task_plan has active or pending tactical tasks, display the tactical plan!
         if !task_plan_tasks.is_empty() && has_active_or_pending {
@@ -1288,8 +1323,9 @@ impl WorkingMemory {
         // prefer canonical `todo.md` milestone tasks (preserving macro steps and nested `sub_tasks`).
         if !task_plan_tasks.is_empty() {
             if self.canonical_todo_path().exists() {
-                if let Some(completed_milestone) = milestones.last().filter(|m| !m.tasks.is_empty())
-                {
+                if let Some(completed_milestone) = milestones.iter().rev().find(|m| {
+                    !m.tasks.is_empty() && !Self::is_non_active_roadmap_heading(&m.id, &m.title)
+                }) {
                     let phase_label = if completed_milestone.id == completed_milestone.title {
                         completed_milestone.id.clone()
                     } else {

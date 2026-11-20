@@ -448,6 +448,17 @@ pub async fn dispatch(
                     Some(crate::dev::models::RestartPolicy::Never)
                 };
 
+                let replaced_frontends: Vec<(String, String, Vec<u16>)> =
+                    if process_type == DevProcessType::Frontend {
+                        let target_dir = working_dir
+                            .as_ref()
+                            .map(|p| workspace_root.join(p))
+                            .unwrap_or_else(|| workspace_root.to_path_buf());
+                        registry.alive_frontend_servers_in_dir(&target_dir).await
+                    } else {
+                        Vec::new()
+                    };
+
                 let req = SpawnDevRequest {
                     command,
                     name,
@@ -619,8 +630,17 @@ pub async fn dispatch(
                     ));
                 }
 
+                for (old_id, old_name, old_ports) in &replaced_frontends {
+                    if old_id != summary.id.as_str() {
+                        msg.push_str(&format!(
+                            "\n• ♻ Replaced previous frontend server: '{}' (ID: {}, stopped ports: {:?}) — use {} for subsequent browser checks.",
+                            old_name, old_id, old_ports, url_str
+                        ));
+                    }
+                }
+
                 msg.push_str(
-                    "\n• 🔄 Lifecycle: Persistent daemon supervised across turns — keep running; do NOT call stop/kill at turn end unless requested by the user.",
+                    "\n• 🔄 Lifecycle: Supervised across tool calls during this task. Temporary QA/preview servers are automatically stopped when the turn completes unless the user explicitly asked to keep a live preview running.",
                 );
 
                 if let Some(crate::dev::models::PortResolution::Shifted { requested, resolved, conflict }) = &live_summary.port_resolution {

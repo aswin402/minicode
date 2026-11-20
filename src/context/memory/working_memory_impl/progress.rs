@@ -106,7 +106,24 @@ impl WorkingMemory {
                 "Bulk completion ('all' / 'remaining') is rejected. Each task step must be verified and updated individually.".to_string()
             ).into());
         }
-        let clean_needle = Self::sanitize_step_title(step_trimmed).to_ascii_lowercase();
+        // Resolve `task_dag.json` node IDs (e.g. `t1_tokens`, `t2_shell`) to their canonical step title
+        // so `update_progress(step="t1_tokens", status="completed")` works seamlessly.
+        let dag_resolved_title: Option<String> = if !step_trimmed.is_empty()
+            && !step_trimmed.eq_ignore_ascii_case("active")
+            && !step_trimmed.eq_ignore_ascii_case("current")
+            && !step_trimmed.eq_ignore_ascii_case("next")
+        {
+            crate::context::memory::task_dag::PlanDag::load(&self.workspace_root).and_then(|dag| {
+                dag.nodes
+                    .into_iter()
+                    .find(|n| n.id.eq_ignore_ascii_case(step_trimmed))
+                    .map(|n| n.title)
+            })
+        } else {
+            None
+        };
+        let effective_step = dag_resolved_title.as_deref().unwrap_or(step_trimmed);
+        let clean_needle = Self::sanitize_step_title(effective_step).to_ascii_lowercase();
 
         #[derive(Debug, Clone, Copy, PartialEq, Eq)]
         enum UpdateFileOutcome {
@@ -115,8 +132,12 @@ impl WorkingMemory {
             NotFound,
         }
 
-        // Helper to update a target markdown plan file and capture the exact matched step title
-        let update_file = |path: &Path| -> (UpdateFileOutcome, Option<String>) {
+        // Helper to update a target markdown plan file and capture the exact matched step title.
+        // When `override_title` is provided (e.g. syncing `todo.md` with the exact step updated in
+        // `task_plan.md`), match that exact title instead of re-evaluating `"active"` / index blindly.
+        let update_file = |path: &Path,
+                           override_title: Option<&str>|
+         -> (UpdateFileOutcome, Option<String>) {
             if !path.exists() {
                 return (UpdateFileOutcome::NotFound, None);
             }
@@ -124,15 +145,46 @@ impl WorkingMemory {
                 return (UpdateFileOutcome::NotFound, None);
             };
 
-            // First pass: identify all top-level parsed task items with their line indices
+            let local_override_needle = override_title
+                .map(|t| Self::sanitize_step_title(t).to_ascii_lowercase())
+                .filter(|s| !s.is_empty());
+            let local_is_active = local_override_needle.is_none() && is_target_active;
+            let local_is_next = local_override_needle.is_none() && is_target_next;
+            let local_target_index = if local_override_needle.is_some() {
+                None
+            } else {
+                target_index
+            };
+            let local_needle: &str = local_override_needle
+                .as_deref()
+                .unwrap_or(clean_needle.as_str());
+            let local_raw_step: &str = override_title.unwrap_or(effective_step);
+
+            // First pass: identify all top-level parsed task items with their line indices,
+            // tracking whether each item lives under a non-active/deferred roadmap heading.
             let raw_lines: Vec<&str> = content.lines().collect();
-            let mut parsed_items = Vec::new();
+            let mut parsed_items: Vec<(usize, super::TaskItem, bool)> = Vec::new();
+            let mut cur_heading_non_active = false;
             for (line_idx, &line) in raw_lines.iter().enumerate() {
+                let trimmed = line.trim();
+                if trimmed.starts_with("### ")
+                    || trimmed.starts_with("## ")
+                    || trimmed.starts_with("# ")
+                {
+                    let header_text = trimmed.trim_start_matches('#').trim();
+                    let (hid, htitle) = if let Some((a, b)) = header_text.split_once(':') {
+                        (a.trim(), b.trim())
+                    } else {
+                        (header_text, header_text)
+                    };
+                    cur_heading_non_active = Self::is_non_active_roadmap_heading(hid, htitle);
+                    continue;
+                }
                 if Self::is_indented_subtask_line(line) {
                     continue;
                 }
-                if let Some(item) = Self::parse_task_line(line_idx, line.trim()) {
-                    parsed_items.push((line_idx, item));
+                if let Some(item) = Self::parse_task_line(line_idx, trimmed) {
+                    parsed_items.push((line_idx, item, cur_heading_non_active));
                 }
             }
 
@@ -141,53 +193,78 @@ impl WorkingMemory {
             }
 
             // Determine matching item index in parsed_items
-            let matched_idx = if let Some(idx) = target_index {
-                if idx >= 1 && idx <= parsed_items.len() {
+            let matched_idx = if let Some(idx) = local_target_index {
+                let eligible: Vec<usize> = parsed_items
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, (_, _, non_act))| !*non_act)
+                    .map(|(p, _)| p)
+                    .collect();
+                if !eligible.is_empty() && idx >= 1 && idx <= eligible.len() {
+                    Some(eligible[idx - 1])
+                } else if idx >= 1 && idx <= parsed_items.len() {
                     Some(idx - 1)
                 } else {
                     None
                 }
-            } else if is_target_active {
+            } else if local_is_active {
                 parsed_items
                     .iter()
-                    .position(|(_, item)| item.status == TaskItemStatus::InProgress)
-                    .or_else(|| {
-                        parsed_items
-                            .iter()
-                            .position(|(_, item)| item.status == TaskItemStatus::Pending)
+                    .position(|(_, item, non_act)| {
+                        !*non_act && item.status == TaskItemStatus::InProgress
                     })
-            } else if is_target_next {
-                parsed_items
-                    .iter()
-                    .position(|(_, item)| item.status == TaskItemStatus::Pending)
+                    .or_else(|| {
+                        parsed_items.iter().position(|(_, item, non_act)| {
+                            !*non_act && item.status == TaskItemStatus::Pending
+                        })
+                    })
+            } else if local_is_next {
+                parsed_items.iter().position(|(_, item, non_act)| {
+                    !*non_act && item.status == TaskItemStatus::Pending
+                })
             } else {
                 let find_preferring_uncompleted =
-                    |pred: &dyn Fn(&(usize, super::TaskItem)) -> bool| -> Option<usize> {
+                    |pred: &dyn Fn(&(usize, super::TaskItem, bool)) -> bool| -> Option<usize> {
                         if is_done {
                             parsed_items
                                 .iter()
                                 .position(|entry| {
-                                    entry.1.status != TaskItemStatus::Completed && pred(entry)
+                                    !entry.2
+                                        && entry.1.status != TaskItemStatus::Completed
+                                        && pred(entry)
+                                })
+                                .or_else(|| {
+                                    parsed_items
+                                        .iter()
+                                        .position(|entry| !entry.2 && pred(entry))
+                                })
+                                .or_else(|| {
+                                    parsed_items.iter().position(|entry| {
+                                        entry.1.status != TaskItemStatus::Completed && pred(entry)
+                                    })
                                 })
                                 .or_else(|| parsed_items.iter().position(pred))
                         } else {
-                            parsed_items.iter().position(pred)
+                            parsed_items
+                                .iter()
+                                .position(|entry| !entry.2 && pred(entry))
+                                .or_else(|| parsed_items.iter().position(pred))
                         }
                     };
 
-                // Match by title substring or line substring (preferring uncompleted items when completing)
-                find_preferring_uncompleted(&|(_, item)| {
+                // Match by title substring or line substring (preferring active-section uncompleted items when completing)
+                find_preferring_uncompleted(&|(_, item, _)| {
                     let item_title = item.title.to_ascii_lowercase();
-                    item_title.contains(&clean_needle) || clean_needle.contains(&item_title)
+                    item_title.contains(local_needle) || local_needle.contains(&item_title)
                 })
                 .or_else(|| {
                     // Word-overlap / token similarity match if substring didn't match directly
                     let needle_words: std::collections::HashSet<&str> =
-                        clean_needle.split_whitespace().collect();
+                        local_needle.split_whitespace().collect();
                     if needle_words.is_empty() {
                         return None;
                     }
-                    find_preferring_uncompleted(&|(_, item)| {
+                    find_preferring_uncompleted(&|(_, item, _)| {
                         let title_lower = item.title.to_ascii_lowercase();
                         let item_words: std::collections::HashSet<&str> =
                             title_lower.split_whitespace().collect();
@@ -196,12 +273,12 @@ impl WorkingMemory {
                     })
                 })
                 .or_else(|| {
-                    find_preferring_uncompleted(&|(l_idx, _)| {
+                    find_preferring_uncompleted(&|(l_idx, _, _)| {
                         raw_lines
                             .get(*l_idx)
                             .copied()
                             .unwrap_or("")
-                            .contains(step_trimmed)
+                            .contains(local_raw_step)
                     })
                 })
             };
@@ -219,15 +296,17 @@ impl WorkingMemory {
                 return (UpdateFileOutcome::AlreadyInStatus, Some(matched_item_title));
             }
 
-            let mut all_items: Vec<super::TaskItem> =
-                parsed_items.iter().map(|(_, item)| item.clone()).collect();
+            let mut all_items: Vec<super::TaskItem> = parsed_items
+                .iter()
+                .map(|(_, item, _)| item.clone())
+                .collect();
 
             // Guard against double-stepping when `step="active"` is called right after
             // background reconciliation (`reconcile_workspace_tasks`,
             // `reconcile_preceding_tasks_on_step_transition`, or
             // `reconcile_verification_substep_on_tool_transition`) already auto-completed the
             // previous step (`target_pos - 1`) and auto-promoted `target_pos` to `[>]`.
-            if is_target_active
+            if local_is_active
                 && is_done
                 && target_pos > 0
                 && parsed_items[target_pos - 1].1.status == TaskItemStatus::Completed
@@ -259,9 +338,12 @@ impl WorkingMemory {
             let mut auto_completed_earlier_lines: std::collections::HashSet<usize> =
                 std::collections::HashSet::new();
             if is_done && target_pos > 0 {
-                for (pos, (l_idx, item)) in parsed_items.iter().enumerate().take(target_pos) {
-                    if (item.status == TaskItemStatus::InProgress
-                        || item.status == TaskItemStatus::Pending)
+                for (pos, (l_idx, item, non_act)) in
+                    parsed_items.iter().enumerate().take(target_pos)
+                {
+                    if !*non_act
+                        && (item.status == TaskItemStatus::InProgress
+                            || item.status == TaskItemStatus::Pending)
                         && self.are_task_deliverables_verified_on_disk(pos, &all_items)
                     {
                         auto_completed_earlier_lines.insert(*l_idx);
@@ -270,29 +352,38 @@ impl WorkingMemory {
                 }
             }
 
-            // Check if any other item in the file is already InProgress (excluding earlier steps auto-completed above)
-            let has_other_active = parsed_items.iter().enumerate().any(|(pos, (l_idx, item))| {
-                pos != target_pos
-                    && item.status == TaskItemStatus::InProgress
-                    && !auto_completed_earlier_lines.contains(l_idx)
-            });
+            // Check if any other eligible item in the file is already InProgress (excluding earlier steps auto-completed above)
+            let has_other_active =
+                parsed_items
+                    .iter()
+                    .enumerate()
+                    .any(|(pos, (l_idx, item, non_act))| {
+                        pos != target_pos
+                            && !*non_act
+                            && item.status == TaskItemStatus::InProgress
+                            && !auto_completed_earlier_lines.contains(l_idx)
+                    });
 
             // Dynamic Auto-Advancement Invariant:
             // When completing a task and no other task remains active `[>]`, select the next
-            // pending top-level task after `target_pos`, or wrap around to the earliest remaining
-            // pending top-level task before `target_pos` (for out-of-order completions).
+            // pending top-level task in an active/eligible section after `target_pos`, or wrap around
+            // to the earliest remaining eligible pending top-level task before `target_pos`.
             let next_active_line_idx: Option<usize> = if is_done && !has_other_active {
                 parsed_items
                     .iter()
                     .skip(target_pos + 1)
-                    .find(|(_, item)| item.status == TaskItemStatus::Pending)
+                    .find(|(_, item, non_act)| !*non_act && item.status == TaskItemStatus::Pending)
                     .or_else(|| {
-                        parsed_items.iter().take(target_pos).find(|(l_idx, item)| {
-                            item.status == TaskItemStatus::Pending
-                                && !auto_completed_earlier_lines.contains(l_idx)
-                        })
+                        parsed_items
+                            .iter()
+                            .take(target_pos)
+                            .find(|(l_idx, item, non_act)| {
+                                !*non_act
+                                    && item.status == TaskItemStatus::Pending
+                                    && !auto_completed_earlier_lines.contains(l_idx)
+                            })
                     })
-                    .map(|(l_idx, _)| *l_idx)
+                    .map(|(l_idx, _, _)| *l_idx)
             } else {
                 None
             };
@@ -390,6 +481,7 @@ impl WorkingMemory {
         let pre_todo_tasks = self
             .read_roadmap_milestones()
             .into_iter()
+            .filter(|m| !Self::is_non_active_roadmap_heading(&m.id, &m.title))
             .flat_map(|m| m.tasks)
             .collect::<Vec<_>>();
         let plan_has_uncompleted = pre_plan_tasks
@@ -469,7 +561,7 @@ impl WorkingMemory {
             };
             (op, UpdateFileOutcome::NotFound, macro_title)
         } else if has_active_subplan {
-            let (op, title_p) = update_file(&self.task_plan_path());
+            let (op, title_p) = update_file(&self.task_plan_path(), None);
             if op != UpdateFileOutcome::NotFound {
                 (op, UpdateFileOutcome::NotFound, title_p)
             } else if let Some((active_m_idx, active_m_task)) = active_macro {
@@ -590,11 +682,22 @@ impl WorkingMemory {
                 )
             }
         } else if !pre_plan_tasks.is_empty() && !plan_has_uncompleted && todo_has_uncompleted {
-            let (ot, title_t) = update_file(&self.canonical_todo_path());
+            let (ot, title_t) = update_file(&self.canonical_todo_path(), None);
+            if ot == UpdateFileOutcome::Modified {
+                self.sync_direct_task_plan_from_todo();
+            }
             (UpdateFileOutcome::NotFound, ot, title_t)
         } else {
-            let (op, title_p) = update_file(&self.task_plan_path());
-            let (ot, title_t) = update_file(&self.canonical_todo_path());
+            let (op, title_p) = update_file(&self.task_plan_path(), None);
+            let todo_sync_override =
+                if (is_target_active || is_target_next || target_index.is_some())
+                    && op != UpdateFileOutcome::NotFound
+                {
+                    title_p.as_deref()
+                } else {
+                    None
+                };
+            let (ot, title_t) = update_file(&self.canonical_todo_path(), todo_sync_override);
             (op, ot, title_p.or(title_t))
         };
 
@@ -675,8 +778,8 @@ impl WorkingMemory {
                 // Auto-bootstrap active plan with this initial step so the agent workflow continues seamlessly
                 let clean_title = Self::sanitize_step_title(step);
                 let _ = self.init_plan("Development Plan", std::slice::from_ref(&clean_title));
-                let _ = update_file(&self.task_plan_path());
-                let _ = update_file(&self.canonical_todo_path());
+                let _ = update_file(&self.task_plan_path(), None);
+                let _ = update_file(&self.canonical_todo_path(), None);
                 let timestamp = Utc::now().format(TIMESTAMP_FORMAT).to_string();
                 let entry = format!("\n- [{}] **{}**: {}\n", timestamp, status, clean_title);
                 let _ = fs::OpenOptions::new()
@@ -927,31 +1030,123 @@ impl WorkingMemory {
         fs::create_dir_all(&dir).map_err(|e| ContextError::Memory(e.to_string()))?;
         let timestamp = Utc::now().format(TIMESTAMP_FORMAT).to_string();
 
-        let todo_path = self.canonical_todo_path();
-        if let Some(parent) = todo_path.parent() {
-            let _ = fs::create_dir_all(parent);
-        }
-        let mut todo_out = format!(
-            "# Tasks & Milestone Roadmap: {}\n\n> Updated: {}\n\n## Active Milestone: {}\n",
-            title, timestamp, title
-        );
-        for task in tasks {
-            let marker = match task.status {
-                TaskItemStatus::Completed => "[x]",
-                TaskItemStatus::InProgress => "[>]",
-                TaskItemStatus::Pending => "[ ]",
-            };
-            todo_out.push_str(&format!("- {} {}\n", marker, task.title));
-            for sub in &task.sub_tasks {
-                let sub_marker = match sub.status {
+        let format_task_lines = |items: &[super::TaskItem]| -> Vec<String> {
+            let mut out = Vec::new();
+            for task in items {
+                let marker = match task.status {
                     TaskItemStatus::Completed => "[x]",
                     TaskItemStatus::InProgress => "[>]",
                     TaskItemStatus::Pending => "[ ]",
                 };
-                todo_out.push_str(&format!("  - {} {}\n", sub_marker, sub.title));
+                out.push(format!("- {} {}", marker, task.title));
+                for sub in &task.sub_tasks {
+                    let sub_marker = match sub.status {
+                        TaskItemStatus::Completed => "[x]",
+                        TaskItemStatus::InProgress => "[>]",
+                        TaskItemStatus::Pending => "[ ]",
+                    };
+                    out.push(format!("  - {} {}", sub_marker, sub.title));
+                }
+            }
+            out
+        };
+
+        let todo_path = self.canonical_todo_path();
+        if let Some(parent) = todo_path.parent() {
+            let _ = fs::create_dir_all(parent);
+        }
+        let mut patched_in_place = false;
+        if let Ok(existing) = fs::read_to_string(&todo_path) {
+            let raw_lines: Vec<&str> = existing.lines().collect();
+            // Locate markdown sections (`##` / `###`) so we preserve all other sections
+            // (e.g. `## Shipped`, `## Deferred — not started`, `## Explicitly not done`).
+            struct SecSpan {
+                heading_idx: usize,
+                end_idx: usize,
+                non_active: bool,
+                in_progress: usize,
+                pending: usize,
+                total_tasks: usize,
+                is_active_milestone_hdr: bool,
+            }
+            let mut sections: Vec<SecSpan> = Vec::new();
+            for (idx, line) in raw_lines.iter().enumerate() {
+                let trimmed = line.trim();
+                if trimmed.starts_with("## ") || trimmed.starts_with("### ") {
+                    if let Some(prev) = sections.last_mut() {
+                        prev.end_idx = idx;
+                    }
+                    let hdr = trimmed.trim_start_matches('#').trim();
+                    let (hid, htitle) = hdr
+                        .split_once(':')
+                        .map(|(a, b)| (a.trim(), b.trim()))
+                        .unwrap_or((hdr, hdr));
+                    sections.push(SecSpan {
+                        heading_idx: idx,
+                        end_idx: raw_lines.len(),
+                        non_active: Self::is_non_active_roadmap_heading(hid, htitle),
+                        in_progress: 0,
+                        pending: 0,
+                        total_tasks: 0,
+                        is_active_milestone_hdr: hdr
+                            .to_ascii_lowercase()
+                            .starts_with("active milestone"),
+                    });
+                } else if let Some(cur) = sections.last_mut() {
+                    if !Self::is_indented_subtask_line(line) {
+                        if let Some(item) = Self::parse_task_line(idx, trimmed) {
+                            cur.total_tasks += 1;
+                            match item.status {
+                                TaskItemStatus::InProgress => cur.in_progress += 1,
+                                TaskItemStatus::Pending => cur.pending += 1,
+                                TaskItemStatus::Completed => {}
+                            }
+                        }
+                    }
+                }
+            }
+            let target_sec = sections
+                .iter()
+                .find(|s| !s.non_active && s.in_progress > 0)
+                .or_else(|| sections.iter().find(|s| !s.non_active && s.pending > 0))
+                .or_else(|| sections.iter().find(|s| s.is_active_milestone_hdr))
+                .or_else(|| sections.iter().find(|s| !s.non_active && s.total_tasks > 0));
+            if let Some(sec) = target_sec {
+                if sections.len() > 1 {
+                    let mut out_lines: Vec<String> = Vec::with_capacity(raw_lines.len() + 8);
+                    for line in &raw_lines[..=sec.heading_idx] {
+                        if line.trim_start().starts_with("> Updated:") {
+                            out_lines.push(format!("> Updated: {}", timestamp));
+                        } else {
+                            out_lines.push((*line).to_string());
+                        }
+                    }
+                    out_lines.extend(format_task_lines(tasks));
+                    if sec.end_idx < raw_lines.len() {
+                        out_lines.push(String::new());
+                        out_lines.extend(raw_lines[sec.end_idx..].iter().map(|s| (*s).to_string()));
+                    }
+                    let mut final_text = out_lines.join("\n");
+                    if !final_text.ends_with('\n') {
+                        final_text.push('\n');
+                    }
+                    fs::write(&todo_path, final_text)
+                        .map_err(|e| ContextError::Memory(e.to_string()))?;
+                    patched_in_place = true;
+                }
             }
         }
-        fs::write(&todo_path, todo_out).map_err(|e| ContextError::Memory(e.to_string()))?;
+        if !patched_in_place {
+            let mut todo_out = format!(
+                "# Tasks & Milestone Roadmap: {}\n\n> Updated: {}\n\n## Active Milestone: {}\n",
+                title, timestamp, title
+            );
+            for line in format_task_lines(tasks) {
+                todo_out.push_str(&line);
+                todo_out.push('\n');
+            }
+            fs::write(&todo_path, todo_out).map_err(|e| ContextError::Memory(e.to_string()))?;
+        }
 
         if !self.is_tactical_subplan() {
             let mut plan_out = format!(

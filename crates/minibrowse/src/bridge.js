@@ -1341,12 +1341,39 @@
           : fwin.innerWidth ||
             (fdoc.documentElement && fdoc.documentElement.clientWidth) ||
             vw;
+      var isClippedHorizontally = function (node) {
+        var cur = node && node.parentElement;
+        while (cur && cur !== fdoc.documentElement) {
+          try {
+            var pcs = fwin.getComputedStyle(cur);
+            if (
+              pcs &&
+              (pcs.overflowX === "hidden" ||
+                pcs.overflowX === "clip" ||
+                pcs.overflowX === "auto" ||
+                pcs.overflowX === "scroll" ||
+                pcs.overflow === "hidden" ||
+                pcs.overflow === "clip" ||
+                pcs.overflow === "auto" ||
+                pcs.overflow === "scroll")
+            ) {
+              var pr = cur.getBoundingClientRect();
+              if (pr.right <= fvw + 2 && pr.left >= -2) {
+                return true;
+              }
+            }
+          } catch (_) {}
+          cur = cur.parentElement;
+        }
+        return false;
+      };
       var allEls = fdoc.querySelectorAll("body *");
       for (var i = 0; i < allEls.length && overflowCulprits.length < 12; i++) {
         var el = allEls[i];
         var rect = el.getBoundingClientRect();
         if (rect.width <= 0 || rect.height <= 0) continue;
         if (rect.right > fvw + 2 || rect.left < -2) {
+          if (isClippedHorizontally(el)) continue;
           var cs = fwin.getComputedStyle(el);
           overflowCulprits.push({
             selector: shortSelector(el),
@@ -1868,6 +1895,8 @@
 
   function collectInteractiveBoxes(maxCount) {
     var limit = typeof maxCount === "number" && maxCount > 0 ? maxCount : 50;
+    var vw = window.innerWidth || document.documentElement.clientWidth || 1280;
+    var vh = window.innerHeight || document.documentElement.clientHeight || 900;
     var docs = collectAccessibleDocuments();
     var out = [];
     for (var d = 0; d < docs.length && out.length < limit; d++) {
@@ -1881,6 +1910,14 @@
         var el = nodes[i];
         var rect = el.getBoundingClientRect();
         if (rect.width < 4 || rect.height < 4) continue;
+        var absLeft = Math.round(rect.left + frame.offsetX);
+        var absTop = Math.round(rect.top + frame.offsetY);
+        var absW = Math.round(rect.width);
+        var absH = Math.round(rect.height);
+        // Only annotate elements currently intersecting the visible viewport
+        if (absLeft + absW <= 2 || absTop + absH <= 2 || absLeft >= vw - 2 || absTop >= vh - 2) {
+          continue;
+        }
         try {
           var cs = (frame.win || window).getComputedStyle(el);
           if (cs.display === "none" || cs.visibility === "hidden" || cs.opacity === "0") continue;
@@ -1891,10 +1928,10 @@
           : "e" + String(out.length + 1);
         out.push({
           label: label,
-          x: Math.round(rect.left + frame.offsetX),
-          y: Math.round(rect.top + frame.offsetY),
-          w: Math.round(rect.width),
-          h: Math.round(rect.height)
+          x: absLeft,
+          y: absTop,
+          w: absW,
+          h: absH
         });
       }
     }

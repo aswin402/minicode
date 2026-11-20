@@ -175,6 +175,7 @@ impl BrowserController {
             || lower.contains("disconnected")
             || lower.contains("unexpected eof")
             || lower.contains("timeout waiting for cdp method 'page.reload'")
+            || lower.contains("timeout waiting for cdp method 'page.navigate'")
     }
 
     /// Navigates to a URL with automatic engine fallback and returns a structured ARIA snapshot
@@ -3168,12 +3169,26 @@ render(0);
             if let Some((w, h, mobile, scale)) = device_override {
                 cdp.emulate_device(w, h, mobile, scale).await?;
             }
-            let verified_vp = cdp
-                .evaluate_js("window.innerWidth + 'x' + window.innerHeight")
-                .await
-                .ok()
-                .map(|s| s.trim().trim_matches('"').to_string())
-                .filter(|s| !s.is_empty());
+            let expected_vp = device_override.map(|(w, h, _, _)| format!("{w}x{h}"));
+            let mut verified_vp = None;
+            let max_polls = if expected_vp.is_some() { 10 } else { 1 };
+            for poll_idx in 0..max_polls {
+                let current_vp = cdp
+                    .evaluate_js("window.innerWidth + 'x' + window.innerHeight")
+                    .await
+                    .ok()
+                    .map(|s| s.trim().trim_matches('"').to_string())
+                    .filter(|s| !s.is_empty());
+                if current_vp.is_some() {
+                    verified_vp = current_vp;
+                }
+                if expected_vp.is_none() || verified_vp == expected_vp {
+                    break;
+                }
+                if poll_idx + 1 < max_polls {
+                    tokio::time::sleep(std::time::Duration::from_millis(30)).await;
+                }
+            }
             if let Some(vp) = verified_vp {
                 results.push(format!("{msg} [Verified live viewport: {vp}px]"));
             } else {

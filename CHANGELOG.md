@@ -5,6 +5,30 @@ All notable changes to **minicode** will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.60] — 2026-11-20
+
+### Todo Roadmap & DAG Node ID Hardening, MiniBrowse Headless Stability & Annotated Vision Fix, Reviewer Synthesis Preservation, & `minitest74` Fixes
+
+#### 📋 Todo / Plan Roadmap Scoping, Non-Destructive Sync & DAG Node ID Resolution (`src/context/memory/{working_memory.rs,working_memory_impl/{progress,reconcile,tests}.rs}`)
+- **Eliminated Deferred-Section Hijacking, `todo.md` Corruption & Split-Brain Plan Counts**:
+  - Added `is_non_active_roadmap_heading()` in `working_memory.rs` so `## Deferred`, `## Next — optional, not started`, `## Backlog`, `## Future`, and `## Out of Scope` headings are never auto-promoted as active milestones by `read_roadmap_milestones()` or `read_active_plan_summary()`.
+  - Updated `update_progress_detailed` (`progress.rs`) to resolve `.minicode/plan/task_dag.json` node IDs (e.g., `t1_tokens`, `t2_shell`) to their canonical step titles, skip deferred/optional headings during `"active"` / `"next"` auto-advancement, pass the matched `task_plan.md` step title when syncing `todo.md` so deferred items are never falsely checked `[x]`, and surgically rewrite only the active milestone section inside `minikit_docs/core/todo.md` (preserving `## Shipped`, `## Deferred`, and other sections).
+  - Aligned `format_remaining_tasks_hint()` (`reconcile.rs`) with `read_active_plan_summary()` so `update_progress` never reports contradictory task counts (`1/5` vs `8/8`).
+
+#### 🌐 MiniBrowse Headless Stability, Annotated Screenshot Fix, Auto-Vision Attachment & Emulation Sync (`crates/minibrowse/src/{vision,webview}.rs`, `crates/minibrowse/src/bridge.js`, `src/tools/browser/{mod,driver}.rs`, `src/agent/{subagent/worker,loop_impl/tool_finalize}.rs`)
+- **Zero-Crash Annotated Screenshots, Single-GTK-Thread Hibernation & Reliable Viewport Audits**:
+  - Fixed `draw_annotations_bgra()` (`vision.rs`) panicking (`clamp(y0 + 2, h - 1)` with `min > max`) on offscreen/boundary interactive elements by safely clipping/skipping out-of-frame boxes, and filtered `collectInteractiveBoxes` (`bridge.js`) to elements intersecting the visible viewport.
+  - Updated `extract_tool_image_attachments()` (`worker.rs`, `tool_finalize.rs`) to extract auto-generated screenshot paths from `browser_screenshot` output when no explicit `path` argument is passed so multimodal models always receive the PNG attachment.
+  - Replaced GTK main-loop teardown (`gtk_main_quit()`) in `hibernate_gear1()` (`webview.rs`) with live WebKitWebProcess memory recycling (`TrimMemory { recycle_idle_renderer: true }`) on the persistent `minibrowse-gtk` thread, raised default `MINIBROWSE_HIBERNATE_SECS` from `90` to `300`, and added `timeout waiting for cdp method 'page.navigate'` to `is_recoverable_cdp_channel_error()` (`browser/mod.rs`) for single-retry engine recovery.
+  - Added live viewport readiness polling (`window.innerWidth x window.innerHeight`) in `emulate_device_and_network()` (`browser/mod.rs`) so `browser_emulate` never reports stale dimensions immediately after resize.
+  - Added block-body IIFE missing-`(` auto-repair (`async () => { ... })()`) in `prepare_cdp_script()` (`browser/driver.rs`) and clipped-ancestor horizontal overflow filtering (`isClippedHorizontally`) in `auditWebDebug()` (`bridge.js`).
+
+#### 🛡️ Reviewer Synthesis Preservation & MiniTask Frontend Replacement Clarity (`src/agent/subagent/worker.rs`, `src/tools/registry/{minipower_tools,dev_tools}.rs`, `src/dev/registry.rs`)
+- **Complete Code Reviews & Transparent Dev-Server Lifecycle**:
+  - Added up to 2 synthesis nudges in `SubagentWorker::execute_turn_loop` when a synthesis turn returns empty prose, and wrapped any preamble-only fallback with an explicit incomplete-synthesis warning + `STATUS: DONE_WITH_CONCERNS`.
+  - Raised `power_review` Reviewer token budget floors (`85_000` initial / `55_000` re-review) and scoped the reviewer file list via `extract_changed_files_from_diff()` to actually touched files.
+  - Reported singleton frontend dev-server replacement (`♻ Replaced previous frontend server`) via `DevProcessRegistry::alive_frontend_servers_in_dir()` and clarified temporary QA server auto-stop behavior in `minitask(action="start")` output.
+
 ## [0.5.59] — 2026-11-20
 
 ### Deterministic Background `minitask` / Browser Teardown & Zero-Lost Async Boomerang Wakeup, MiniBrowse Default Persistence & Exact 1:1 Headless DPI, & `minitest73` Verification / Reviewer / Memory Hardening

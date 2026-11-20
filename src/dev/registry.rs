@@ -798,6 +798,31 @@ impl MiniDevRegistry {
         (count, mem_mb, cpu_pct)
     }
 
+    /// Returns `(id, name, ports)` for all alive `Frontend` dev servers running in `target_dir`.
+    /// Used by `minitask(action="start")` to report singleton frontend server replacements accurately.
+    pub async fn alive_frontend_servers_in_dir(
+        &self,
+        target_dir: &Path,
+    ) -> Vec<(String, String, Vec<u16>)> {
+        let handles: Vec<Arc<DevProcessHandle>> = {
+            let lock = self.processes.read().await;
+            lock.values()
+                .filter(|h| {
+                    h.process_type == DevProcessType::Frontend && h.working_dir == target_dir
+                })
+                .cloned()
+                .collect()
+        };
+        let mut alive = Vec::new();
+        for h in handles {
+            if h.status.read().await.is_alive() {
+                let ports = h.ports.read().await.clone();
+                alive.push((h.id.to_string(), h.name.clone(), ports));
+            }
+        }
+        alive
+    }
+
     /// Spawns and registers a new development daemon or process.
     pub async fn spawn(
         &self,

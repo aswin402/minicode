@@ -729,17 +729,28 @@ impl SupervisorState {
         Ok(true)
     }
 
-    fn hibernate_gear1(&mut self) {
+    /// Reclaims idle headless WebKitWebProcess RAM WITHOUT tearing down the single-threaded
+    /// GTK3 main loop (re-initializing GTK/WebKit on a fresh OS thread violates GTK thread
+    /// affinity and causes CDP channel drops / `Page.navigate` hangs on wake).
+    async fn hibernate_gear1(&mut self) {
         if !self.opts.headless {
             return;
         }
-        if let Some(wk) = self.webkit.take() {
-            let _ = wk.send(WebKitActorCmd::Shutdown);
+        if let Some(ref wk) = self.webkit {
+            let (tx, rx) = oneshot::channel();
+            if wk
+                .send(WebKitActorCmd::TrimMemory {
+                    recycle_idle_renderer: true,
+                    reply: tx,
+                })
+                .is_ok()
+            {
+                let _ = tokio::time::timeout(Duration::from_secs(3), rx).await;
+            }
             for tab in self.tabs.values_mut() {
                 tab.webkit_synced_url = None;
                 tab.suspended = true;
             }
-            self.set_kind_label("pure-rust-dom");
             trim_process_heap();
         }
     }
@@ -1017,7 +1028,7 @@ async fn run_adaptive_supervisor(
     let hibernate_secs = std::env::var("MINIBROWSE_HIBERNATE_SECS")
         .ok()
         .and_then(|s| s.parse::<u64>().ok())
-        .unwrap_or(90)
+        .unwrap_or(300)
         .max(10);
     let gui_freeze_secs = std::env::var("MINIBROWSE_GUI_FREEZE_SECS")
         .ok()
@@ -1103,12 +1114,13 @@ async fn run_adaptive_supervisor(
             }
             () = tokio::time::sleep(Duration::from_secs(15)), if sup.webkit.is_some() => {
                 if sup.opts.headless {
+                    let has_unsuspended = sup.tabs.values().any(|t| !t.suspended);
                     let all_idle = sup
                         .tabs
                         .values()
                         .all(|t| t.last_active.elapsed() >= Duration::from_secs(hibernate_secs));
-                    if all_idle && !sup.is_any_tab_playing_audio().await {
-                        sup.hibernate_gear1();
+                    if has_unsuspended && all_idle && !sup.is_any_tab_playing_audio().await {
+                        sup.hibernate_gear1().await;
                         continue;
                     }
                 } else {

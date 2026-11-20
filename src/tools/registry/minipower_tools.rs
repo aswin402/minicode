@@ -509,6 +509,37 @@ pub(crate) fn rank_reviewer_workspace_files(workspace_root: &Path, limit: usize)
     ranked
 }
 
+/// Extracts changed file paths from a unified diff (`diff --git a/... b/<path>` or `+++ b/<path>`)
+/// so the Reviewer subagent only inspects files actually touched in this review scope instead of
+/// dumping 30 unrelated workspace files into its prompt.
+fn extract_changed_files_from_diff(raw_diff: &str) -> Vec<String> {
+    let mut files = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    for line in raw_diff.lines() {
+        let candidate = if let Some(rest) = line.strip_prefix("+++ b/") {
+            Some(rest.trim())
+        } else if let Some(rest) = line.strip_prefix("+++ ") {
+            let trimmed = rest.trim();
+            if trimmed == "/dev/null" || trimmed.is_empty() {
+                None
+            } else {
+                Some(trimmed.strip_prefix("b/").unwrap_or(trimmed))
+            }
+        } else if let Some(rest) = line.strip_prefix("diff --git ") {
+            rest.split(" b/").nth(1).map(str::trim)
+        } else {
+            None
+        };
+        if let Some(path) = candidate {
+            let clean = path.trim_matches('"').replace('\\', "/");
+            if !clean.is_empty() && clean != "/dev/null" && seen.insert(clean.clone()) {
+                files.push(clean);
+            }
+        }
+    }
+    files
+}
+
 async fn run_reviewer_subagent(
     workspace_root: &Path,
     stage: &str,
@@ -588,7 +619,11 @@ async fn run_reviewer_subagent(
     } else {
         config.max_turns.min(8)
     };
-    config = config.with_explicit_max_turns(Some(turn_cap));
+    let reviewer_token_floor = if is_rereview { 55_000 } else { 85_000 };
+    let reviewer_token_budget = config.token_budget.max(reviewer_token_floor);
+    config = config
+        .with_explicit_max_turns(Some(turn_cap))
+        .with_explicit_token_budget(Some(reviewer_token_budget));
     config.tool_whitelist.retain(|t| !t.starts_with("browser_"));
     match crate::agent::orchestrator::MultiAgentOrchestrator::delegate_with_config(
         workspace_root,
@@ -1422,6 +1457,12 @@ pub async fn dispatch(
                     } else {
                         format!("{formatted}\n---\n{reviewer_rubric}")
                     };
+                    let diff_changed_files = extract_changed_files_from_diff(&raw_audited_diff);
+                    let reviewer_target_files: Vec<String> = if !mp_task.target_files.is_empty() {
+                        mp_task.target_files.clone()
+                    } else {
+                        diff_changed_files
+                    };
                     formatted.push_str(
                         &run_reviewer_subagent(
                             workspace_root,
@@ -1429,7 +1470,7 @@ pub async fn dispatch(
                             staged_only,
                             is_rereview,
                             &subagent_payload,
-                            &mp_task.target_files,
+                            &reviewer_target_files,
                         )
                         .await,
                     );
@@ -2125,5 +2166,35 @@ mod tests {
             0,
             true
         ));
+    }
+
+    #[test]
+    fn test_extract_changed_files_from_diff_scopes_reviewer_to_touched_files() {
+        let diff = "\
+diff --git a/src/App.tsx b/src/App.tsx
+--- a/src/App.tsx
++++ b/src/App.tsx
+@@ -1,3 +1,4 @@
++import { DocsPage } from '@/pages/DocsPage';
+diff --git a/src/pages/DocsPage.tsx b/src/pages/DocsPage.tsx
+--- /dev/null
++++ b/src/pages/DocsPage.tsx
+@@ -0,0 +1,5 @@
++export function DocsPage() { return null; }
+diff --git a/old.ts b/old.ts
+--- a/old.ts
++++ /dev/null
+@@ -1,2 +0,0 @@
+-export const x = 1;
+";
+        let files = extract_changed_files_from_diff(diff);
+        assert_eq!(
+            files,
+            vec![
+                "src/App.tsx".to_string(),
+                "src/pages/DocsPage.tsx".to_string(),
+                "old.ts".to_string()
+            ]
+        );
     }
 }
