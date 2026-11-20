@@ -97,7 +97,7 @@ impl<'a> App<'a> {
                     self.config
                         .provider
                         .api_keys
-                        .insert(prov_name.clone(), entered_key.clone());
+                        .insert(prov_name.to_lowercase(), entered_key.clone());
                     std::env::set_var(&env_name, &entered_key);
                     let _ = self.config.save(Some(&self.workspace_root));
                     self.timeline

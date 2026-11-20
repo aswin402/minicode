@@ -5,6 +5,24 @@ All notable changes to **minicode** will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.58] — 2026-11-20
+
+### Unified Global Settings & Credentials Sync (`/settings` ↔ `minicode setup`), Full 23-Provider Setup Catalog & Windowed Selector Scrolling
+
+#### 🔄 Global Config & `.env` Sync Across `/settings`, `/switch`, & `minicode setup` (`src/config_impl/load_and_merge.rs`, `src/ui/configure.rs`, `src/ui/modals/settings.rs`, `src/app/modals_impl/settings_key.rs`, `src/app/modals.rs`)
+- **Global-First Persistence & Always-Synced Credentials**:
+  - Defaulted `/settings` (`SettingsModalState::from_config`) to Global persistence (`~/.config/minicode/config.toml`) instead of silently switching to workspace-only writes whenever `.minicode/config.toml` exists, and unified all `/settings` save actions through `persist_settings_modal` so changes stay synchronized globally and across existing workspace snapshots (with secrets stripped from workspace files).
+  - Added `Config::save_global_credentials()` so API keys and custom endpoints remain globally persisted even when a user explicitly toggles Workspace scope in `/settings`.
+  - Added `Config::sync_global_dotenv()` (with `0o600` Unix permissions) called on every global save and unified `ConfigMenu::save_all_with_dirs` onto `Config::resolve_global_config_dir()` and atomic `write_config_to_path_with_options`, preventing stale `~/.config/minicode/.env` files or stray workspace `.env` creation.
+  - Added `Config::load_global_dotenv_respecting_toml()` so older `.env` entries never shadow newer `[provider.api_keys]` in `~/.config/minicode/config.toml`, while still importing `.env`-only keys and always honoring explicit shell environment variables.
+  - Added per-provider `[key]` / `[local]` / `[no key]` status badges and direct `[e]` / `Enter` API key editing inside `/settings` → **Providers**.
+
+#### ⚡ Full 23-Provider `minicode setup` Catalog & Scrollable Selector (`src/ui/setup/{wizard,selector}.rs`, `tests/integration_setup_wizard.rs`)
+- **1:1 Provider Parity & Legacy Workspace Rescue**:
+  - Expanded `SetupWizard::provider_catalog()` from 10 to all **23** canonical providers matching `SUPPORTED_PROVIDERS` (including Anthropic, Kimi, Hugging Face, NVIDIA NIM, OpenCode Zen, Cerebras, Agnes, Nara, Ofox, AIHubMix, LM Studio, vLLM, and Localhost) plus any user-defined `custom_endpoints` / `api_keys`.
+  - Added `SetupWizard::load_global_config_for_setup()` to rescue any legacy `[provider.api_keys]` / `[provider.custom_endpoints]` left in `<workspace>/.minicode/config.toml`, synced `config.provider.model` when switching active providers (`activate_provider`), and displayed configured API key counts & masked active-provider key badges.
+  - Added terminal-height-aware windowed scrolling (`InteractiveSelector::render_lines_windowed`) with `Showing X-Y of Z (↑/↓)` indicators so long provider lists render cleanly without ANSI cursor overflow on short terminals.
+
 ## [0.5.57] — 2026-11-20
 
 ### Low-RAM Release Builds & Updater, Multi-Provider Network/Regional Failover & Live Model Discovery, Deterministic `minitask` / Browser / Subagent Process Cleanup, Subagent Turn-Cap & Context-Amnesia Fixes, & `minitest72` Forensic Hardening

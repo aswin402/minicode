@@ -649,3 +649,65 @@ fn test_temp_dir_workspace_only_isolated_in_test_harness() {
         std::path::Path::new("/repo/target/debug/deps/minicode-deadbeef0123.exe")
     ));
 }
+
+#[test]
+fn test_sync_global_dotenv_writes_all_configured_api_keys() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut cfg = Config::default();
+    cfg.provider
+        .api_keys
+        .insert("anthropic".to_string(), "sk-ant-test-111".to_string());
+    cfg.provider
+        .api_keys
+        .insert("minimax".to_string(), "sk-mm-test-222".to_string());
+    cfg.provider
+        .api_keys
+        .insert("kimi".to_string(), "sk-kimi-test-333".to_string());
+
+    cfg.sync_global_dotenv(dir.path());
+
+    let env_text = std::fs::read_to_string(dir.path().join(".env")).unwrap();
+    assert!(env_text.contains("ANTHROPIC_API_KEY=sk-ant-test-111"));
+    assert!(env_text.contains("MINIMAX_API_KEY=sk-mm-test-222"));
+    assert!(env_text.contains("KIMI_API_KEY=sk-kimi-test-333"));
+}
+
+#[test]
+fn test_load_global_dotenv_respects_newer_toml_and_imports_missing_keys() {
+    let dir = tempfile::tempdir().unwrap();
+    let env_path = dir.path().join(".env");
+    std::env::remove_var("CEREBRAS_API_KEY");
+    std::env::remove_var("AGNES_API_KEY");
+
+    std::fs::write(
+        &env_path,
+        "CEREBRAS_API_KEY=old-stale-dotenv-key\nAGNES_API_KEY=dotenv-only-key\n",
+    )
+    .unwrap();
+
+    // Simulate config.toml having a newer mtime than .env with an updated cerebras key
+    let newer_toml_mtime = std::time::SystemTime::now() + std::time::Duration::from_secs(60);
+    let mut cfg = Config::default();
+    cfg.provider
+        .api_keys
+        .insert("cerebras".to_string(), "new-toml-key".to_string());
+
+    cfg.load_global_dotenv_respecting_toml(&env_path, Some(newer_toml_mtime));
+
+    // Newer config.toml key must NOT be shadowed by older .env
+    assert_eq!(
+        cfg.provider.api_keys.get("cerebras").map(String::as_str),
+        Some("new-toml-key")
+    );
+    assert_eq!(cfg.get_api_key("cerebras").unwrap(), "new-toml-key");
+
+    // Key only present in .env MUST be imported into api_keys so /settings & setup see it
+    assert_eq!(
+        cfg.provider.api_keys.get("agnes").map(String::as_str),
+        Some("dotenv-only-key")
+    );
+    assert_eq!(cfg.get_api_key("agnes").unwrap(), "dotenv-only-key");
+
+    std::env::remove_var("CEREBRAS_API_KEY");
+    std::env::remove_var("AGNES_API_KEY");
+}

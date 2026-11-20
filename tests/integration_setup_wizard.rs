@@ -99,21 +99,34 @@ fn test_setup_wizard_provider_catalog_completeness() {
     let catalog = SetupWizard::provider_catalog();
     assert_eq!(
         catalog.len(),
-        10,
-        "Expected exactly 10 canonical providers in catalog"
+        minicode::constants::SUPPORTED_PROVIDERS.len(),
+        "SetupWizard::provider_catalog must cover every provider in SUPPORTED_PROVIDERS"
     );
 
     let expected_providers = [
+        ("anthropic", "ANTHROPIC_API_KEY"),
         ("openrouter", "OPENROUTER_API_KEY"),
         ("gemini", "GEMINI_API_KEY"),
         ("openai", "OPENAI_API_KEY"),
         ("deepseek", "DEEPSEEK_API_KEY"),
         ("groq", "GROQ_API_KEY"),
-        ("minimax", "MINIMAX_API_KEY"),
         ("z.ai", "ZHIPU_API_KEY"),
+        ("kimi", "KIMI_API_KEY"),
+        ("huggingface", "HF_TOKEN"),
+        ("nvidia", "NVIDIA_API_KEY"),
+        ("opencode", "OPENCODE_API_KEY"),
+        ("cerebras", "CEREBRAS_API_KEY"),
+        ("agnes", "AGNES_API_KEY"),
+        ("nara", "NARA_API_KEY"),
+        ("ofox", "OFOX_API_KEY"),
+        ("aihubmix", "AIHUBMIX_API_KEY"),
+        ("minimax", "MINIMAX_API_KEY"),
         ("together", "TOGETHER_API_KEY"),
         ("mistral", "MISTRAL_API_KEY"),
         ("ollama", "OLLAMA_API_KEY"),
+        ("lmstudio", "LMSTUDIO_API_KEY"),
+        ("vllm", "VLLM_API_KEY"),
+        ("localhost", "LOCALHOST_API_KEY"),
     ];
 
     for (id, expected_env) in expected_providers {

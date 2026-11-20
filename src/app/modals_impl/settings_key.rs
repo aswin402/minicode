@@ -6,6 +6,29 @@ use crate::ui::Theme;
 use crossterm::event::KeyCode;
 use tokio::sync::mpsc;
 
+/// Persists `/settings` changes to the active scope while ALWAYS keeping global credentials
+/// (`[provider.api_keys]` & `[provider.custom_endpoints]`) synced in `~/.config/minicode`.
+fn persist_settings_modal(
+    config: &crate::config::Config,
+    workspace_root: &std::path::Path,
+    save_to_workspace: bool,
+    update_workspace_pref: bool,
+) {
+    if save_to_workspace {
+        let _ = config.save_workspace(workspace_root);
+        let _ = config.save_global_credentials();
+        if update_workspace_pref {
+            let _ = crate::config::Config::save_workspace_preference(
+                workspace_root,
+                &config.provider.default,
+                &config.provider.model,
+            );
+        }
+    } else {
+        let _ = config.save(Some(workspace_root));
+    }
+}
+
 impl<'a> App<'a> {
     pub(super) async fn handle_settings_and_config_modal_key(
         &mut self,
@@ -43,11 +66,12 @@ impl<'a> App<'a> {
                         KeyCode::Char('a') => {
                             self.config.sync_all_minipubs_to_orchestrator();
                             state.sync_from_config(&self.config);
-                            if state.save_to_workspace {
-                                let _ = self.config.save(Some(&self.workspace_root));
-                            } else {
-                                let _ = self.config.save(None);
-                            }
+                            persist_settings_modal(
+                                &self.config,
+                                &self.workspace_root,
+                                state.save_to_workspace,
+                                false,
+                            );
                             let _ = self.sync_orchestrator_config(control_tx);
                             self.toasts.push_status(
                                 "Synced all 14 MiniPubs to Global (Orchestrator) 4-slot chain"
@@ -78,11 +102,12 @@ impl<'a> App<'a> {
                                 ));
                             }
                             state.sync_from_config(&self.config);
-                            if state.save_to_workspace {
-                                let _ = self.config.save(Some(&self.workspace_root));
-                            } else {
-                                let _ = self.config.save(None);
-                            }
+                            persist_settings_modal(
+                                &self.config,
+                                &self.workspace_root,
+                                state.save_to_workspace,
+                                false,
+                            );
                             let _ = self.sync_orchestrator_config(control_tx);
                         }
                         KeyCode::Char('f') | KeyCode::Char('F') | KeyCode::Char('*') => {
@@ -97,11 +122,12 @@ impl<'a> App<'a> {
                                     state.provider_models[state.model_selected_index].id.clone();
                                 let added = self.config.toggle_favorite_model(&prov, &chosen_model);
                                 state.sync_from_config(&self.config);
-                                if state.save_to_workspace {
-                                    let _ = self.config.save(Some(&self.workspace_root));
-                                } else {
-                                    let _ = self.config.save(None);
-                                }
+                                persist_settings_modal(
+                                    &self.config,
+                                    &self.workspace_root,
+                                    state.save_to_workspace,
+                                    false,
+                                );
                                 if added {
                                     self.toasts.push_status(format!(
                                         "Added '{}/{}' to favorite models",
@@ -148,20 +174,13 @@ impl<'a> App<'a> {
                                 );
                                 state.sync_from_config(&self.config);
 
-                                // Save to target config layer
-                                if state.save_to_workspace {
-                                    let _ = self.config.save_workspace(&self.workspace_root);
-                                    if target_slug == "global" && slot_num == 1 {
-                                        let _ = crate::config::Config::save_workspace_preference(
-                                            &self.workspace_root,
-                                            &prov,
-                                            &chosen_model,
-                                        );
-                                    }
-                                } else {
-                                    let _ = self.config.save(None);
-                                    let _ = self.config.save(Some(&self.workspace_root));
-                                }
+                                // Save to target config layer (always keeping global credentials synced)
+                                persist_settings_modal(
+                                    &self.config,
+                                    &self.workspace_root,
+                                    state.save_to_workspace,
+                                    target_slug == "global" && slot_num == 1,
+                                );
 
                                 if close_drilldown {
                                     state.clear_drilldown();
@@ -237,11 +256,12 @@ impl<'a> App<'a> {
                     {
                         self.config.sync_all_minipubs_to_orchestrator();
                         state.sync_from_config(&self.config);
-                        if state.save_to_workspace {
-                            let _ = self.config.save(Some(&self.workspace_root));
-                        } else {
-                            let _ = self.config.save(None);
-                        }
+                        persist_settings_modal(
+                            &self.config,
+                            &self.workspace_root,
+                            state.save_to_workspace,
+                            false,
+                        );
                         let _ = self.sync_orchestrator_config(control_tx);
                         self.toasts.push_status(
                             "Synced all 14 MiniPubs to Global (Orchestrator) 4-slot chain"
@@ -326,11 +346,12 @@ impl<'a> App<'a> {
                             }
                         }
                         state.sync_from_config(&self.config);
-                        if state.save_to_workspace {
-                            let _ = self.config.save(Some(&self.workspace_root));
-                        } else {
-                            let _ = self.config.save(None);
-                        }
+                        persist_settings_modal(
+                            &self.config,
+                            &self.workspace_root,
+                            state.save_to_workspace,
+                            false,
+                        );
                         let _ = self.sync_orchestrator_config(control_tx);
                     }
                     KeyCode::Char('1')
@@ -353,11 +374,12 @@ impl<'a> App<'a> {
                             self.config
                                 .set_slot_for_target(target_slug, slot_num, Some(slot));
                             state.sync_from_config(&self.config);
-                            if state.save_to_workspace {
-                                let _ = self.config.save(Some(&self.workspace_root));
-                            } else {
-                                let _ = self.config.save(None);
-                            }
+                            persist_settings_modal(
+                                &self.config,
+                                &self.workspace_root,
+                                state.save_to_workspace,
+                                target_slug == "global" && slot_num == 1,
+                            );
                             let _ = self.sync_orchestrator_config(control_tx);
                             let slot_name = match slot_num {
                                 1 => "Primary",
@@ -386,19 +408,50 @@ impl<'a> App<'a> {
                             self.config
                                 .set_slot_for_target(target_slug, slot_num, Some(slot));
                             state.sync_from_config(&self.config);
+                            persist_settings_modal(
+                                &self.config,
+                                &self.workspace_root,
+                                state.save_to_workspace,
+                                target_slug == "global" && slot_num == 1,
+                            );
+                            let _ = self.sync_orchestrator_config(control_tx);
                             self.toasts.push_status(format!(
                                 "Set Slot {} for {} to '{}/{}'",
                                 slot_num, target_label, prov, model
                             ));
                         }
                     }
+                    KeyCode::Char('e') | KeyCode::Char('E') if in_provider_picker => {
+                        if state.selected_index < crate::constants::SUPPORTED_PROVIDERS.len() {
+                            let prov = crate::constants::SUPPORTED_PROVIDERS[state.selected_index];
+                            if self.config.is_local_provider(prov) {
+                                self.toasts.push_status(format!(
+                                    "'{}' is a local provider and does not require an API key",
+                                    prov
+                                ));
+                            } else {
+                                let env_str = crate::ui::setup::SetupWizard::custom_env_var(prov);
+                                self.modal =
+                                    ModalState::new_api_key_input(prov.to_string(), env_str, None);
+                            }
+                        }
+                    }
                     KeyCode::Enter if in_provider_picker => {
                         if state.selected_index < crate::constants::SUPPORTED_PROVIDERS.len() {
                             let prov = crate::constants::SUPPORTED_PROVIDERS[state.selected_index];
                             let prov_str = prov.to_string();
+                            let is_local = self.config.is_local_provider(prov);
+                            let api_key = self.config.get_api_key(prov).unwrap_or_default();
+
+                            // If cloud provider has no API key yet, prompt directly for the key
+                            // (which persists to global ~/.config/minicode/config.toml & .env).
+                            if !is_local && api_key.trim().is_empty() {
+                                let env_str = crate::ui::setup::SetupWizard::custom_env_var(prov);
+                                self.modal = ModalState::new_api_key_input(prov_str, env_str, None);
+                                return;
+                            }
 
                             // Fetch live models with fallback to static catalog
-                            let api_key = self.config.get_api_key(prov).unwrap_or_default();
                             let custom_url = self.config.get_provider_base_url(prov);
                             let live_models = self
                                 .model_fetcher
@@ -715,17 +768,12 @@ impl<'a> App<'a> {
                             state.browser_headless_priority.clone();
                         self.config.browser.gui_priority = state.browser_gui_priority.clone();
 
-                        if state.save_to_workspace {
-                            let _ = self.config.save_workspace(&self.workspace_root);
-                            let _ = crate::config::Config::save_workspace_preference(
-                                &self.workspace_root,
-                                &self.config.provider.default,
-                                &self.config.provider.model,
-                            );
-                        } else {
-                            let _ = self.config.save(None);
-                            let _ = self.config.save(Some(&self.workspace_root));
-                        }
+                        persist_settings_modal(
+                            &self.config,
+                            &self.workspace_root,
+                            state.save_to_workspace,
+                            true,
+                        );
 
                         let config_changed = old_provider != self.config.provider.default
                             || old_model != self.config.provider.model

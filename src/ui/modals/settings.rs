@@ -203,9 +203,25 @@ pub struct SettingsModalState {
     pub minipub_sync_with_orchestrator: bool,
     pub minipub_default_chain: crate::config::MiniPubModelChain,
     pub minipub_role_models: std::collections::HashMap<String, crate::config::MiniPubModelChain>,
+    /// Snapshot of which providers have configured API keys (`provider -> masked key`) for UI badges.
+    pub configured_provider_keys: std::collections::HashMap<String, String>,
 }
 
 impl SettingsModalState {
+    fn snapshot_provider_keys(config: &Config) -> std::collections::HashMap<String, String> {
+        let mut map = std::collections::HashMap::new();
+        for &prov in SUPPORTED_PROVIDERS {
+            if config.is_local_provider(prov) {
+                map.insert(prov.to_string(), "local".to_string());
+            } else if let Ok(key) = config.get_api_key(prov) {
+                if !key.trim().is_empty() {
+                    map.insert(prov.to_string(), crate::config::mask_api_key(&key));
+                }
+            }
+        }
+        map
+    }
+
     /// Constructs a new `SettingsModalState` from current runtime configuration and workspace root.
     pub fn from_config(config: &Config, workspace_root: &Path) -> Self {
         let workspace_path = if let Ok(home) = std::env::var("HOME") {
@@ -219,18 +235,10 @@ impl SettingsModalState {
             workspace_root.display().to_string()
         };
 
-        let has_local_config = workspace_root
-            .join(crate::constants::WORKSPACE_DIR_NAME)
-            .join(crate::constants::CONFIG_FILE_NAME)
-            .exists();
-        let has_global_config = dirs::config_dir()
-            .map(|d| {
-                d.join(crate::constants::CONFIG_DIR_NAME)
-                    .join(crate::constants::CONFIG_FILE_NAME)
-                    .exists()
-            })
-            .unwrap_or(false);
-        let save_to_workspace = has_local_config || !has_global_config;
+        // Default to Global (~/.config/minicode/config.toml) so provider/model/autonomy changes
+        // made in `/settings` are immediately shared across repositories and visible in `minicode setup`.
+        // Users can still explicitly toggle Workspace scope on the Workspace tab when desired.
+        let save_to_workspace = false;
 
         Self {
             active_tab: SettingsTab::Providers,
@@ -271,6 +279,7 @@ impl SettingsModalState {
             minipub_sync_with_orchestrator: config.agent.minipub.sync_with_orchestrator,
             minipub_default_chain: config.agent.minipub.default_chain.clone(),
             minipub_role_models: config.agent.minipub.role_models.clone(),
+            configured_provider_keys: Self::snapshot_provider_keys(config),
         }
     }
 
@@ -291,6 +300,7 @@ impl SettingsModalState {
         self.minipub_sync_with_orchestrator = config.agent.minipub.sync_with_orchestrator;
         self.minipub_default_chain = config.agent.minipub.default_chain.clone();
         self.minipub_role_models = config.agent.minipub.role_models.clone();
+        self.configured_provider_keys = Self::snapshot_provider_keys(config);
     }
 
     /// Returns `(slug, display_label)` for the currently selected routing target scope.
@@ -754,6 +764,22 @@ fn render_provider_and_model_picker(
                 ),
             ];
 
+            match state
+                .configured_provider_keys
+                .get(*provider)
+                .map(String::as_str)
+            {
+                Some("local") => {
+                    spans.push(Span::styled("[local] ", Style::default().fg(theme.info)));
+                }
+                Some(_) => {
+                    spans.push(Span::styled("[key] ", Style::default().fg(theme.success)));
+                }
+                None => {
+                    spans.push(Span::styled("[no key] ", Style::default().fg(theme.muted)));
+                }
+            }
+
             if is_s1 {
                 spans.push(Span::styled(
                     "[primary] ",
@@ -787,7 +813,7 @@ fn render_provider_and_model_picker(
         content_lines.push(Line::from(vec![
             Span::raw("    "),
             Span::styled(
-                "[Enter] Browse Models  ·  [Space/1] Set Primary  ·  [2/3/4] Set Fallback Slot",
+                "[Enter] Browse Models  ·  [e] Set API Key  ·  [Space/1] Set Primary  ·  [2/3/4] Set Fallback Slot",
                 Style::default().fg(theme.muted),
             ),
         ]));
@@ -2217,5 +2243,39 @@ pub mod tests {
                 render_settings(f, area, &theme, &state);
             })
             .unwrap();
+    }
+
+    #[test]
+    fn test_settings_modal_defaults_to_global_and_tracks_provider_keys() {
+        let temp_dir = TempDir::new().unwrap();
+        // Even if a workspace `.minicode/config.toml` already exists, `/settings` must
+        // default to Global persistence so changes stay synced with `~/.config/minicode`.
+        let local_dir = temp_dir.path().join(".minicode");
+        std::fs::create_dir_all(&local_dir).unwrap();
+        std::fs::write(
+            local_dir.join("config.toml"),
+            "[provider]\ndefault = \"gemini\"\n",
+        )
+        .unwrap();
+
+        let mut config = Config::default();
+        config
+            .provider
+            .api_keys
+            .insert("minimax".to_string(), "sk-mm-1234567890".to_string());
+
+        let state = SettingsModalState::from_config(&config, temp_dir.path());
+        assert!(
+            !state.save_to_workspace,
+            "SettingsModalState must default to Global scope (save_to_workspace = false)"
+        );
+        assert!(state.configured_provider_keys.contains_key("minimax"));
+        assert_eq!(
+            state
+                .configured_provider_keys
+                .get("ollama")
+                .map(String::as_str),
+            Some("local")
+        );
     }
 }

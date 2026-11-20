@@ -205,47 +205,15 @@ impl Config {
     }
 
     /// Loads configuration respecting the hierarchy:
-    /// 1. Project-local `.minicode/config.toml` (if present; newer global `[ui]`/autonomy preferences win over stale snapshots)
-    /// 2. Global `~/.config/minicode/config.toml` (if present)
-    /// 3. Project-local `mcp.json` or `.minicode/mcp.json` (if present)
-    /// 4. Built-in defaults
-    /// 5. Environment variable overrides (MINICODE_*)
+    /// 1. Global `~/.config/minicode/config.toml` (if present)
+    /// 2. Project-local `.minicode/config.toml` (if present; newer global `[ui]`/autonomy preferences win over stale snapshots)
+    /// 3. Global `~/.config/minicode/.env` (without letting stale `.env` keys shadow newer `config.toml` `[provider.api_keys]`) and workspace `.env`
+    /// 4. Project-local `mcp.json` or `.minicode/mcp.json` (if present)
+    /// 5. Environment variable overrides (`MINICODE_*` and explicit shell API keys)
     pub fn load(workspace_dir: Option<&Path>, custom_config_path: Option<&Path>) -> Result<Self> {
         let global_cfg_dir = Self::resolve_global_config_dir();
-
-        // 0. Load global ~/.config/minicode/.env if present
-        if let Some(ref global_dir) = global_cfg_dir {
-            let global_env = global_dir.join(crate::constants::ENV_FILE_NAME);
-            match dotenvy::from_path(&global_env) {
-                Ok(_) => {}
-                Err(dotenvy::Error::Io(e)) if e.kind() == std::io::ErrorKind::NotFound => {}
-                Err(e) => {
-                    tracing::warn!(path = %global_env.display(), error = %e, "Failed to parse global .env file");
-                }
-            }
-        }
-
-        // 1. Load workspace .env if present
-        if let Some(dir) = workspace_dir {
-            let env_file = dir.join(crate::constants::ENV_FILE_NAME);
-            match dotenvy::from_path(&env_file) {
-                Ok(_) => {}
-                Err(dotenvy::Error::Io(e)) if e.kind() == std::io::ErrorKind::NotFound => {}
-                Err(e) => {
-                    tracing::warn!(path = %env_file.display(), error = %e, "Failed to parse workspace .env file");
-                }
-            }
-        }
-        if workspace_dir.is_none() {
-            if let Err(e) = dotenvy::dotenv() {
-                if !matches!(e, dotenvy::Error::Io(ref io_err) if io_err.kind() == std::io::ErrorKind::NotFound)
-                {
-                    tracing::warn!(error = %e, "Failed to parse default .env file");
-                }
-            }
-        }
-
         let mut config = Config::default();
+        let mut global_toml_mtime: Option<std::time::SystemTime> = None;
 
         // 1. Try custom config path if explicitly specified
         if let Some(path) = custom_config_path {
@@ -262,6 +230,7 @@ impl Config {
                     .and_then(|m| m.modified().ok());
                 if let Some(raw) = Self::load_raw_from_file(&global_config)? {
                     if let Some(mt) = g_mtime {
+                        global_toml_mtime = Some(mt);
                         global_loaded = Some((raw.clone(), mt));
                     }
                     config.merge_raw(raw);
@@ -285,6 +254,32 @@ impl Config {
                             config.merge_ui_and_autonomy_from_raw(&g_raw);
                         }
                     }
+                }
+            }
+        }
+
+        // 3b. Load global ~/.config/minicode/.env (preserving newer `config.toml` keys & shell env)
+        if let Some(ref global_dir) = global_cfg_dir {
+            let global_env = global_dir.join(crate::constants::ENV_FILE_NAME);
+            config.load_global_dotenv_respecting_toml(&global_env, global_toml_mtime);
+        }
+
+        // 3c. Load workspace .env if present
+        if let Some(dir) = workspace_dir {
+            let env_file = dir.join(crate::constants::ENV_FILE_NAME);
+            match dotenvy::from_path(&env_file) {
+                Ok(_) => {}
+                Err(dotenvy::Error::Io(e)) if e.kind() == std::io::ErrorKind::NotFound => {}
+                Err(e) => {
+                    tracing::warn!(path = %env_file.display(), error = %e, "Failed to parse workspace .env file");
+                }
+            }
+        }
+        if workspace_dir.is_none() {
+            if let Err(e) = dotenvy::dotenv() {
+                if !matches!(e, dotenvy::Error::Io(ref io_err) if io_err.kind() == std::io::ErrorKind::NotFound)
+                {
+                    tracing::warn!(error = %e, "Failed to parse default .env file");
                 }
             }
         }
@@ -334,13 +329,208 @@ impl Config {
         self.write_config_to_path_with_options(&local_path, strip_secrets)
     }
 
+    /// Maps a known provider API-key environment variable name to its canonical provider ID.
+    fn provider_id_for_env_var(env_name: &str) -> Option<&'static str> {
+        match env_name {
+            "ANTHROPIC_API_KEY" => Some("anthropic"),
+            "OPENROUTER_API_KEY" | "OPENROUTER_KEY" => Some("openrouter"),
+            "GEMINI_API_KEY" | "GOOGLE_API_KEY" => Some("gemini"),
+            "OPENAI_API_KEY" => Some("openai"),
+            "DEEPSEEK_API_KEY" => Some("deepseek"),
+            "GROQ_API_KEY" => Some("groq"),
+            "MINIMAX_API_KEY" => Some("minimax"),
+            "ZHIPU_API_KEY" | "Z_AI_API_KEY" | "GLM_API_KEY" | "BIGMODEL_API_KEY" => Some("z.ai"),
+            "TOGETHER_API_KEY" => Some("together"),
+            "MISTRAL_API_KEY" => Some("mistral"),
+            "HF_TOKEN" | "HUGGINGFACE_API_KEY" | "HUGGINGFACE_TOKEN" => Some("huggingface"),
+            "NVIDIA_API_KEY" | "NGC_API_KEY" => Some("nvidia"),
+            "OPENCODE_API_KEY" | "OPENCODE_ZEN_API_KEY" => Some("opencode"),
+            "CEREBRAS_API_KEY" => Some("cerebras"),
+            "AGNES_API_KEY" => Some("agnes"),
+            "NARA_API_KEY" | "NARAROUTER_API_KEY" => Some("nara"),
+            "OFOX_API_KEY" | "OFOXAI_API_KEY" => Some("ofox"),
+            "AIHUBMIX_API_KEY" => Some("aihubmix"),
+            "KIMI_API_KEY" | "MOONSHOT_API_KEY" => Some("kimi"),
+            "OLLAMA_API_KEY" => Some("ollama"),
+            "LMSTUDIO_API_KEY" => Some("lmstudio"),
+            "VLLM_API_KEY" => Some("vllm"),
+            "LOCALHOST_API_KEY" => Some("localhost"),
+            _ => None,
+        }
+    }
+
+    /// Loads global `~/.config/minicode/.env` without letting stale `.env` entries shadow
+    /// newer `[provider.api_keys]` saved in `~/.config/minicode/config.toml`, while also
+    /// importing `.env`-only provider keys into `self.provider.api_keys`.
+    pub(crate) fn load_global_dotenv_respecting_toml(
+        &mut self,
+        global_env: &Path,
+        global_toml_mtime: Option<std::time::SystemTime>,
+    ) {
+        let env_mtime = std::fs::metadata(global_env)
+            .ok()
+            .and_then(|m| m.modified().ok());
+        let toml_is_newer_or_equal = match (global_toml_mtime, env_mtime) {
+            (Some(t_mt), Some(e_mt)) => t_mt >= e_mt,
+            _ => false,
+        };
+        let iter = match dotenvy::from_path_iter(global_env) {
+            Ok(it) => it,
+            Err(dotenvy::Error::Io(e)) if e.kind() == std::io::ErrorKind::NotFound => return,
+            Err(e) => {
+                tracing::warn!(
+                    path = %global_env.display(),
+                    error = %e,
+                    "Failed to parse global .env file"
+                );
+                return;
+            }
+        };
+
+        for item in iter {
+            let Ok((key, val)) = item else {
+                continue;
+            };
+            let trimmed_val = val.trim();
+            if trimmed_val.is_empty() {
+                continue;
+            }
+
+            let mapped_provider: Option<String> = Self::provider_id_for_env_var(&key)
+                .map(str::to_string)
+                .or_else(|| {
+                    self.provider
+                        .api_keys
+                        .keys()
+                        .find(|p| crate::ui::setup::SetupWizard::custom_env_var(p) == key)
+                        .cloned()
+                });
+
+            if let Some(prov_id) = mapped_provider {
+                let toml_has_key = self
+                    .provider
+                    .api_keys
+                    .get(&prov_id)
+                    .is_some_and(|k| !k.trim().is_empty());
+
+                if toml_has_key && toml_is_newer_or_equal {
+                    continue;
+                }
+
+                self.provider
+                    .api_keys
+                    .insert(prov_id, trimmed_val.to_string());
+            }
+
+            if std::env::var_os(&key).is_none() {
+                std::env::set_var(&key, trimmed_val);
+            }
+        }
+    }
+
+    /// Syncs all non-empty entries in `self.provider.api_keys` to `<global_dir>/.env` with
+    /// owner-only permissions (`0o600` on Unix) so global `config.toml` and `.env` stay 100%
+    /// aligned across `/settings`, `/switch`, `ApiKeyInput`, and `minicode setup`.
+    pub(crate) fn sync_global_dotenv(&self, global_dir: &Path) {
+        if self.provider.api_keys.is_empty() {
+            return;
+        }
+        let global_env_path = global_dir.join(crate::constants::ENV_FILE_NAME);
+        for (provider, key) in &self.provider.api_keys {
+            let trimmed = key.trim();
+            if trimmed.is_empty() {
+                continue;
+            }
+            let env_name = crate::ui::setup::SetupWizard::custom_env_var(provider);
+            if !env_name.is_empty() {
+                let _ =
+                    crate::ui::configure::update_dotenv_file(&global_env_path, &env_name, trimmed);
+            }
+        }
+        #[cfg(unix)]
+        if global_env_path.exists() {
+            use std::os::unix::fs::PermissionsExt;
+            let _ =
+                std::fs::set_permissions(&global_env_path, std::fs::Permissions::from_mode(0o600));
+        }
+    }
+
+    /// Persists ONLY global credentials (`[provider.api_keys]` and `[provider.custom_endpoints]`)
+    /// to global `~/.config/minicode/config.toml` & `.env` so API keys added while Workspace scope
+    /// is toggled in `/settings` are never dropped or trapped inside a single project.
+    pub fn save_global_credentials(&self) -> Result<()> {
+        if self.provider.api_keys.is_empty() && self.provider.custom_endpoints.is_empty() {
+            return Ok(());
+        }
+        if let Some(global_dir) = Self::resolve_global_config_dir() {
+            let global_path = global_dir.join(crate::constants::CONFIG_FILE_NAME);
+            let mut patch_root = toml::map::Map::new();
+            let mut provider_tbl = toml::map::Map::new();
+            if !self.provider.api_keys.is_empty() {
+                let mut keys_tbl = toml::map::Map::new();
+                for (k, v) in &self.provider.api_keys {
+                    if !v.trim().is_empty() {
+                        keys_tbl.insert(k.clone(), toml::Value::String(v.trim().to_string()));
+                    }
+                }
+                if !keys_tbl.is_empty() {
+                    provider_tbl.insert("api_keys".to_string(), toml::Value::Table(keys_tbl));
+                }
+            }
+            if !self.provider.custom_endpoints.is_empty() {
+                let mut ep_tbl = toml::map::Map::new();
+                for (k, v) in &self.provider.custom_endpoints {
+                    if !v.trim().is_empty() {
+                        ep_tbl.insert(k.clone(), toml::Value::String(v.trim().to_string()));
+                    }
+                }
+                if !ep_tbl.is_empty() {
+                    provider_tbl.insert("custom_endpoints".to_string(), toml::Value::Table(ep_tbl));
+                }
+            }
+            if !provider_tbl.is_empty() {
+                patch_root.insert("provider".to_string(), toml::Value::Table(provider_tbl));
+                let patch_val = toml::Value::Table(patch_root);
+                let _ = std::fs::create_dir_all(&global_dir);
+                let final_val = if let Ok(existing_str) = std::fs::read_to_string(&global_path) {
+                    if let Ok(mut existing_val) = toml::from_str::<toml::Value>(&existing_str) {
+                        merge_config_preserving_existing_maps(&mut existing_val, &patch_val);
+                        existing_val
+                    } else {
+                        patch_val
+                    }
+                } else {
+                    patch_val
+                };
+                let toml_str =
+                    toml::to_string_pretty(&final_val).map_err(ConfigError::TomlSerialize)?;
+                let tmp_path =
+                    global_path.with_extension(format!("toml.tmp.{}", uuid::Uuid::new_v4()));
+                std::fs::write(&tmp_path, &toml_str)?;
+                #[cfg(unix)]
+                {
+                    use std::os::unix::fs::PermissionsExt;
+                    let _ =
+                        std::fs::set_permissions(&tmp_path, std::fs::Permissions::from_mode(0o600));
+                }
+                if let Err(e) = std::fs::rename(&tmp_path, &global_path) {
+                    let _ = std::fs::remove_file(&tmp_path);
+                    return Err(e.into());
+                }
+            }
+            self.sync_global_dotenv(&global_dir);
+        }
+        Ok(())
+    }
+
     /// Saves the current configuration to disk:
-    /// - For isolated tempdir/test workspaces (`std::env::temp_dir()`), writes only to
-    ///   `<workspace>/.minicode/config.toml` so tests never mutate the user's real global config.
+    /// - For isolated tempdir/test workspaces (`std::env::temp_dir()` inside a test harness),
+    ///   writes only to `<workspace>/.minicode/config.toml` so tests never mutate the developer's
+    ///   real global config.
     /// - For real workspaces: ALWAYS persists full configuration (including `[provider.api_keys]`)
-    ///   to global `~/.config/minicode/config.toml`, and if a project-local `.minicode/config.toml`
-    ///   already exists, also updates it with plaintext `[provider.api_keys]` stripped so secrets
-    ///   never leak into project directories.
+    ///   to global `~/.config/minicode/config.toml` & `~/.config/minicode/.env`, and if a
+    ///   project-local `.minicode/config.toml` already exists, also updates it with plaintext
+    ///   `[provider.api_keys]` stripped so secrets never leak into project directories.
     pub fn save(&self, workspace_root: Option<&Path>) -> Result<()> {
         let global_cfg_dir = Self::resolve_global_config_dir();
 
@@ -355,6 +545,7 @@ impl Config {
             if let Some(ref global_dir) = global_cfg_dir {
                 let global_path = global_dir.join(crate::constants::CONFIG_FILE_NAME);
                 self.write_config_to_path_with_options(&global_path, false)?;
+                self.sync_global_dotenv(global_dir);
                 if local_path.exists() {
                     self.write_config_to_path_with_options(&local_path, true)?;
                 }
@@ -367,6 +558,7 @@ impl Config {
         if let Some(global_dir) = global_cfg_dir {
             let global_path = global_dir.join(crate::constants::CONFIG_FILE_NAME);
             self.write_config_to_path_with_options(&global_path, false)?;
+            self.sync_global_dotenv(&global_dir);
         }
         Ok(())
     }

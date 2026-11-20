@@ -12,28 +12,65 @@ use crate::ui::setup::{
 pub struct SetupWizard;
 
 impl SetupWizard {
-    /// Returns the static catalog of available LLM providers.
+    /// Returns the static catalog of all canonical LLM providers matching `/settings` (`SUPPORTED_PROVIDERS`).
     ///
     /// Each entry contains: `(id, display_label, hint)`.
     pub fn provider_catalog() -> &'static [(&'static str, &'static str, &'static str)] {
         &[
+            ("anthropic", "Anthropic", "Claude Opus 4, Sonnet 4 & Haiku"),
             (
                 "openrouter",
                 "OpenRouter",
                 "100+ models: Claude, DeepSeek, Qwen",
             ),
             ("gemini", "Google Gemini", "Gemini 2.5 Pro & Flash"),
-            ("openai", "OpenAI", "GPT-4o, o3-mini"),
+            ("openai", "OpenAI", "GPT-4o, o3, GPT-5"),
             ("deepseek", "DeepSeek", "DeepSeek-V3, R1 — ultra-low cost"),
             ("groq", "Groq", "Llama 3.3, Qwen — fast inference"),
-            ("minimax", "MiniMax", "MiniMax-M2.7, Text-01"),
-            ("z.ai", "Z.ai / Zhipu GLM", "GLM-4-Plus, GLM-4-Flash"),
+            ("z.ai", "Z.ai / Zhipu GLM", "GLM-4.7, GLM-4.5, GLM-4-Flash"),
+            ("kimi", "Kimi / Moonshot", "Kimi K2, Moonshot-v1"),
+            (
+                "huggingface",
+                "Hugging Face",
+                "Inference Providers — Qwen, Llama, DeepSeek",
+            ),
+            (
+                "nvidia",
+                "NVIDIA NIM",
+                "NIM cloud endpoints — Llama, DeepSeek, Nemotron",
+            ),
+            ("opencode", "OpenCode Zen", "Curated coding models gateway"),
+            ("cerebras", "Cerebras", "Ultra-fast wafer-scale inference"),
+            ("agnes", "Agnes AI", "Agnes cloud gateway"),
+            ("nara", "Nara Router", "Multi-model smart router"),
+            ("ofox", "Ofox AI", "Ofox OpenAI-compatible gateway"),
+            ("aihubmix", "AIHubMix", "Unified multi-provider API hub"),
+            ("minimax", "MiniMax", "MiniMax-M3.1-Flash, MiniMax-M2.7"),
             ("together", "Together AI", "Open-source model hosting"),
-            ("mistral", "Mistral AI", "Codestral, Mistral Large"),
+            (
+                "mistral",
+                "Mistral AI",
+                "Codestral, Devstral, Mistral Large",
+            ),
             (
                 "ollama",
                 "Ollama (Local)",
                 "100% Free local at localhost:11434",
+            ),
+            (
+                "lmstudio",
+                "LM Studio (Local)",
+                "Local OpenAI server at localhost:1234",
+            ),
+            (
+                "vllm",
+                "vLLM (Local)",
+                "Local vLLM server at localhost:8000",
+            ),
+            (
+                "localhost",
+                "Localhost (Custom)",
+                "Local OpenAI-compatible server",
             ),
         ]
     }
@@ -61,6 +98,9 @@ impl SetupWizard {
             "aihubmix" => "AIHUBMIX_API_KEY",
             "kimi" | "moonshot" | "moonshotai" => "KIMI_API_KEY",
             "ollama" => "OLLAMA_API_KEY",
+            "lmstudio" => "LMSTUDIO_API_KEY",
+            "vllm" => "VLLM_API_KEY",
+            "localhost" => "LOCALHOST_API_KEY",
             _ => "",
         }
     }
@@ -77,41 +117,128 @@ impl SetupWizard {
 
     /// Computes the status badge for a provider given the current configuration.
     pub fn provider_badge(config: &Config, id: &str) -> String {
-        if config.provider.default == id {
-            "\x1b[32m● Active\x1b[0m".to_string()
-        } else {
-            let key_opt = match config.get_api_key(id) {
-                Ok(k) if !k.trim().is_empty() => Some(k),
-                _ => None,
-            };
+        let key_opt = match config.get_api_key(id) {
+            Ok(k) if !k.trim().is_empty() => Some(k),
+            _ => None,
+        };
+        let is_local = config.is_local_provider(id);
+        if config.provider.default.eq_ignore_ascii_case(id) {
             if let Some(k) = key_opt {
                 let masked = mask_api_key(&k);
-                format!("\x1b[36m✔ Configured ({masked})\x1b[0m")
-            } else if id == "ollama" {
-                "\x1b[33m○ Localhost\x1b[0m".to_string()
+                format!("\x1b[32m● Active\x1b[0m \x1b[36m({masked})\x1b[0m")
+            } else if is_local {
+                "\x1b[32m● Active (Local)\x1b[0m".to_string()
             } else {
-                "\x1b[90m○ Not Set\x1b[0m".to_string()
+                "\x1b[32m● Active\x1b[0m \x1b[33m(No Key)\x1b[0m".to_string()
             }
+        } else if let Some(k) = key_opt {
+            let masked = mask_api_key(&k);
+            format!("\x1b[36m✔ Configured ({masked})\x1b[0m")
+        } else if is_local {
+            "\x1b[33m○ Localhost\x1b[0m".to_string()
+        } else {
+            "\x1b[90m○ Not Set\x1b[0m".to_string()
         }
     }
 
-    /// Builds the list of selector items for the Available Providers menu.
+    /// Counts how many non-local providers currently have a configured API key.
+    pub fn count_configured_cloud_providers(config: &Config) -> usize {
+        let mut seen = std::collections::HashSet::new();
+        let mut count = 0usize;
+        for (id, _, _) in Self::provider_catalog() {
+            if seen.insert((*id).to_string())
+                && !config.is_local_provider(id)
+                && config
+                    .get_api_key(id)
+                    .ok()
+                    .is_some_and(|k| !k.trim().is_empty())
+            {
+                count += 1;
+            }
+        }
+        for (custom_id, key) in &config.provider.api_keys {
+            let norm = custom_id.to_lowercase();
+            if seen.insert(norm.clone())
+                && !config.is_local_provider(&norm)
+                && !key.trim().is_empty()
+            {
+                count += 1;
+            }
+        }
+        count
+    }
+
+    /// Loads global configuration for `minicode setup` (preferring global `~/.config/minicode/config.toml`
+    /// & `.env`, while rescuing any legacy `[provider.api_keys]` / `[provider.custom_endpoints]`
+    /// left behind in `<workspace>/.minicode/config.toml` so nothing added in `/settings` is missed).
+    pub fn load_global_config_for_setup(workspace: &Path) -> Config {
+        let mut global_cfg = Config::load(None, None).unwrap_or_default();
+        if let Ok(ws_cfg) = Config::load(Some(workspace), None) {
+            for (k, v) in ws_cfg.provider.api_keys {
+                if !v.trim().is_empty() {
+                    global_cfg.provider.api_keys.entry(k).or_insert(v);
+                }
+            }
+            for (k, v) in ws_cfg.provider.custom_endpoints {
+                if !v.trim().is_empty() {
+                    global_cfg.provider.custom_endpoints.entry(k).or_insert(v);
+                }
+            }
+        }
+        global_cfg
+    }
+
+    /// Builds the list of selector items for the Available Providers menu, covering all canonical
+    /// providers (matching `/settings`) plus any user-defined custom providers.
     pub fn build_available_provider_items(config: &Config) -> (Vec<SelectorItem>, usize) {
         let catalog = Self::provider_catalog();
-        let mut items = Vec::with_capacity(catalog.len() + 1);
+        let mut items =
+            Vec::with_capacity(catalog.len() + config.provider.custom_endpoints.len() + 1);
         let mut initial_index = 0;
+        let mut seen = std::collections::HashSet::new();
 
-        for (i, (id, label, hint)) in catalog.iter().enumerate() {
+        for (id, label, hint) in catalog.iter() {
+            seen.insert((*id).to_string());
             let badge = Self::provider_badge(config, id);
+            if config.provider.default.eq_ignore_ascii_case(id) {
+                initial_index = items.len();
+            }
             items.push(
                 SelectorItem::new(*id, *label)
                     .with_badge(badge)
                     .with_hint(*hint),
             );
-            if config.provider.default == *id {
-                initial_index = i;
-            }
         }
+
+        // Also surface any user-configured custom providers from `custom_endpoints` or `api_keys`
+        let mut custom_ids: Vec<String> = config
+            .provider
+            .custom_endpoints
+            .keys()
+            .chain(config.provider.api_keys.keys())
+            .map(|k| k.to_lowercase())
+            .filter(|k| !seen.contains(k))
+            .collect();
+        custom_ids.sort();
+        custom_ids.dedup();
+        for custom_id in custom_ids {
+            let badge = Self::provider_badge(config, &custom_id);
+            let hint = config
+                .provider
+                .custom_endpoints
+                .get(&custom_id)
+                .cloned()
+                .unwrap_or_else(|| "Custom OpenAI-compatible provider".to_string());
+            if config.provider.default.eq_ignore_ascii_case(&custom_id) {
+                initial_index = items.len();
+            }
+            items.push(
+                SelectorItem::new(custom_id.clone(), format!("{custom_id} (Custom)"))
+                    .with_badge(badge)
+                    .with_hint(hint),
+            );
+        }
+
         items.push(SelectorItem::new("back", "◄ Back").with_hint("Return to provider menu"));
         (items, initial_index)
     }
@@ -167,20 +294,30 @@ impl SetupWizard {
         let _ = stdout.flush();
     }
 
-    /// Handles selection of a provider from the Available Providers catalog.
+    /// Activates `id` as the default provider and synchronizes `config.provider.model` when
+    /// switching away from a different provider so the active model always matches the provider.
+    fn activate_provider(config: &mut Config, id: &str) {
+        let switching = !config.provider.default.eq_ignore_ascii_case(id);
+        config.provider.default = id.to_string();
+        if switching || config.provider.model.trim().is_empty() {
+            config.provider.model = config.get_default_model_for_provider(id);
+        }
+    }
+
+    /// Handles selection of a provider from the Available Providers catalog (built-in or custom).
     pub fn handle_available_provider_selection(
         config: &mut Config,
         workspace: &Path,
         id: &str,
         label: &str,
     ) -> Result<()> {
-        if id == "ollama" {
-            config.provider.default = "ollama".to_string();
+        if config.is_local_provider(id) {
+            Self::activate_provider(config, id);
             ConfigMenu::save_all(config, workspace)?;
             Self::print_receipt(
                 &config.provider.default,
                 &config.provider.model,
-                "Local Ollama provider activated!",
+                &format!("Local '{}' provider activated!", label),
             );
             return Ok(());
         }
@@ -197,7 +334,7 @@ impl SetupWizard {
                     let env_var = Self::custom_env_var(id);
                     std::env::set_var(&env_var, &key);
                     config.provider.api_keys.insert(id.to_string(), key);
-                    config.provider.default = id.to_string();
+                    Self::activate_provider(config, id);
                     ConfigMenu::save_all(config, workspace)?;
                     Self::print_receipt(
                         &config.provider.default,
@@ -225,7 +362,7 @@ impl SetupWizard {
 
                 match manage_choice {
                     Some(0) => {
-                        config.provider.default = id.to_string();
+                        Self::activate_provider(config, id);
                         ConfigMenu::save_all(config, workspace)?;
                         Self::print_receipt(
                             &config.provider.default,
@@ -239,7 +376,7 @@ impl SetupWizard {
                             let env_var = Self::custom_env_var(id);
                             std::env::set_var(&env_var, &new_key);
                             config.provider.api_keys.insert(id.to_string(), new_key);
-                            config.provider.default = id.to_string();
+                            Self::activate_provider(config, id);
                             ConfigMenu::save_all(config, workspace)?;
                             Self::print_receipt(
                                 &config.provider.default,
@@ -334,11 +471,14 @@ impl SetupWizard {
     pub fn menu_available_providers(config: &mut Config, workspace: &Path) -> Result<()> {
         loop {
             let (items, initial_index) = Self::build_available_provider_items(config);
-            let catalog = Self::provider_catalog();
+            let configured_count = Self::count_configured_cloud_providers(config);
 
             let prompt = format!(
-                "=== Available Providers ===\n\x1b[90mActive Provider: \x1b[36m{}\x1b[90m | Active Model: \x1b[33m{}\x1b[0m",
-                config.provider.default, config.provider.model
+                "=== Available Providers ({} total · {} API keys configured) ===\n\x1b[90mActive Provider: \x1b[36m{}\x1b[90m | Active Model: \x1b[33m{}\x1b[0m",
+                items.len().saturating_sub(1),
+                configured_count,
+                config.provider.default,
+                config.provider.model
             );
 
             let selector = InteractiveSelector::new();
@@ -346,11 +486,15 @@ impl SetupWizard {
 
             match choice {
                 Some(idx) => {
-                    if idx >= catalog.len() || items[idx].id == "back" {
+                    let Some(selected) = items.get(idx) else {
+                        break;
+                    };
+                    if selected.id == "back" {
                         break;
                     }
-                    let (id, label, _) = catalog[idx];
-                    Self::handle_available_provider_selection(config, workspace, id, label)?;
+                    let id = selected.id.clone();
+                    let label = selected.label.clone();
+                    Self::handle_available_provider_selection(config, workspace, &id, &label)?;
                 }
                 None => {
                     break;
@@ -363,15 +507,16 @@ impl SetupWizard {
     /// Level 2: Provider Configuration menu loop.
     pub fn menu_providers(config: &mut Config, workspace: &Path) -> Result<()> {
         loop {
+            let configured_count = Self::count_configured_cloud_providers(config);
             let prompt = format!(
-                "=== Provider Configuration ===\n\x1b[90mActive Provider: \x1b[36m{}\x1b[90m | Active Model: \x1b[33m{}\x1b[0m",
-                config.provider.default, config.provider.model
+                "=== Provider Configuration ({} API keys configured) ===\n\x1b[90mActive Provider: \x1b[36m{}\x1b[90m | Active Model: \x1b[33m{}\x1b[0m",
+                configured_count, config.provider.default, config.provider.model
             );
             let items = vec![
                 SelectorItem::new("available", "🌐 Available Providers")
-                    .with_hint("MiniMax, Z.ai, OpenRouter, Gemini, OpenAI, etc."),
+                    .with_hint("All 23 providers: Anthropic, OpenRouter, Gemini, OpenAI, MiniMax, Kimi, NVIDIA, Groq, etc."),
                 SelectorItem::new("custom", "🔌 Custom Provider")
-                    .with_hint("OpenAI-compatible endpoints (vLLM, Ollama, etc.)"),
+                    .with_hint("OpenAI-compatible endpoints (vLLM, LM Studio, Ollama, proxies)"),
                 SelectorItem::new("back", "◄ Back").with_hint("Return to main menu"),
             ];
 
@@ -398,18 +543,19 @@ impl SetupWizard {
     pub async fn run(workspace: &Path) -> Result<()> {
         Self::verify_interactive_terminal()?;
 
-        let mut config = Config::load(Some(workspace), None).unwrap_or_default();
+        let mut config = Self::load_global_config_for_setup(workspace);
 
         loop {
+            let configured_count = Self::count_configured_cloud_providers(&config);
             let prompt = format!(
-                "⚡ minicode — Interactive Setup Wizard\n\x1b[90mActive Provider: \x1b[36m{}\x1b[90m | Active Model: \x1b[33m{}\x1b[0m",
-                config.provider.default, config.provider.model
+                "⚡ minicode — Interactive Setup Wizard ({} API keys configured)\n\x1b[90mActive Provider: \x1b[36m{}\x1b[90m | Active Model: \x1b[33m{}\x1b[0m",
+                configured_count, config.provider.default, config.provider.model
             );
             let items = vec![
                 SelectorItem::new("provider", "⚡ Provider")
-                    .with_hint("Setup & manage AI providers"),
+                    .with_hint("Setup & manage AI providers and API keys"),
                 SelectorItem::new("back", "◄ Back / Exit")
-                    .with_hint("Save changes and return to shell"),
+                    .with_hint("Save changes to global config and return to shell"),
             ];
 
             let selector = InteractiveSelector::new();
@@ -440,17 +586,14 @@ mod tests {
     fn test_provider_catalog_contains_standard_providers() {
         let catalog = SetupWizard::provider_catalog();
         let ids: Vec<&str> = catalog.iter().map(|(id, _, _)| *id).collect();
-        assert!(ids.contains(&"minimax"));
-        assert!(ids.contains(&"z.ai"));
-        assert!(ids.contains(&"openrouter"));
-        assert!(ids.contains(&"gemini"));
-        assert!(ids.contains(&"openai"));
-        assert!(ids.contains(&"deepseek"));
-        assert!(ids.contains(&"groq"));
-        assert!(ids.contains(&"ollama"));
-        assert!(ids.contains(&"together"));
-        assert!(ids.contains(&"mistral"));
-        assert_eq!(catalog.len(), 10);
+        // Exact 1:1 parity with /settings (`SUPPORTED_PROVIDERS`)
+        assert_eq!(catalog.len(), crate::constants::SUPPORTED_PROVIDERS.len());
+        for &supported in crate::constants::SUPPORTED_PROVIDERS {
+            assert!(
+                ids.contains(&supported),
+                "Provider '{supported}' from SUPPORTED_PROVIDERS missing in SetupWizard::provider_catalog"
+            );
+        }
     }
 
     #[test]
@@ -467,6 +610,14 @@ mod tests {
         assert_eq!(
             SetupWizard::env_var_for_provider("minimax"),
             "MINIMAX_API_KEY"
+        );
+        assert_eq!(
+            SetupWizard::env_var_for_provider("anthropic"),
+            "ANTHROPIC_API_KEY"
+        );
+        assert_eq!(
+            SetupWizard::env_var_for_provider("lmstudio"),
+            "LMSTUDIO_API_KEY"
         );
         assert_eq!(SetupWizard::env_var_for_provider("unknown"), "");
 
@@ -504,24 +655,34 @@ mod tests {
         assert!(badge_configured.contains("✔ Configured"));
         assert!(badge_configured.contains("sk-min••••6789"));
 
-        // 4. Ollama (when not active)
+        // 4. Local providers (ollama, lmstudio)
         let badge_ollama = SetupWizard::provider_badge(&config, "ollama");
         assert!(badge_ollama.contains("○ Localhost"));
+        let badge_lmstudio = SetupWizard::provider_badge(&config, "lmstudio");
+        assert!(badge_lmstudio.contains("○ Localhost"));
 
-        // 5. Ollama (when active)
+        // 5. Active local provider
         config.provider.default = "ollama".to_string();
         let badge_ollama_active = SetupWizard::provider_badge(&config, "ollama");
-        assert!(badge_ollama_active.contains("● Active"));
+        assert!(badge_ollama_active.contains("● Active (Local)"));
     }
 
     #[test]
     fn test_build_available_provider_items() {
         let mut config = Config::default();
         config.provider.default = "groq".to_string();
+        config.provider.custom_endpoints.insert(
+            "my-gateway".to_string(),
+            "https://gw.example.com/v1".to_string(),
+        );
+        config
+            .provider
+            .api_keys
+            .insert("my-gateway".to_string(), "sk-custom-987654321".to_string());
 
         let (items, initial_index) = SetupWizard::build_available_provider_items(&config);
-        // 10 catalog items + 1 back button
-        assert_eq!(items.len(), 11);
+        // All 23 canonical providers + 1 custom provider + 1 back button
+        assert_eq!(items.len(), crate::constants::SUPPORTED_PROVIDERS.len() + 2);
 
         // Find groq
         let groq_idx = items
@@ -534,6 +695,17 @@ mod tests {
             .as_deref()
             .unwrap_or("")
             .contains("● Active"));
+
+        // Custom provider surfaced with configured badge
+        let custom = items
+            .iter()
+            .find(|it| it.id == "my-gateway")
+            .expect("custom provider present");
+        assert!(custom
+            .badge
+            .as_deref()
+            .unwrap_or("")
+            .contains("✔ Configured"));
 
         // Back button is last
         assert_eq!(items.last().expect("last item").id, "back");
@@ -570,6 +742,47 @@ mod tests {
                 .get("local-vllm")
                 .map(String::as_str),
             Some("sk-test-123456")
+        );
+    }
+
+    #[test]
+    fn test_load_global_config_for_setup_rescues_legacy_workspace_keys_and_activates_model() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let ws = dir.path();
+        let ws_cfg_dir = ws.join(".minicode");
+        std::fs::create_dir_all(&ws_cfg_dir).expect("mkdir .minicode");
+        std::fs::write(
+            ws_cfg_dir.join("config.toml"),
+            "[provider]\ndefault = \"minimax\"\nmodel = \"MiniMax-M3.1-Flash\"\n\n[provider.api_keys]\nminimax = \"sk-legacy-mm-key\"\nnvidia = \"nvapi-legacy-key\"\n\n[provider.custom_endpoints]\nmyproxy = \"https://proxy.example.com/v1\"\n",
+        )
+        .expect("write legacy workspace config");
+
+        let mut loaded = SetupWizard::load_global_config_for_setup(ws);
+        assert_eq!(
+            loaded.provider.api_keys.get("minimax").map(String::as_str),
+            Some("sk-legacy-mm-key")
+        );
+        assert_eq!(
+            loaded.provider.api_keys.get("nvidia").map(String::as_str),
+            Some("nvapi-legacy-key")
+        );
+        assert_eq!(
+            loaded
+                .provider
+                .custom_endpoints
+                .get("myproxy")
+                .map(String::as_str),
+            Some("https://proxy.example.com/v1")
+        );
+
+        // Switching providers via activate_provider must also sync config.provider.model
+        loaded.provider.default = "openrouter".to_string();
+        loaded.provider.model = "anthropic/claude-sonnet-4".to_string();
+        SetupWizard::activate_provider(&mut loaded, "minimax");
+        assert_eq!(loaded.provider.default, "minimax");
+        assert_eq!(
+            loaded.provider.model,
+            loaded.get_default_model_for_provider("minimax")
         );
     }
 }

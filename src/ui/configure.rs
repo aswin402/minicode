@@ -14,85 +14,43 @@ impl ConfigMenu {
         workspace: &Path,
         custom_config_dir: Option<&Path>,
     ) -> Result<()> {
-        // 1. Determine target config directory
+        // 1. Determine target global config directory (honoring custom_config_dir & MINICODE_CONFIG_DIR)
         let app_dir = if let Some(dir) = custom_config_dir {
             Some(dir.to_path_buf())
         } else {
-            dirs::config_dir().map(|d| d.join(crate::constants::CONFIG_DIR_NAME))
+            Config::resolve_global_config_dir()
         };
 
         if let Some(app_dir) = app_dir {
             let _ = std::fs::create_dir_all(&app_dir);
             let toml_path = app_dir.join(crate::constants::CONFIG_FILE_NAME);
 
-            // Non-destructively merge with existing configuration to preserve user themes & preferences
-            let new_val = toml::Value::try_from(config.clone())
-                .unwrap_or_else(|_| toml::Value::Table(toml::map::Map::new()));
-            let merged_value = if let Ok(content) = std::fs::read_to_string(&toml_path) {
-                if let Ok(mut existing_val) = toml::from_str::<toml::Value>(&content) {
-                    merge_toml_values(&mut existing_val, &new_val);
-                    existing_val
-                } else {
-                    new_val
-                }
-            } else {
-                new_val
-            };
-
-            let content = toml::to_string_pretty(&merged_value)
-                .map_err(crate::error::ConfigError::TomlSerialize)?;
-            let _ = std::fs::write(&toml_path, content);
-
-            // Also write all configured API keys to global/custom .env
-            let global_env_path = app_dir.join(crate::constants::ENV_FILE_NAME);
-            for (p, k) in &config.provider.api_keys {
-                let env_name_str = crate::ui::setup::SetupWizard::custom_env_var(p);
-                let _ = update_dotenv_file(&global_env_path, &env_name_str, k);
-            }
+            // Use the canonical atomic writer so global config.toml preserves existing
+            // credential/endpoint maps while cleanly updating provider/model/preferences.
+            config.write_config_to_path_with_options(&toml_path, false)?;
+            config.sync_global_dotenv(&app_dir);
         }
 
-        // 2. Also update workspace .env if workspace exists
+        // 2. If a project-local `.minicode/config.toml` already exists in the current workspace,
+        //    keep it updated (with plaintext secrets stripped so credentials stay global-only).
+        let local_cfg = workspace
+            .join(crate::constants::WORKSPACE_DIR_NAME)
+            .join(crate::constants::CONFIG_FILE_NAME);
+        if local_cfg.exists() {
+            let _ = config.save_workspace(workspace);
+        }
+
+        // 3. Only update workspace `.env` if one already exists (avoid creating stray `.env` files).
         let env_path = workspace.join(crate::constants::ENV_FILE_NAME);
-        let _ = update_dotenv_file(
-            &env_path,
-            "MINICODE_APPROVAL_POLICY",
-            &config.agent.approval_policy,
-        );
+        if env_path.exists() {
+            let _ = update_dotenv_file(
+                &env_path,
+                "MINICODE_APPROVAL_POLICY",
+                &config.agent.approval_policy,
+            );
+        }
 
         Ok(())
-    }
-}
-
-/// Helper that deeply merges TOML tables without overwriting established custom user settings with defaults
-fn merge_toml_values(target: &mut toml::Value, source: &toml::Value) {
-    if let (toml::Value::Table(target_table), toml::Value::Table(source_table)) =
-        (&mut *target, source)
-    {
-        for (k, v) in source_table {
-            if let Some(target_entry) = target_table.get_mut(k) {
-                // If the source value is just a generic default or empty, do not clobber user's custom settings
-                let is_default_or_empty = matches!(
-                    (k.as_str(), v.as_str()),
-                    ("theme", Some("auto"))
-                        | ("animation", Some("dual_pillars"))
-                        | ("todo_style", Some("tree"))
-                        | ("swarm_style", Some("stylish"))
-                        | ("toast_style", Some("opencode"))
-                        | ("toast_symbols", Some("ascii"))
-                        | ("activity_style", Some("action_detail"))
-                        | ("menu_style", Some("minimal"))
-                        | ("default", Some(""))
-                        | ("model", Some(""))
-                );
-                if !is_default_or_empty {
-                    merge_toml_values(target_entry, v);
-                }
-            } else {
-                target_table.insert(k.clone(), v.clone());
-            }
-        }
-    } else {
-        *target = source.clone();
     }
 }
 

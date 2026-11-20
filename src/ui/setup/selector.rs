@@ -109,15 +109,49 @@ impl InteractiveSelector {
 
     /// Generates all rendered lines for the current prompt, items, and navigation footer.
     pub fn render_lines(prompt: &str, items: &[SelectorItem], current_index: usize) -> Vec<String> {
+        Self::render_lines_windowed(prompt, items, current_index, usize::MAX)
+    }
+
+    /// Generates rendered lines bounded to at most `max_visible` list items around `current_index`
+    /// with a fixed line height so long lists (e.g. 24+ providers) scroll smoothly without
+    /// overflowing short terminals.
+    pub fn render_lines_windowed(
+        prompt: &str,
+        items: &[SelectorItem],
+        current_index: usize,
+        max_visible: usize,
+    ) -> Vec<String> {
         let mut lines = Vec::new();
         if !prompt.is_empty() {
             for line in prompt.lines() {
                 lines.push(format!("\x1b[1m{}\x1b[0m", line));
             }
         }
-        for (i, item) in items.iter().enumerate() {
-            lines.push(Self::format_item(item, i == current_index));
+
+        let total = items.len();
+        let window = max_visible.max(1).min(total.max(1));
+        if total <= window {
+            for (i, item) in items.iter().enumerate() {
+                lines.push(Self::format_item(item, i == current_index));
+            }
+        } else {
+            let clamped = current_index.min(total - 1);
+            let half = window / 2;
+            let start = clamped.saturating_sub(half).min(total - window);
+            let end = (start + window).min(total);
+            for (i, item) in items.iter().enumerate().take(end).skip(start) {
+                lines.push(Self::format_item(item, i == clamped));
+            }
+            lines.push(format!(
+                "  \x1b[90mShowing {}-{} of {} ({}↑ / {}↓)\x1b[0m",
+                start + 1,
+                end,
+                total,
+                start,
+                total.saturating_sub(end)
+            ));
         }
+
         lines.push(
             "\x1b[90m  ──────────────────────────────────────────────────────────\x1b[0m"
                 .to_string(),
@@ -126,17 +160,37 @@ impl InteractiveSelector {
         lines
     }
 
+    fn effective_max_visible(prompt: &str, items_len: usize) -> usize {
+        let term_rows = crossterm::terminal::size()
+            .map(|(_, h)| h as usize)
+            .unwrap_or(24);
+        let header_lines = if prompt.is_empty() {
+            0
+        } else {
+            prompt.lines().count()
+        };
+        // Reserve space for header, optional scroll indicator, divider, footer, and 2 margin rows
+        let reserved = header_lines + 5;
+        let available = term_rows.saturating_sub(reserved).clamp(6, 18);
+        if items_len <= available {
+            usize::MAX
+        } else {
+            available
+        }
+    }
+
     fn redraw<W: Write>(
         out: &mut W,
         prompt: &str,
         items: &[SelectorItem],
         current_index: usize,
+        max_visible: usize,
         total_lines: usize,
     ) -> io::Result<()> {
         if total_lines > 0 {
             write!(out, "\x1b[{}A", total_lines)?;
         }
-        let lines = Self::render_lines(prompt, items, current_index);
+        let lines = Self::render_lines_windowed(prompt, items, current_index, max_visible);
         for line in &lines {
             write!(out, "\x1b[2K\r{}\r\n", line)?;
         }
@@ -171,7 +225,8 @@ impl InteractiveSelector {
         let mut out = io::stdout();
 
         let mut current_index = initial_index.min(items.len() - 1);
-        let lines = Self::render_lines(prompt, items, current_index);
+        let max_visible = Self::effective_max_visible(prompt, items.len());
+        let lines = Self::render_lines_windowed(prompt, items, current_index, max_visible);
         let total_lines = lines.len();
 
         for line in &lines {
@@ -198,14 +253,28 @@ impl InteractiveSelector {
                         let new_index = Self::prev_index(current_index, items.len());
                         if new_index != current_index {
                             current_index = new_index;
-                            Self::redraw(&mut out, prompt, items, current_index, total_lines)?;
+                            Self::redraw(
+                                &mut out,
+                                prompt,
+                                items,
+                                current_index,
+                                max_visible,
+                                total_lines,
+                            )?;
                         }
                     }
                     KeyCode::Down | KeyCode::Char('j') => {
                         let new_index = Self::next_index(current_index, items.len());
                         if new_index != current_index {
                             current_index = new_index;
-                            Self::redraw(&mut out, prompt, items, current_index, total_lines)?;
+                            Self::redraw(
+                                &mut out,
+                                prompt,
+                                items,
+                                current_index,
+                                max_visible,
+                                total_lines,
+                            )?;
                         }
                     }
                     KeyCode::Enter => {
@@ -309,5 +378,30 @@ mod tests {
         let result = selector.select("Empty", &[], 0);
         assert!(result.is_ok());
         assert_eq!(result.unwrap(), None);
+    }
+
+    #[test]
+    fn test_render_lines_windowed_scrolls_long_lists_with_fixed_height() {
+        let items: Vec<SelectorItem> = (0..24)
+            .map(|i| SelectorItem::new(format!("p{i}"), format!("Provider {i}")))
+            .collect();
+        let lines_top = InteractiveSelector::render_lines_windowed("Providers", &items, 0, 8);
+        let lines_mid = InteractiveSelector::render_lines_windowed("Providers", &items, 12, 8);
+        let lines_bot = InteractiveSelector::render_lines_windowed("Providers", &items, 23, 8);
+
+        // 1 header + 8 items + 1 scroll indicator + 1 divider + 1 footer = 12 lines consistently
+        assert_eq!(lines_top.len(), 12);
+        assert_eq!(lines_mid.len(), 12);
+        assert_eq!(lines_bot.len(), 12);
+        assert!(lines_top
+            .iter()
+            .any(|l| l.contains("Provider 0") && l.contains("❯")));
+        assert!(lines_mid
+            .iter()
+            .any(|l| l.contains("Provider 12") && l.contains("❯")));
+        assert!(lines_bot
+            .iter()
+            .any(|l| l.contains("Provider 23") && l.contains("❯")));
+        assert!(lines_mid.iter().any(|l| l.contains("Showing")));
     }
 }
