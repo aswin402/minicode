@@ -1822,12 +1822,16 @@ pub async fn dispatch(
                 let height = opt_u64(args, "custom_height")
                     .or_else(|| opt_u64(args, "height"))
                     .map(|h| h as u32);
+                let color_scheme = opt_str(args, "color_scheme");
+                let reduced_motion = opt_str(args, "reduced_motion");
 
                 crate::tools::browser::BrowserController::emulate_device_and_network(
                     viewport,
                     network,
                     width,
                     height,
+                    color_scheme,
+                    reduced_motion,
                     mode,
                     workspace_root,
                 )

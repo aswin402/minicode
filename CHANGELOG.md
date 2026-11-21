@@ -5,6 +5,25 @@ All notable changes to **minicode** will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.63] — 2026-11-21
+
+### `browser_emulate` Reset Polling & Media Emulation (`reduced_motion` / `color_scheme`), Actionable Taste-Linter Culprits, & Instant CLI Probe Classification (`minitest78`)
+
+#### 📱 `browser_emulate` Viewport Reset Polling & CSS Media Preferences (`src/tools/browser/{mod,driver}.rs`, `src/tools/registry/{web,dev}_tools.rs`)
+- **Fixed Stale Viewport Reporting on `viewport="reset"`**:
+  - Snapshots the pre-reset viewport (`window.innerWidth + 'x' + window.innerHeight`) before calling `Emulation.clearDeviceMetricsOverride` and polls up to `12 × 30ms` until the window finishes resizing away from the prior emulated viewport (preventing `6ms` stale `390x844px` reads when resetting back to `1440x900px`).
+- **Exposed `reduced_motion` & `color_scheme` on `browser_emulate`**:
+  - Added `CdpClient::set_emulated_media()` and wired optional `reduced_motion` (`reduce`, `no-preference`, `reset`) and `color_scheme` (`dark`, `light`, `reset`) parameters into `browser_emulate` (and the unified `emulate` alias), verifying live `window.matchMedia(...)` after applying overrides on both `MiniBrowse` and Chrome CDP.
+
+#### 🎯 Actionable `browser_screenshot` Layout Warnings (`src/tools/browser/mod.rs`)
+- **Named Offending Sections & Higher Scan Cap**:
+  - `OFF-CENTRE MARGIN WARNING` and `LOPSIDED SECTION WARNING` now print the exact offending section selectors and measured outer margins (e.g. ``Offending section(s): `section#faq (left=124px, right=280px)` ``), eliminating multi-turn guesswork.
+  - Raised the per-section descendant scan limit from `300` to `1000` and skipped invisible `opacity <= 0.05` scroll-reveal children so dense grids and unrevealed blocks never skew section margin checks.
+
+#### ⚡ Instant CLI Utility Classification (`src/tools/exec.rs`)
+- **Prevented Instant Read-Only Probes from Creating `minitask` Logs**:
+  - Added `du`, `df`, `free`, `nproc`, `uptime`, `tree`, `md5sum`, `sha256sum`, `shasum`, `base64`, `xxd`, `hexdump`, `strings`, `nl`, `tac`, `rev`, `paste`, `comm`, `column`, `fold`, `fmt`, `seq`, `tee`, and `xargs` to `CommandProfile::INSTANT_UTILITIES` so instant commands like `du -sh index.html assets/` execute directly without spawning `minitask` log artifacts.
+
 ## [0.5.62] — 2026-11-21
 
 ### Active-Transaction `write_file` Clobber & HTML-Fragment Guard, Mixed-`&` Server Rejection in `exec_cmd`, & `MiniBrowse` GUI 1:1 DPI Parity (`minitest77`)

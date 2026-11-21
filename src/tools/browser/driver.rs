@@ -1052,20 +1052,32 @@ impl CdpClient {
             .await;
     }
 
-    /// Emulates color scheme preference ('dark' or 'light')
-    #[allow(dead_code)]
-    pub async fn emulate_color_scheme(&self, scheme: &str) -> Result<()> {
+    /// Emulates CSS media type and media features (`prefers-reduced-motion`, `prefers-color-scheme`, etc.)
+    pub async fn set_emulated_media(
+        &self,
+        media: Option<&str>,
+        features: &[(&str, &str)],
+    ) -> Result<()> {
+        let feat_json: Vec<serde_json::Value> = features
+            .iter()
+            .map(|(name, value)| json!({ "name": name, "value": value }))
+            .collect();
         self.send_command(
             "Emulation.setEmulatedMedia",
             json!({
-                "media": "screen",
-                "features": [
-                    { "name": "prefers-color-scheme", "value": scheme }
-                ]
+                "media": media.unwrap_or(""),
+                "features": feat_json
             }),
         )
         .await?;
         Ok(())
+    }
+
+    /// Emulates color scheme preference ('dark' or 'light')
+    #[allow(dead_code)]
+    pub async fn emulate_color_scheme(&self, scheme: &str) -> Result<()> {
+        self.set_emulated_media(Some("screen"), &[("prefers-color-scheme", scheme)])
+            .await
     }
 
     /// Navigates to the specified URL and waits for network idle or settled DOM

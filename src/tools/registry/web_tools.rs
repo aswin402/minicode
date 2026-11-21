@@ -625,7 +625,7 @@ pub fn get_schemas() -> Vec<ToolSchema> {
         },
         ToolSchema {
             name: "browser_emulate".to_string(),
-            description: "Configure device viewport emulation (mobile, iphone, tablet, desktop, desktop_wide, reset) and network throttling (offline, slow_3g, fast_3g, cable, reset) over CDP.".to_string(),
+            description: "Configure device viewport emulation (mobile, iphone, tablet, desktop, desktop_wide, reset), network throttling (offline, slow_3g, fast_3g, cable, reset), and CSS media preferences (`color_scheme`: dark/light/reset, `reduced_motion`: reduce/no-preference/reset) over CDP.".to_string(),
             parameters: json!({
                 "type": "object",
                 "properties": {
@@ -646,6 +646,16 @@ pub fn get_schemas() -> Vec<ToolSchema> {
                     "height": {
                         "type": "integer",
                         "description": "Custom viewport height in pixels"
+                    },
+                    "color_scheme": {
+                        "type": "string",
+                        "enum": ["dark", "light", "reset"],
+                        "description": "Emulate CSS `prefers-color-scheme` media feature ('dark', 'light', or 'reset')"
+                    },
+                    "reduced_motion": {
+                        "type": "string",
+                        "enum": ["reduce", "no-preference", "reset"],
+                        "description": "Emulate CSS `prefers-reduced-motion` media feature ('reduce', 'no-preference', or 'reset')"
                     },
                     "engine": engine,
                     "space": space,
@@ -1431,12 +1441,16 @@ async fn dispatch_known(
             let network = opt_str(args, "network");
             let width = opt_u64(args, "width").map(|w| w as u32);
             let height = opt_u64(args, "height").map(|h| h as u32);
+            let color_scheme = opt_str(args, "color_scheme");
+            let reduced_motion = opt_str(args, "reduced_motion");
 
             BrowserController::emulate_device_and_network(
                 viewport,
                 network,
                 width,
                 height,
+                color_scheme,
+                reduced_motion,
                 mode,
                 workspace_root,
             )

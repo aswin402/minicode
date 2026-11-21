@@ -1438,7 +1438,9 @@ impl BrowserController {
                     h1Words: 0,
                     firstScreenH1: true,
                     lopsidedSections: 0,
+                    lopsidedCulprits: [],
                     offCentreSections: 0,
+                    offCentreCulprits: [],
                     blankGaps: 0,
                     edgeTextCount: 0,
                     raggedCardRows: 0,
@@ -1448,14 +1450,14 @@ impl BrowserController {
                 if (window.getComputedStyle) {
                     const vw = window.innerWidth || 1280;
                     const vh = window.innerHeight || 800;
+                    const fmtEl = (node) => {
+                        const tag = (node.tagName || 'el').toLowerCase();
+                        const idPart = node.id ? `#${node.id}` : '';
+                        const cls = node.classList ? Array.from(node.classList).slice(0, 2).map(c => `.${c}`).join('') : '';
+                        return `${tag}${idPart}${cls}`;
+                    };
                     if (horizontalOverflowPx > 4 && document.body) {
                         const allEls = document.body.querySelectorAll('*');
-                        const fmtEl = (node) => {
-                            const tag = (node.tagName || 'el').toLowerCase();
-                            const idPart = node.id ? `#${node.id}` : '';
-                            const cls = node.classList ? Array.from(node.classList).slice(0, 2).map(c => `.${c}`).join('') : '';
-                            return `${tag}${idPart}${cls}`;
-                        };
                         const candidates = [];
                         for (let i = 0; i < allEls.length && i < 5000; i++) {
                             const el = allEls[i];
@@ -1633,10 +1635,10 @@ impl BrowserController {
                             let minX = vw;
                             let maxX = 0;
                             let childCount = 0;
-                            for (let cIdx = 0; cIdx < children.length && cIdx < 300; cIdx++) {
+                            for (let cIdx = 0; cIdx < children.length && cIdx < 1000; cIdx++) {
                                 const child = children[cIdx];
                                 const ccs = window.getComputedStyle(child);
-                                if (!ccs || ccs.display === 'none' || ccs.visibility === 'hidden' || ccs.pointerEvents === 'none') continue;
+                                if (!ccs || ccs.display === 'none' || ccs.visibility === 'hidden' || ccs.pointerEvents === 'none' || parseFloat(ccs.opacity) <= 0.05) continue;
                                 if (paintedTags[child.tagName] && ccs.borderTopWidth === '0px' && ccs.backgroundColor === 'rgba(0, 0, 0, 0)') continue;
                                 const cr = child.getBoundingClientRect();
                                 if (cr.width < 8 || cr.height < 8 || cr.width >= vw * 0.99) continue;
@@ -1650,8 +1652,14 @@ impl BrowserController {
                                 const emptyRatio = (leftMargin + rightMargin) / vw;
                                 if (Math.abs(leftMargin - rightMargin) > vw * 0.28 && emptyRatio >= 0.42) {
                                     tasteMetrics.lopsidedSections++;
+                                    if (tasteMetrics.lopsidedCulprits.length < 3) {
+                                        tasteMetrics.lopsidedCulprits.push(`${fmtEl(sec)} (left=${Math.round(leftMargin)}px, right=${Math.round(rightMargin)}px)`);
+                                    }
                                 } else if (Math.abs(leftMargin - rightMargin) > 96 && leftMargin > 16 && rightMargin > 16 && emptyRatio < 0.35) {
                                     tasteMetrics.offCentreSections++;
+                                    if (tasteMetrics.offCentreCulprits.length < 3) {
+                                        tasteMetrics.offCentreCulprits.push(`${fmtEl(sec)} (left=${Math.round(leftMargin)}px, right=${Math.round(rightMargin)}px)`);
+                                    }
                                 }
                             }
                         }
@@ -1710,7 +1718,9 @@ impl BrowserController {
                     h1Words: tasteMetrics.h1Words,
                     firstScreenH1: tasteMetrics.firstScreenH1,
                     lopsidedSections: tasteMetrics.lopsidedSections,
+                    lopsidedCulprits: tasteMetrics.lopsidedCulprits,
                     offCentreSections: tasteMetrics.offCentreSections,
+                    offCentreCulprits: tasteMetrics.offCentreCulprits,
                     blankGaps: tasteMetrics.blankGaps,
                     edgeTextCount: tasteMetrics.edgeTextCount,
                     raggedCardRows: tasteMetrics.raggedCardRows,
@@ -1801,10 +1811,28 @@ impl BrowserController {
                     .get("lopsidedSections")
                     .and_then(|v| v.as_u64())
                     .unwrap_or(0);
+                let lopsided_culprits: Vec<String> = probe
+                    .get("lopsidedCulprits")
+                    .and_then(|v| v.as_array())
+                    .map(|arr| {
+                        arr.iter()
+                            .filter_map(|x| x.as_str().map(str::to_string))
+                            .collect()
+                    })
+                    .unwrap_or_default();
                 let off_centre_sections = probe
                     .get("offCentreSections")
                     .and_then(|v| v.as_u64())
                     .unwrap_or(0);
+                let off_centre_culprits: Vec<String> = probe
+                    .get("offCentreCulprits")
+                    .and_then(|v| v.as_array())
+                    .map(|arr| {
+                        arr.iter()
+                            .filter_map(|x| x.as_str().map(str::to_string))
+                            .collect()
+                    })
+                    .unwrap_or_default();
                 let blank_gaps = probe.get("blankGaps").and_then(|v| v.as_u64()).unwrap_or(0);
                 let edge_text_count = probe
                     .get("edgeTextCount")
@@ -1887,15 +1915,31 @@ impl BrowserController {
                     );
                 }
                 if lopsided_sections > 0 {
+                    let culprits_detail = if lopsided_culprits.is_empty() {
+                        String::new()
+                    } else {
+                        format!(
+                            " Offending section(s): `{}`.",
+                            lopsided_culprits.join("`, `")
+                        )
+                    };
                     health_notes.push(format!(
-                        "⚠ LOPSIDED SECTION WARNING (`taste-skill` rule `lopsided`): {} tall section(s) have content huddled on one side leaving >= 42% of the horizontal viewport width empty! Pair the copy with a live `data-ui` product fragment or center the container (`mx-auto max-w-*`).",
-                        lopsided_sections
+                        "⚠ LOPSIDED SECTION WARNING (`taste-skill` rule `lopsided`): {} tall section(s) have content huddled on one side leaving >= 42% of the horizontal viewport width empty!{} Pair the copy with a live `data-ui` product fragment or center the container (`mx-auto max-w-*`).",
+                        lopsided_sections, culprits_detail
                     ));
                 }
                 if off_centre_sections > 0 {
+                    let culprits_detail = if off_centre_culprits.is_empty() {
+                        String::new()
+                    } else {
+                        format!(
+                            " Offending section(s): `{}`.",
+                            off_centre_culprits.join("`, `")
+                        )
+                    };
                     health_notes.push(format!(
-                        "⚠ OFF-CENTRE MARGIN WARNING (`taste-skill` rule `off-centre`): {} section(s) have asymmetric left vs. right outer viewport margins (>96px difference). Use `mx-auto` and symmetric horizontal padding (`px-6 md:px-12`).",
-                        off_centre_sections
+                        "⚠ OFF-CENTRE MARGIN WARNING (`taste-skill` rule `off-centre`): {} section(s) have asymmetric left vs. right outer viewport margins (>96px difference).{} Use `mx-auto` and symmetric horizontal padding (`px-6 md:px-12`).",
+                        off_centre_sections, culprits_detail
                     ));
                 }
                 if blank_gaps > 0 {
@@ -3181,12 +3225,16 @@ render(0);
         Ok(PageAgent::format_visual_tree_report(&elements))
     }
 
-    /// Configures device viewport emulation and/or network throttling over CDP
+    /// Configures device viewport emulation, network throttling, and CSS media emulation
+    /// (`prefers-color-scheme`, `prefers-reduced-motion`) over CDP
+    #[allow(clippy::too_many_arguments)]
     pub async fn emulate_device_and_network(
         viewport: Option<&str>,
         network: Option<&str>,
         custom_width: Option<u32>,
         custom_height: Option<u32>,
+        color_scheme: Option<&str>,
+        reduced_motion: Option<&str>,
         mode: BrowserMode,
         workspace_root: &Path,
     ) -> Result<String> {
@@ -3198,6 +3246,15 @@ render(0);
         if let Some((clear_first, device_override, msg)) =
             Self::resolve_viewport_emulation(viewport, custom_width, custom_height)?
         {
+            let prev_vp = if clear_first && device_override.is_none() {
+                cdp.evaluate_js("window.innerWidth + 'x' + window.innerHeight")
+                    .await
+                    .ok()
+                    .map(|s| s.trim().trim_matches('"').to_string())
+                    .filter(|s| !s.is_empty())
+            } else {
+                None
+            };
             if clear_first {
                 cdp.clear_device_metrics().await?;
             }
@@ -3205,8 +3262,15 @@ render(0);
                 cdp.emulate_device(w, h, mobile, scale).await?;
             }
             let expected_vp = device_override.map(|(w, h, _, _)| format!("{w}x{h}"));
+            let wait_for_reset_change = clear_first
+                && expected_vp.is_none()
+                && prev_vp.as_deref().is_some_and(|p| p != "1440x900");
             let mut verified_vp = None;
-            let max_polls = if expected_vp.is_some() { 10 } else { 1 };
+            let max_polls = if expected_vp.is_some() || wait_for_reset_change {
+                12
+            } else {
+                1
+            };
             for poll_idx in 0..max_polls {
                 let current_vp = cdp
                     .evaluate_js("window.innerWidth + 'x' + window.innerHeight")
@@ -3217,7 +3281,14 @@ render(0);
                 if current_vp.is_some() {
                     verified_vp = current_vp;
                 }
-                if expected_vp.is_none() || verified_vp == expected_vp {
+                let settled = if expected_vp.is_some() {
+                    verified_vp == expected_vp
+                } else if wait_for_reset_change {
+                    verified_vp.is_some() && verified_vp != prev_vp
+                } else {
+                    true
+                };
+                if settled {
                     break;
                 }
                 if poll_idx + 1 < max_polls {
@@ -3296,8 +3367,31 @@ render(0);
             }
         }
 
+        // 3. CSS Media Feature Emulation (`prefers-color-scheme`, `prefers-reduced-motion`)
+        if let Some((media_opt, features, msgs)) =
+            Self::resolve_media_emulation(color_scheme, reduced_motion)?
+        {
+            cdp.set_emulated_media(media_opt, &features).await?;
+            for msg in msgs {
+                results.push(msg);
+            }
+            if !features.is_empty() {
+                let probe_checks: Vec<String> = features
+                    .iter()
+                    .map(|(k, v)| format!("'{k}:{v}=' + window.matchMedia('({k}: {v})').matches"))
+                    .collect();
+                let probe_js = format!("[{}].join(', ')", probe_checks.join(", "));
+                if let Ok(verified) = cdp.evaluate_js(&probe_js).await {
+                    let clean = verified.trim().trim_matches('"');
+                    if !clean.is_empty() {
+                        results.push(format!("Verified live matchMedia: {clean}"));
+                    }
+                }
+            }
+        }
+
         if results.is_empty() {
-            Ok("ℹ No emulation parameters specified. Provide 'viewport', 'network', or custom width/height.".to_string())
+            Ok("ℹ No emulation parameters specified. Provide 'viewport', 'network', 'color_scheme', 'reduced_motion', or custom width/height.".to_string())
         } else {
             Ok(format!(
                 "📱 Emulation settings applied:\n{}",
@@ -3308,6 +3402,89 @@ render(0);
                     .join("\n")
             ))
         }
+    }
+
+    /// Resolves optional `color_scheme` and `reduced_motion` emulation overrides into
+    /// `(Option<media_type>, Vec<(feature_name, feature_value)>, summary_messages)`.
+    #[allow(clippy::type_complexity)]
+    pub(crate) fn resolve_media_emulation(
+        color_scheme: Option<&str>,
+        reduced_motion: Option<&str>,
+    ) -> Result<
+        Option<(
+            Option<&'static str>,
+            Vec<(&'static str, &'static str)>,
+            Vec<String>,
+        )>,
+    > {
+        let mut features: Vec<(&'static str, &'static str)> = Vec::new();
+        let mut msgs: Vec<String> = Vec::new();
+        let mut any_specified = false;
+
+        if let Some(cs) = color_scheme {
+            any_specified = true;
+            match cs.trim().to_ascii_lowercase().as_str() {
+                "dark" => {
+                    features.push(("prefers-color-scheme", "dark"));
+                    msgs.push("Emulating `prefers-color-scheme: dark`".to_string());
+                }
+                "light" => {
+                    features.push(("prefers-color-scheme", "light"));
+                    msgs.push("Emulating `prefers-color-scheme: light`".to_string());
+                }
+                "reset" | "clear" | "none" => {
+                    msgs.push("Cleared `prefers-color-scheme` emulation override".to_string());
+                }
+                other => {
+                    return Err(ToolError::InvalidArguments {
+                        name: "browser_emulate".to_string(),
+                        reason: format!(
+                            "Unknown color_scheme '{}'. Supported: dark, light, reset",
+                            other
+                        ),
+                    }
+                    .into());
+                }
+            }
+        }
+
+        if let Some(rm) = reduced_motion {
+            any_specified = true;
+            match rm.trim().to_ascii_lowercase().as_str() {
+                "reduce" | "reduced" | "true" => {
+                    features.push(("prefers-reduced-motion", "reduce"));
+                    msgs.push("Emulating `prefers-reduced-motion: reduce`".to_string());
+                }
+                "no-preference" | "no_preference" | "normal" | "false" => {
+                    features.push(("prefers-reduced-motion", "no-preference"));
+                    msgs.push("Emulating `prefers-reduced-motion: no-preference`".to_string());
+                }
+                "reset" | "clear" | "none" => {
+                    msgs.push("Cleared `prefers-reduced-motion` emulation override".to_string());
+                }
+                other => {
+                    return Err(ToolError::InvalidArguments {
+                        name: "browser_emulate".to_string(),
+                        reason: format!(
+                            "Unknown reduced_motion '{}'. Supported: reduce, no-preference, reset",
+                            other
+                        ),
+                    }
+                    .into());
+                }
+            }
+        }
+
+        if !any_specified {
+            return Ok(None);
+        }
+
+        let media = if features.is_empty() {
+            None
+        } else {
+            Some("screen")
+        };
+        Ok(Some((media, features, msgs)))
     }
 
     /// Resolves viewport preset and custom width/height overrides into `(clear_first, Option<(w, h, mobile, scale)>, status_message)`.
@@ -4917,5 +5094,36 @@ mod tests {
         assert!(!BrowserController::is_recoverable_cdp_channel_error(
             "Invalid URL scheme"
         ));
+    }
+
+    #[test]
+    fn test_resolve_media_emulation_color_scheme_and_reduced_motion() {
+        assert!(BrowserController::resolve_media_emulation(None, None)
+            .expect("none ok")
+            .is_none());
+
+        let (media, feats, msgs) =
+            BrowserController::resolve_media_emulation(Some("dark"), Some("reduce"))
+                .expect("valid media")
+                .expect("some");
+        assert_eq!(media, Some("screen"));
+        assert_eq!(
+            feats,
+            vec![
+                ("prefers-color-scheme", "dark"),
+                ("prefers-reduced-motion", "reduce"),
+            ]
+        );
+        assert_eq!(msgs.len(), 2);
+
+        let (reset_media, reset_feats, _) =
+            BrowserController::resolve_media_emulation(None, Some("reset"))
+                .expect("reset ok")
+                .expect("some");
+        assert_eq!(reset_media, None);
+        assert!(reset_feats.is_empty());
+
+        assert!(BrowserController::resolve_media_emulation(Some("sepia"), None).is_err());
+        assert!(BrowserController::resolve_media_emulation(None, Some("turbo")).is_err());
     }
 }
