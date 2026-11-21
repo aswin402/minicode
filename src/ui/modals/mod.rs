@@ -263,6 +263,22 @@ impl ModalState {
         !matches!(self, ModalState::None)
     }
 
+    /// Returns `true` when the currently visible modal contains live animated spinners
+    /// or progress indicators that require periodic `FrameScheduler` animation ticks
+    /// even while the main agent turn is idle.
+    pub fn has_live_animation(&self) -> bool {
+        match self {
+            ModalState::ThemeSelect { active_tab, .. } => matches!(
+                active_tab,
+                ThemeModalTab::Animations | ThemeModalTab::ActivityStyles
+            ),
+            ModalState::ModelSelect { loading: true, .. } => true,
+            ModalState::Settings(state) => state.probing,
+            ModalState::MiniPower(state) => state.is_evaluating,
+            _ => false,
+        }
+    }
+
     pub fn new_code_review(report: crate::git::ReviewReport, staged_only: bool) -> Self {
         Self::CodeReview(code_review::CodeReviewModalState::new(report, staged_only))
     }

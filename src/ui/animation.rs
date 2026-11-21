@@ -581,6 +581,15 @@ pub fn lerp_color(c1: Color, c2: Color, factor: f32) -> Color {
     Color::Rgb(r, g, b)
 }
 
+/// Computes a periodic sine-wave phase angle in `[0, 2π)` using `f64` precision before
+/// narrowing to `f32`, avoiding 24-bit `f32` mantissa truncation when `millis` is large
+/// (e.g., Unix epoch timestamps ~1.8e12 ms where `f32` ULP is 131 seconds).
+#[inline]
+fn phase_rad(millis: u64, speed: f32) -> f32 {
+    let period = (speed as f64).max(1.0);
+    ((millis as f64 / period) % std::f64::consts::TAU) as f32
+}
+
 /// Renders a string where each character is styled along a dynamic sine wave gradient
 pub fn render_shimmer_spans(
     text: &str,
@@ -591,7 +600,7 @@ pub fn render_shimmer_spans(
     frequency: f32,
 ) -> Vec<Span<'static>> {
     let mut spans = Vec::with_capacity(text.chars().count());
-    let base_phase = (millis as f32) / speed;
+    let base_phase = phase_rad(millis, speed);
 
     for (i, ch) in text.chars().enumerate() {
         let phase = base_phase - (i as f32 * frequency);
@@ -659,7 +668,7 @@ pub fn render_spinner_spans_with_activity(
                 let idx = ((millis / 500) as usize) % ACTIVITY_EMOJI_PREVIEW_FRAMES.len();
                 ACTIVITY_EMOJI_PREVIEW_FRAMES[idx]
             });
-            let phase = (millis as f32) / 160.0;
+            let phase = phase_rad(millis, 160.0);
             let factor = (phase.sin() * 0.5 + 0.5).clamp(0.0, 1.0);
             let grad_color = lerp_color(c1, c2, factor);
             vec![Span::styled(
@@ -712,7 +721,7 @@ pub fn render_spinner_spans_with_activity(
                 _ => (PARTICLE_ORBIT_FRAMES, crate::constants::SPINNER_FRAME_MS),
             };
             let idx = ((millis / interval_ms) as usize) % frames.len();
-            let phase = (millis as f32) / 160.0;
+            let phase = phase_rad(millis, 160.0);
             let factor = (phase.sin() * 0.5 + 0.5).clamp(0.0, 1.0);
             let grad_color = lerp_color(c1, c2, factor);
             vec![Span::styled(
@@ -1035,7 +1044,7 @@ pub fn render_live_activity_line_with_style(
     let push_post_pipe_badge = |spans: &mut Vec<Span<'static>>| match badge_kind {
         PostPipeBadgeKind::None => {}
         PostPipeBadgeKind::Emoji => {
-            let emoji_phase = (millis as f32) / 160.0;
+            let emoji_phase = phase_rad(millis, 160.0);
             let emoji_factor = (emoji_phase.sin() * 0.5 + 0.5).clamp(0.0, 1.0);
             let emoji_color = lerp_color(c1, c2, emoji_factor);
             spans.push(Span::styled(
@@ -1582,5 +1591,54 @@ mod tests {
         assert!(!diff.iter().any(|(x, y, _)| *x == 4 && *y == 0));
         // (5, 0) must be emitted so CrosstermBackend issues MoveTo(5, 0) after skipping (4, 0)
         assert!(diff.iter().any(|(x, y, _)| *x == 5 && *y == 0));
+    }
+
+    #[test]
+    fn test_shimmer_and_spinner_animate_smoothly_for_all_13_styles_even_with_epoch_millis() {
+        let theme = Theme::default();
+        // Large 2026 Unix epoch timestamp (> 2^40) previously froze `(millis as f32)` for 131s.
+        let epoch_ms: u64 = 1_795_292_234_345;
+        let s1 = render_shimmer_spans(
+            "Thinking...",
+            theme.brand_accent,
+            theme.info,
+            epoch_ms,
+            160.0,
+            0.32,
+        );
+        let s2 = render_shimmer_spans(
+            "Thinking...",
+            theme.brand_accent,
+            theme.info,
+            epoch_ms + 200,
+            160.0,
+            0.32,
+        );
+        let colors1: Vec<Option<Color>> = s1.iter().map(|sp| sp.style.fg).collect();
+        let colors2: Vec<Option<Color>> = s2.iter().map(|sp| sp.style.fg).collect();
+        assert_ne!(
+            colors1, colors2,
+            "Shimmer gradient must visibly advance over 200ms even at 2026 epoch timestamps"
+        );
+
+        // Every single one of the 13 ANIMATION_OPTIONS must produce distinct frames over time.
+        for opt in ANIMATION_OPTIONS {
+            let mut frames = std::collections::HashSet::new();
+            for step in 0..16u64 {
+                let spans = render_preview_spinner(opt.style, epoch_ms + step * 160, &theme);
+                let signature: String = spans
+                    .iter()
+                    .map(|sp| format!("{}:{:?}", sp.content, sp.style.fg))
+                    .collect();
+                frames.insert(signature);
+            }
+            assert!(
+                frames.len() >= 2,
+                "Animation '{}' ({}) must produce multiple distinct live frames, got {}",
+                opt.name,
+                opt.id,
+                frames.len()
+            );
+        }
     }
 }

@@ -790,7 +790,8 @@ impl<'a> App<'a> {
             let pool_opt = crate::agent::subagent::try_get_global_subagent_pool();
             let is_animating = self.is_working
                 || self.timeline.has_open_thought()
-                || pool_opt.is_some_and(|p| p.active_worker_count() > 0);
+                || pool_opt.is_some_and(|p| p.active_worker_count() > 0)
+                || self.modal.has_live_animation();
             let next_toast_expiry = self.toasts.next_expiry_instant(now);
             let next_modal_poll = match self.modal {
                 crate::ui::modals::ModalState::Processes(ref state) => {
@@ -2782,5 +2783,37 @@ mod tests {
         assert_eq!(app.config.agent.streaming, !prev_streaming);
         assert!(matches!(app.modal, ModalState::None));
         assert!(app.modal_history.is_empty());
+    }
+
+    #[test]
+    fn test_theme_selector_animation_tabs_keep_frame_scheduler_animating() {
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+        let config = Config::default();
+        let mut app = App::new(temp_dir.path(), config);
+        let mut scheduler = crate::ui::FrameScheduler::new();
+        let now = Instant::now();
+        scheduler.record_draw_completed(now, Duration::from_millis(2));
+
+        // Idle with no modal -> 0% CPU (no animation deadline)
+        assert!(!app.modal.has_live_animation());
+        assert!(scheduler
+            .next_deadline(now, app.modal.has_live_animation(), None, None)
+            .is_none());
+
+        // Static Themes tab -> still 0% CPU
+        app.open_theme_modal(Some(crate::ui::modals::ThemeModalTab::Themes));
+        assert!(!app.modal.has_live_animation());
+
+        // Animations tab -> actively ticks FrameScheduler at spinner cadence
+        app.open_theme_modal(Some(crate::ui::modals::ThemeModalTab::Animations));
+        assert!(app.modal.has_live_animation());
+        let deadline = scheduler
+            .next_deadline(now, app.modal.has_live_animation(), None, None)
+            .expect("Animations tab must schedule live animation ticks");
+        assert!(deadline.saturating_duration_since(now) <= Duration::from_millis(125));
+
+        // Activity Bar tab -> actively ticks FrameScheduler too
+        app.open_theme_modal(Some(crate::ui::modals::ThemeModalTab::ActivityStyles));
+        assert!(app.modal.has_live_animation());
     }
 }

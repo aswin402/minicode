@@ -8,6 +8,16 @@ use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, Paragraph};
 use ratatui::Frame;
+use std::sync::OnceLock;
+use std::time::Instant;
+use unicode_width::UnicodeWidthStr;
+
+/// Monotonic millisecond clock anchored at first modal render so live animation previews
+/// advance smoothly without system-clock jumps or floating-point epoch truncation.
+fn preview_clock_millis() -> u64 {
+    static ORIGIN: OnceLock<Instant> = OnceLock::new();
+    ORIGIN.get_or_init(Instant::now).elapsed().as_millis() as u64
+}
 
 fn truncate_str(s: &str, max_chars: usize) -> String {
     if max_chars == 0 {
@@ -905,11 +915,10 @@ pub fn render_theme_select(
             let scroll_offset = compute_scroll_offset(animation_selected_index, list_max_visible);
             let visible_anims = animations.iter().skip(scroll_offset).take(list_max_visible);
 
-            let millis = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_millis() as u64;
-            let desc_max_w = right_w.saturating_sub(58).max(16);
+            let millis = preview_clock_millis();
+            let name_col_w = 26usize;
+            let spinner_col_w = 10usize;
+            let desc_max_w = right_w.saturating_sub(59).max(16);
 
             for (idx_rel, anim) in visible_anims.enumerate() {
                 let idx = scroll_offset + idx_rel;
@@ -936,22 +945,36 @@ pub fn render_theme_select(
                         format!("[{:>2}] ", idx + 1),
                         Style::default().fg(theme.muted),
                     ),
-                    Span::styled(format!("{:<24}", truncate_str(anim.name, 24)), title_style),
+                    Span::styled(
+                        format!(
+                            "{:<width$}  ",
+                            truncate_str(anim.name, name_col_w),
+                            width = name_col_w
+                        ),
+                        title_style,
+                    ),
                 ];
 
                 let preview_spans =
                     crate::ui::animation::render_preview_spinner(anim.style, millis, theme);
+                let spinner_w: usize = preview_spans
+                    .iter()
+                    .map(|s| UnicodeWidthStr::width(s.content.as_ref()))
+                    .sum();
                 row_spans.extend(preview_spans);
+                if spinner_w < spinner_col_w {
+                    row_spans.push(Span::raw(" ".repeat(spinner_col_w - spinner_w)));
+                }
 
                 if is_active {
                     row_spans.push(Span::styled(
-                        "  [active] ",
+                        "[active]  ",
                         Style::default()
                             .fg(theme.success)
                             .add_modifier(Modifier::BOLD),
                     ));
                 } else {
-                    row_spans.push(Span::raw("           "));
+                    row_spans.push(Span::raw("          "));
                 }
 
                 row_spans.push(Span::styled(
@@ -1163,10 +1186,7 @@ pub fn render_theme_select(
             );
         }
         crate::ui::modals::ThemeModalTab::ActivityStyles => {
-            let millis = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_millis() as u64;
+            let millis = preview_clock_millis();
             let active_spinner = crate::ui::animation::SpinnerStyle::from_id(active_animation_id);
             let demo_activities = [
                 (crate::ui::animation::AgentActivity::Thinking, 4.2),
