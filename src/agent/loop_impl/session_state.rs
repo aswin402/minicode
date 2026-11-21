@@ -216,7 +216,7 @@ impl AgentLoop {
         event_sender: &mpsc::UnboundedSender<AgentEvent>,
         session_id: &str,
         turn_id: usize,
-    ) -> Result<(String, Vec<ToolCall>, usize, usize)> {
+    ) -> Result<(String, Vec<ToolCall>, usize, usize, usize)> {
         let mut nonstream_opts = options.clone();
         nonstream_opts.stream = false;
         let mut stream = self
@@ -228,6 +228,7 @@ impl AgentLoop {
         let mut pending_tool_calls = Vec::new();
         let mut last_prompt_tokens = 0_usize;
         let mut cumulative_completion_tokens = 0_usize;
+        let mut last_cached_prompt_tokens = 0_usize;
 
         while let Some(chunk) = stream.next().await {
             match chunk {
@@ -241,9 +242,14 @@ impl AgentLoop {
                 Ok(StreamChunk::Usage {
                     prompt_tokens,
                     completion_tokens,
-                    cached_prompt_tokens: _,
+                    cached_prompt_tokens,
                 }) => {
-                    last_prompt_tokens = prompt_tokens;
+                    if prompt_tokens > 0 {
+                        last_prompt_tokens = prompt_tokens;
+                        last_cached_prompt_tokens = cached_prompt_tokens;
+                    } else if cached_prompt_tokens > 0 {
+                        last_cached_prompt_tokens = cached_prompt_tokens;
+                    }
                     cumulative_completion_tokens += completion_tokens;
                 }
                 Ok(StreamChunk::Done) => {
@@ -295,6 +301,7 @@ impl AgentLoop {
             pending_tool_calls,
             last_prompt_tokens,
             cumulative_completion_tokens,
+            last_cached_prompt_tokens,
         ))
     }
 

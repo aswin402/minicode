@@ -1609,14 +1609,23 @@ pub async fn dispatch(
                 if actionable_count > 0 {
                     let wm = crate::context::working_memory::WorkingMemory::new(workspace_root);
                     let plan_hint = wm.format_remaining_tasks_hint();
-                    if !plan_hint.is_empty() {
+                    if !plan_hint.is_empty() && !plan_hint.contains("call `archive_plan` directly")
+                    {
                         formatted.push_str(&format!("\n{}\n", plan_hint));
                     }
-                    formatted.push_str(&format!(
-                        "\n► Next Step: Resolve the {} HIGH/MEDIUM review finding(s) above (max {} fix rounds), then re-run `power_review(stage=\"re-review\")` and `power_verify`.\n",
-                        actionable_count,
-                        MiniPowerEngine::MAX_FIX_LOOP_ROUNDS
-                    ));
+                    if reviewer_still_running {
+                        formatted.push_str(&format!(
+                            "\n► Next Step: Resolve the {} HIGH/MEDIUM static review finding(s) above (and incorporate findings once the active async Reviewer MiniPub subagent finishes; max {} fix rounds), then re-run `power_review(stage=\"re-review\")` and `power_verify`.\n",
+                            actionable_count,
+                            MiniPowerEngine::MAX_FIX_LOOP_ROUNDS
+                        ));
+                    } else {
+                        formatted.push_str(&format!(
+                            "\n► Next Step: Resolve the {} HIGH/MEDIUM review finding(s) above (max {} fix rounds), then re-run `power_review(stage=\"re-review\")` and `power_verify`.\n",
+                            actionable_count,
+                            MiniPowerEngine::MAX_FIX_LOOP_ROUNDS
+                        ));
+                    }
                 } else if reviewer_still_running {
                     let wm = crate::context::working_memory::WorkingMemory::new(workspace_root);
                     let plan_hint = wm.format_remaining_tasks_hint();

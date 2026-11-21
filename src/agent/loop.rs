@@ -1242,14 +1242,19 @@ impl AgentLoop {
                                 completion_tokens,
                                 cached_prompt_tokens,
                             })) => {
-                                last_prompt_tokens = prompt_tokens;
+                                if prompt_tokens > 0 {
+                                    last_prompt_tokens = prompt_tokens;
+                                    last_cached_prompt_tokens = cached_prompt_tokens;
+                                } else if cached_prompt_tokens > 0 {
+                                    last_cached_prompt_tokens = cached_prompt_tokens;
+                                }
                                 cumulative_completion_tokens += completion_tokens;
-                                last_cached_prompt_tokens = cached_prompt_tokens;
-                                let live_used = prompt_tokens.saturating_add(completion_tokens);
+                                let live_used =
+                                    last_prompt_tokens.saturating_add(completion_tokens);
                                 let update_event = AgentEvent::ContextTokensUpdated {
                                     turn_id,
                                     used_tokens: live_used,
-                                    cached_tokens: cached_prompt_tokens,
+                                    cached_tokens: last_cached_prompt_tokens,
                                 };
                                 let _ = event_sender.send(update_event);
                             }
@@ -1421,12 +1426,17 @@ impl AgentLoop {
                     };
 
                     match nonstreaming_res {
-                        Ok((iter_text, tool_calls, last_pt, cum_ct)) => {
+                        Ok((iter_text, tool_calls, last_pt, cum_ct, cached_pt)) => {
                             iteration_text = iter_text;
                             pending_tool_calls = tool_calls;
-                            last_prompt_tokens = last_pt;
-                            cumulative_completion_tokens = cum_ct;
-                            let live_used = last_pt.saturating_add(cum_ct);
+                            if last_pt > 0 {
+                                last_prompt_tokens = last_pt;
+                                last_cached_prompt_tokens = cached_pt;
+                            } else if cached_pt > 0 {
+                                last_cached_prompt_tokens = cached_pt;
+                            }
+                            cumulative_completion_tokens += cum_ct;
+                            let live_used = last_prompt_tokens.saturating_add(cum_ct);
                             let update_event = AgentEvent::ContextTokensUpdated {
                                 turn_id,
                                 used_tokens: live_used,

@@ -138,13 +138,67 @@ pub(crate) fn parse_tool_args_preserving_duplicates(
     Ok(normalize_xml_gateway_wrappers(raw_val))
 }
 
+/// Strips unmatched trailing XML tool-argument closing tags leaked by XML-to-JSON model gateways
+/// (e.g., MiniMax M3.1 emitting `PYEOF</cmd>` or `echo OK</cmd>` at the end of a shell argument).
+/// Preserves any closing tag that has a matching opening `<tag` anywhere in the string so genuine
+/// XML/HTML content is never altered.
+fn strip_trailing_unmatched_gateway_xml_tags(mut text: String) -> String {
+    const GATEWAY_CLOSING_TAGS: &[(&str, &str)] = &[
+        ("</cmd>", "<cmd"),
+        ("</command>", "<command"),
+        ("</parameter>", "<parameter"),
+        ("</invoke>", "<invoke"),
+        ("</tool_call>", "<tool_call"),
+        ("</minimax:tool_call>", "<minimax:tool_call"),
+        ("</arg_value>", "<arg_value"),
+        ("</function>", "<function"),
+    ];
+
+    loop {
+        let trimmed_end = text.trim_end();
+        let mut stripped_len: Option<usize> = None;
+        for &(close_tag, open_prefix) in GATEWAY_CLOSING_TAGS {
+            if trimmed_end.len() >= close_tag.len() {
+                let split_at = trimmed_end.len() - close_tag.len();
+                if trimmed_end.is_char_boundary(split_at)
+                    && trimmed_end[split_at..].eq_ignore_ascii_case(close_tag)
+                {
+                    let prefix_lower = trimmed_end[..split_at].to_ascii_lowercase();
+                    let has_matching_open =
+                        prefix_lower.match_indices(open_prefix).any(|(idx, _)| {
+                            matches!(
+                                prefix_lower.as_bytes().get(idx + open_prefix.len()),
+                                Some(b'>' | b' ' | b'\t' | b'\n' | b'\r' | b'/')
+                            )
+                        });
+                    if !has_matching_open {
+                        stripped_len = Some(split_at);
+                        break;
+                    }
+                }
+            }
+        }
+        match stripped_len {
+            Some(new_len) => text.truncate(new_len),
+            None => break,
+        }
+    }
+
+    text
+}
+
 /// Normalizes XML-to-JSON gateway serialization artifacts structurally:
 /// 1. Unwraps nested single-key `{"item": [...]}` list wrappers on object properties.
 /// 2. Reattaches spilled sibling `"item"` entries into the schema-matching sibling `Value::Array`
 ///    and restores any child scalar property missing on a single existing element when present
 ///    on all spilled items.
+/// 3. Strips unmatched trailing XML gateway closing tags (e.g., `</cmd>`, `</parameter>`) leaked
+///    onto string argument tails.
 pub(crate) fn normalize_xml_gateway_wrappers(value: serde_json::Value) -> serde_json::Value {
     match value {
+        serde_json::Value::String(s) => {
+            serde_json::Value::String(strip_trailing_unmatched_gateway_xml_tags(s))
+        }
         serde_json::Value::Array(arr) => serde_json::Value::Array(
             arr.into_iter()
                 .map(normalize_xml_gateway_wrappers)
@@ -1291,5 +1345,35 @@ mod tests {
             custom,
             vec!["https://my-corp-proxy.internal/v1".to_string()]
         );
+    }
+
+    #[test]
+    fn test_minitest80_strip_unmatched_trailing_gateway_xml_tags_preserves_valid_markup() {
+        // 1. MiniMax-M3.1 leaked `</cmd>` on heredoc / shell command tails must be stripped
+        let leaked_heredoc = serde_json::json!({
+            "command": "python3 - <<'PYEOF'\nprint('ok')\nPYEOF</cmd>"
+        });
+        let cleaned = normalize_xml_gateway_wrappers(leaked_heredoc);
+        assert_eq!(
+            cleaned["command"],
+            "python3 - <<'PYEOF'\nprint('ok')\nPYEOF"
+        );
+
+        let chained = serde_json::json!({
+            "command": "node --check assets/js/app.js && echo OK</cmd></invoke>  "
+        });
+        let cleaned_chained = normalize_xml_gateway_wrappers(chained);
+        assert_eq!(
+            cleaned_chained["command"],
+            "node --check assets/js/app.js && echo OK"
+        );
+
+        // 2. Matched `<cmd>...</cmd>` or HTML `</script>` must remain completely untouched
+        let matched = serde_json::json!({
+            "content": "<script>console.log(1)</script>",
+            "xml": "<cmd>echo hi</cmd>"
+        });
+        let cleaned_matched = normalize_xml_gateway_wrappers(matched.clone());
+        assert_eq!(cleaned_matched, matched);
     }
 }

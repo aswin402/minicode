@@ -162,7 +162,10 @@ impl ProviderWireCapabilities {
         (
             "minimax",
             Self {
-                emits_stream_options: false,
+                // MiniMax's OpenAI-compatible SSE endpoint omits the trailing `usage` chunk
+                // (including `prompt_tokens_details.cached_tokens`) unless `stream_options.include_usage`
+                // is requested; strict legacy proxies are covered by the 400/422 self-healing retry.
+                emits_stream_options: true,
                 supports_reasoning_effort: false,
                 // MiniMax rejects temperature <= 0.0 or > 1.0
                 temperature_bounds: Some((0.01, 1.0)),
@@ -171,7 +174,7 @@ impl ProviderWireCapabilities {
         (
             "z.ai",
             Self {
-                emits_stream_options: false,
+                emits_stream_options: true,
                 supports_reasoning_effort: false,
                 temperature_bounds: None,
             },
@@ -179,7 +182,7 @@ impl ProviderWireCapabilities {
         (
             "zhipu",
             Self {
-                emits_stream_options: false,
+                emits_stream_options: true,
                 supports_reasoning_effort: false,
                 temperature_bounds: None,
             },
@@ -365,6 +368,56 @@ fn detect_compat_override_from_error(
     } else {
         None
     }
+}
+
+/// Extracts `(prompt_tokens, completion_tokens, cached_prompt_tokens)` from an OpenAI-compatible
+/// `usage` payload across OpenAI, MiniMax, DeepSeek, Kimi/Moonshot, OpenRouter, vLLM, and
+/// Anthropic-compatible gateway schemas.
+#[must_use]
+fn extract_openai_usage_tokens(usage: &serde_json::Value) -> (usize, usize, usize) {
+    let cached_prompt_tokens = usage
+        .get("prompt_tokens_details")
+        .and_then(|d| d.get("cached_tokens"))
+        .or_else(|| {
+            usage
+                .get("input_tokens_details")
+                .and_then(|d| d.get("cached_tokens"))
+        })
+        .or_else(|| usage.get("prompt_cache_hit_tokens"))
+        .or_else(|| usage.get("cache_read_input_tokens"))
+        .or_else(|| usage.get("cached_tokens"))
+        .and_then(|t| t.as_u64())
+        .unwrap_or(0) as usize;
+
+    let prompt_tokens = if let Some(pt) = usage.get("prompt_tokens").and_then(|t| t.as_u64()) {
+        pt as usize
+    } else {
+        let base_in = usage
+            .get("input_tokens")
+            .and_then(|t| t.as_u64())
+            .unwrap_or(0) as usize;
+        let cache_create = usage
+            .get("cache_creation_input_tokens")
+            .and_then(|t| t.as_u64())
+            .unwrap_or(0) as usize;
+        if usage.get("cache_read_input_tokens").is_some()
+            || usage.get("cache_creation_input_tokens").is_some()
+        {
+            base_in
+                .saturating_add(cached_prompt_tokens)
+                .saturating_add(cache_create)
+        } else {
+            base_in
+        }
+    };
+
+    let completion_tokens = usage
+        .get("completion_tokens")
+        .or_else(|| usage.get("output_tokens"))
+        .and_then(|t| t.as_u64())
+        .unwrap_or(0) as usize;
+
+    (prompt_tokens, completion_tokens, cached_prompt_tokens)
 }
 
 /// Extracts an in-band API error from an OpenAI-compatible SSE chunk or HTTP-200 JSON body
@@ -1345,19 +1398,8 @@ impl OpenAiCompatibleProvider {
         }
 
         if let Some(usage) = val.get("usage") {
-            let prompt_tokens = usage
-                .get("prompt_tokens")
-                .and_then(|t| t.as_u64())
-                .unwrap_or(0) as usize;
-            let completion_tokens = usage
-                .get("completion_tokens")
-                .and_then(|t| t.as_u64())
-                .unwrap_or(0) as usize;
-            let cached_prompt_tokens = usage
-                .get("prompt_tokens_details")
-                .and_then(|d| d.get("cached_tokens"))
-                .and_then(|t| t.as_u64())
-                .unwrap_or(0) as usize;
+            let (prompt_tokens, completion_tokens, cached_prompt_tokens) =
+                extract_openai_usage_tokens(usage);
             if prompt_tokens > 0 || completion_tokens > 0 || cached_prompt_tokens > 0 {
                 chunks.push(StreamChunk::Usage {
                     prompt_tokens,
@@ -1752,13 +1794,8 @@ impl Provider for OpenAiCompatibleProvider {
                                     }
 
                                     if let Some(usage) = val.get("usage") {
-                                        let prompt_tokens = usage.get("prompt_tokens").and_then(|t| t.as_u64()).unwrap_or(0) as usize;
-                                        let completion_tokens = usage.get("completion_tokens").and_then(|t| t.as_u64()).unwrap_or(0) as usize;
-                                        let cached_prompt_tokens = usage
-                                            .get("prompt_tokens_details")
-                                            .and_then(|d| d.get("cached_tokens"))
-                                            .and_then(|t| t.as_u64())
-                                            .unwrap_or(0) as usize;
+                                        let (prompt_tokens, completion_tokens, cached_prompt_tokens) =
+                                            extract_openai_usage_tokens(usage);
                                         if prompt_tokens > 0 || completion_tokens > 0 || cached_prompt_tokens > 0 {
                                             yield Ok(StreamChunk::Usage { prompt_tokens, completion_tokens, cached_prompt_tokens });
                                         } else {
@@ -2593,7 +2630,7 @@ Let me proceed."#;
         assert!(gpt4o_val.get("reasoning_effort").is_none());
         assert!(gpt4o_val.get("stream_options").is_some());
 
-        // 3. MiniMax clamps temperature == 0.0 into (0.01, 1.0] and omits stream_options
+        // 3. MiniMax clamps temperature == 0.0 into (0.01, 1.0], emits stream_options for usage/cache telemetry, and omits reasoning_effort
         let mm_opts = CompletionOptions {
             model: "MiniMax-M2.7".to_string(),
             temperature: 0.0,
@@ -2613,7 +2650,7 @@ Let me proceed."#;
         )
         .unwrap();
         assert!(mm_val["temperature"].as_f64().unwrap() >= 0.009);
-        assert!(mm_val.get("stream_options").is_none());
+        assert_eq!(mm_val["stream_options"]["include_usage"], true);
         assert!(mm_val.get("reasoning_effort").is_none());
 
         // 4. Kimi K2.5 enforces temperature=1.0 and preserves reasoning_effort
@@ -2817,5 +2854,50 @@ Let me proceed."#;
         .into();
         let chosen_auth = select_regional_failure_error(None, Some(real_auth_err), "minimax");
         assert!(!chosen_auth.is_retryable_provider_error());
+    }
+
+    #[test]
+    fn test_extract_openai_usage_tokens_across_provider_cache_schemas() {
+        // 1. OpenAI / MiniMax / OpenRouter standard `prompt_tokens_details.cached_tokens`
+        let mm = serde_json::json!({
+            "prompt_tokens": 22000,
+            "completion_tokens": 410,
+            "prompt_tokens_details": { "cached_tokens": 18500 }
+        });
+        assert_eq!(extract_openai_usage_tokens(&mm), (22000, 410, 18500));
+
+        // 2. DeepSeek native OpenAI-compatible `prompt_cache_hit_tokens`
+        let ds = serde_json::json!({
+            "prompt_tokens": 15000,
+            "completion_tokens": 300,
+            "prompt_cache_hit_tokens": 12000,
+            "prompt_cache_miss_tokens": 3000
+        });
+        assert_eq!(extract_openai_usage_tokens(&ds), (15000, 300, 12000));
+
+        // 3. Top-level `cached_tokens` (Kimi / vLLM / SGLang)
+        let kimi = serde_json::json!({
+            "prompt_tokens": 9000,
+            "completion_tokens": 200,
+            "cached_tokens": 7200
+        });
+        assert_eq!(extract_openai_usage_tokens(&kimi), (9000, 200, 7200));
+
+        // 4. OpenAI Responses-style `input_tokens_details.cached_tokens`
+        let resp = serde_json::json!({
+            "input_tokens": 10000,
+            "output_tokens": 250,
+            "input_tokens_details": { "cached_tokens": 8000 }
+        });
+        assert_eq!(extract_openai_usage_tokens(&resp), (10000, 250, 8000));
+
+        // 5. Anthropic-style gateway `input_tokens` (uncached) + `cache_read_input_tokens` + `cache_creation_input_tokens`
+        let anth = serde_json::json!({
+            "input_tokens": 350,
+            "output_tokens": 120,
+            "cache_read_input_tokens": 14000,
+            "cache_creation_input_tokens": 650
+        });
+        assert_eq!(extract_openai_usage_tokens(&anth), (15000, 120, 14000));
     }
 }

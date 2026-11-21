@@ -80,8 +80,9 @@ impl ContextDiagnosticsData {
             "anthropic" => {
                 "Anthropic Ephemeral Cache Breakpoints (System Prompt + Tools)".to_string()
             }
-            "openai" | "openrouter" | "deepseek" => {
-                "OpenAI / DeepSeek Automatic 1024-Token Aligned Prefix Cache".to_string()
+            "minimax" => "MiniMax Automatic 512-Token Prefix Cache (stream_options)".to_string(),
+            "openai" | "openrouter" | "deepseek" | "kimi" | "moonshot" | "z.ai" | "zhipu" => {
+                "OpenAI-Compatible Automatic Prefix Cache".to_string()
             }
             "gemini" => "Google Gemini Explicit Context Caching".to_string(),
             "ollama" | "local" => "Local Runtime / LMCache KV-Cache Tensor Reuse".to_string(),

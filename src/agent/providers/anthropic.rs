@@ -833,6 +833,41 @@ impl AnthropicProvider {
         Ok(buf)
     }
 
+    /// Extracts `(total_prompt_tokens, completion_tokens, cached_prompt_tokens)` from an Anthropic
+    /// `usage` object. Anthropic reports `input_tokens` as uncached tokens only, so total prompt
+    /// tokens equal `input_tokens + cache_read_input_tokens + cache_creation_input_tokens`.
+    fn extract_anthropic_usage(
+        usage: &serde_json::Value,
+    ) -> (Option<usize>, Option<usize>, Option<usize>) {
+        let base_in = usage
+            .get("input_tokens")
+            .and_then(|u| u.as_u64())
+            .map(|v| v as usize);
+        let cache_read = usage
+            .get("cache_read_input_tokens")
+            .and_then(|u| u.as_u64())
+            .map(|v| v as usize);
+        let cache_create = usage
+            .get("cache_creation_input_tokens")
+            .and_then(|u| u.as_u64())
+            .map(|v| v as usize);
+        let total_prompt = if base_in.is_some() || cache_read.is_some() || cache_create.is_some() {
+            Some(
+                base_in
+                    .unwrap_or(0)
+                    .saturating_add(cache_read.unwrap_or(0))
+                    .saturating_add(cache_create.unwrap_or(0)),
+            )
+        } else {
+            None
+        };
+        let output = usage
+            .get("output_tokens")
+            .and_then(|u| u.as_u64())
+            .map(|v| v as usize);
+        (total_prompt, output, cache_read)
+    }
+
     /// Parses an Anthropic SSE event into StreamChunk items
     pub fn parse_anthropic_event(
         event_type: &str,
@@ -852,14 +887,16 @@ impl AnthropicProvider {
         match eff_type {
             "message_start" => {
                 if let Some(usage) = val.get("message").and_then(|m| m.get("usage")) {
-                    *prompt_tokens = usage
-                        .get("input_tokens")
-                        .and_then(|u| u.as_u64())
-                        .unwrap_or(0) as usize;
-                    *cached_prompt_tokens = usage
-                        .get("cache_read_input_tokens")
-                        .and_then(|u| u.as_u64())
-                        .unwrap_or(0) as usize;
+                    let (total_prompt, output, cache_read) = Self::extract_anthropic_usage(usage);
+                    if let Some(pt) = total_prompt {
+                        *prompt_tokens = pt;
+                    }
+                    if let Some(out) = output {
+                        *completion_tokens = out;
+                    }
+                    if let Some(cr) = cache_read {
+                        *cached_prompt_tokens = cr;
+                    }
                 }
             }
             "content_block_start" => {
@@ -938,8 +975,19 @@ impl AnthropicProvider {
             }
             "message_delta" => {
                 if let Some(usage) = val.get("usage") {
-                    if let Some(out) = usage.get("output_tokens").and_then(|o| o.as_u64()) {
-                        *completion_tokens = out as usize;
+                    let (total_prompt, output, cache_read) = Self::extract_anthropic_usage(usage);
+                    if let Some(out) = output {
+                        *completion_tokens = out;
+                    }
+                    if let Some(pt) = total_prompt {
+                        if pt > 0 {
+                            *prompt_tokens = pt;
+                        }
+                    }
+                    if let Some(cr) = cache_read {
+                        if cr > 0 {
+                            *cached_prompt_tokens = cr;
+                        }
                     }
                 }
             }
@@ -1023,18 +1071,10 @@ impl AnthropicProvider {
         }
 
         if let Some(usage) = val.get("usage") {
-            let prompt_tokens = usage
-                .get("input_tokens")
-                .and_then(|u| u.as_u64())
-                .unwrap_or(0) as usize;
-            let completion_tokens = usage
-                .get("output_tokens")
-                .and_then(|u| u.as_u64())
-                .unwrap_or(0) as usize;
-            let cached_prompt_tokens = usage
-                .get("cache_read_input_tokens")
-                .and_then(|u| u.as_u64())
-                .unwrap_or(0) as usize;
+            let (total_prompt, output, cache_read) = Self::extract_anthropic_usage(usage);
+            let prompt_tokens = total_prompt.unwrap_or(0);
+            let completion_tokens = output.unwrap_or(0);
+            let cached_prompt_tokens = cache_read.unwrap_or(0);
             if prompt_tokens > 0 || completion_tokens > 0 || cached_prompt_tokens > 0 {
                 chunks.push(StreamChunk::Usage {
                     prompt_tokens,
@@ -1337,5 +1377,63 @@ mod tests {
             AnthropicProvider::build_request_body(&msgs, &[], &opts_4, "claude-sonnet-4-20250514");
         assert_eq!(body_4["thinking"]["type"], "enabled");
         assert_eq!(body_4["temperature"], 1.0);
+    }
+
+    #[test]
+    fn test_anthropic_usage_includes_cache_read_and_creation_in_total_prompt_tokens() {
+        let mut tool_acc = std::collections::BTreeMap::new();
+        let mut pt = 0usize;
+        let mut ct = 0usize;
+        let mut cached = 0usize;
+        let mut thinking = false;
+
+        let start = serde_json::json!({
+            "type": "message_start",
+            "message": {
+                "usage": {
+                    "input_tokens": 200,
+                    "cache_read_input_tokens": 8000,
+                    "cache_creation_input_tokens": 300,
+                    "output_tokens": 1
+                }
+            }
+        });
+        AnthropicProvider::parse_anthropic_event(
+            "message_start",
+            &start,
+            &mut tool_acc,
+            &mut pt,
+            &mut ct,
+            &mut cached,
+            &mut thinking,
+        );
+        let delta = serde_json::json!({
+            "type": "message_delta",
+            "usage": { "output_tokens": 145 }
+        });
+        AnthropicProvider::parse_anthropic_event(
+            "message_delta",
+            &delta,
+            &mut tool_acc,
+            &mut pt,
+            &mut ct,
+            &mut cached,
+            &mut thinking,
+        );
+        let stop = serde_json::json!({ "type": "message_stop" });
+        let chunks = AnthropicProvider::parse_anthropic_event(
+            "message_stop",
+            &stop,
+            &mut tool_acc,
+            &mut pt,
+            &mut ct,
+            &mut cached,
+            &mut thinking,
+        );
+        assert!(chunks.contains(&StreamChunk::Usage {
+            prompt_tokens: 8500,
+            completion_tokens: 145,
+            cached_prompt_tokens: 8000,
+        }));
     }
 }
