@@ -2915,10 +2915,14 @@ fn run_webkit_thread(
             let _ = init_tx.send(Err("No X11/Wayland display available for GTK".to_string()));
             return;
         }
-        if opts.headless {
-            // Lock GTK Xft DPI to exact 96 DPI (96 * 1024 = 98304) in headless mode so host
-            // GNOME/Wayland fractional text-scaling-factor (e.g. 1.1x) never scales down CSS
-            // viewports (preventing 1440x900 -> 1309x818 and 390x844 -> 354x767 shrinkage).
+        let respect_host_dpi = !opts.headless
+            && std::env::var("MINIBROWSE_RESPECT_HOST_DPI")
+                .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+                .unwrap_or(false);
+        if !respect_host_dpi {
+            // Lock GTK Xft DPI to exact 96 DPI (96 * 1024 = 98304) in both headless QA and GUI
+            // preview so host GNOME/Wayland fractional text-scaling-factor (e.g. 1.1x) never
+            // shrinks CSS viewports (preventing 1440x900 -> 1309x818 and 390x844 -> 354x767).
             if let (Some(get_settings), Some(set_long)) = (
                 api.gtk_settings_get_default,
                 api.gtk_settings_set_long_property,
@@ -2932,7 +2936,8 @@ fn run_webkit_thread(
                     }
                 }
             }
-        } else {
+        }
+        if !opts.headless {
             install_inline_aura_window_icon(&api);
         }
 

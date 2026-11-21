@@ -213,9 +213,15 @@ impl CommandProfile {
             .file_stem()
             .and_then(|s| s.to_str())
             .unwrap_or(raw);
-        let mut out = String::with_capacity(stem.len());
+        Self::sanitize_module_slug(stem)
+    }
+
+    /// Normalizes a dotted module/package identifier (e.g. `http.server` -> `http-server`)
+    /// without stripping the segment after `.` as a file extension.
+    fn sanitize_module_slug(raw: &str) -> String {
+        let mut out = String::with_capacity(raw.len());
         let mut last_dash = false;
-        for ch in stem.chars() {
+        for ch in raw.chars() {
             if ch.is_ascii_alphanumeric() {
                 out.push(ch.to_ascii_lowercase());
                 last_dash = false;
@@ -691,7 +697,7 @@ impl CommandProfile {
                     }
                 }
                 if lower_tok == "-m" && j + 1 < tokens.len() {
-                    let mod_slug = Self::sanitize_slug(tokens[j + 1]);
+                    let mod_slug = Self::sanitize_module_slug(tokens[j + 1]);
                     if !mod_slug.is_empty() {
                         seg_action = Some(mod_slug);
                     }
@@ -720,9 +726,9 @@ impl CommandProfile {
 
             let seg_is_server = seg_server_flag
                 || Self::SERVER_PROGRAMS.contains(&prog_slug.as_str())
-                || seg_action
-                    .as_deref()
-                    .is_some_and(|a| Self::SERVER_ACTIONS.contains(&a));
+                || seg_action.as_deref().is_some_and(|a| {
+                    Self::SERVER_ACTIONS.contains(&a) || Self::SERVER_PROGRAMS.contains(&a)
+                });
 
             selected_program = prog_slug.clone();
             selected_action = seg_action;
@@ -771,6 +777,7 @@ impl CommandProfile {
             && (has_trailing_amp
                 || has_server_flag
                 || Self::SERVER_ACTIONS.contains(&act)
+                || Self::SERVER_PROGRAMS.contains(&act)
                 || (Self::SERVER_PROGRAMS.contains(&prog) && act != "build"));
 
         let workload = if is_instant {
@@ -839,8 +846,45 @@ fn compute_dynamic_command_floor(cmd: &str, base_secs: u64) -> (u64, bool) {
     }
 }
 
+/// Returns `true` when `cmd` backgrounds a server/daemon mid-pipeline with `&` and chains
+/// subsequent foreground commands (e.g. `nohup python3 -m http.server 8781 & sleep 2; curl ...`).
+/// Because `exec_cmd` runs inside a supervised process group that reaps grandchildren when the
+/// shell exits, such mixed `&` chains lose the server as soon as the trailing foreground probe exits.
+pub fn has_mid_pipeline_background_server(workspace_root: &Path, cmd: &str) -> bool {
+    let segments = CommandProfile::split_shell_segments(cmd.trim());
+    if segments.len() < 2 {
+        return false;
+    }
+    let has_trailing_fg = segments
+        .last()
+        .is_some_and(|&(seg, bg)| !bg && !CommandProfile::is_detached_subshell(seg));
+    if !has_trailing_fg {
+        return false;
+    }
+    segments.iter().take(segments.len() - 1).any(|&(seg, bg)| {
+        if !bg && !CommandProfile::is_detached_subshell(seg) {
+            return false;
+        }
+        let inner = seg
+            .trim()
+            .trim_start_matches('(')
+            .trim_end_matches(')')
+            .trim_end_matches('&')
+            .trim();
+        let prof = CommandProfile::analyze(inner);
+        prof.workload == CommandWorkload::ServerDaemon
+            || crate::dev::scripts::WorkspaceScriptDiscovery::is_server_command(
+                workspace_root,
+                inner,
+            )
+    })
+}
+
 /// Determines if a shell command represents a persistent web server, dev daemon, or background process.
 pub fn is_daemon_or_server_command(workspace_root: &Path, cmd: &str) -> bool {
+    if has_mid_pipeline_background_server(workspace_root, cmd) {
+        return false;
+    }
     let profile = CommandProfile::analyze(cmd);
     if matches!(
         profile.workload,
@@ -883,12 +927,13 @@ pub async fn exec_daemon_or_server(workspace_root: &Path, command_str: &str) -> 
 
     // Inspect updated status after startup
     if let Some(updated) = registry.get(&summary.id).await {
-        if let crate::dev::models::DevProcessStatus::Exited(Some(code)) = updated.status {
+        if let crate::dev::models::DevProcessStatus::Exited(code_opt) = updated.status {
+            let logs = registry
+                .logs(&summary.id, 20, None)
+                .await
+                .unwrap_or_default();
+            let code = code_opt.unwrap_or(0);
             if code != 0 {
-                let logs = registry
-                    .logs(&summary.id, 20, None)
-                    .await
-                    .unwrap_or_default();
                 return Err(ToolError::CommandExec(format!(
                     "Background process '{}' (PID {:?}) failed to start (exit code {}):\n{}",
                     summary.name,
@@ -898,6 +943,12 @@ pub async fn exec_daemon_or_server(workspace_root: &Path, command_str: &str) -> 
                 ))
                 .into());
             }
+            return Err(ToolError::CommandExec(format!(
+                "Background daemon '{}' exited immediately with code 0 instead of staying resident (avoid '&' / 'nohup' shell backgrounding — run the foreground server command directly with `minitask(action=\"start\", is_daemon=true)`):\n{}",
+                summary.name,
+                logs.join("\n")
+            ))
+            .into());
         }
 
         let mut output = String::new();
@@ -1182,6 +1233,13 @@ pub async fn exec_cmd_with_async_options(
     wait_ms_before_async: Option<u64>,
     run_in_background: Option<bool>,
 ) -> Result<String> {
+    if has_mid_pipeline_background_server(workspace_root, command_str) {
+        return Err(ToolError::InvalidArguments {
+            name: "exec_cmd".to_string(),
+            reason: "Do not background a server with `&` / `nohup` chained with foreground commands in `exec_cmd` — the server process group is terminated as soon as the foreground shell exits. Start the server cleanly with `minitask(action=\"start\", command=\"<server cmd without &>\", is_daemon=true, process_type=\"frontend\")` (or `exec_cmd(command=\"<server cmd>\", is_daemon=true)`), then run `curl` / `browser_navigate` in the next step.".to_string(),
+        }
+        .into());
+    }
     if is_daemon || is_daemon_or_server_command(workspace_root, command_str) {
         return exec_daemon_or_server(workspace_root, command_str).await;
     }
@@ -1255,6 +1313,13 @@ pub async fn exec_cmd_full(
     explicit_context: Option<usize>,
     is_daemon: bool,
 ) -> Result<String> {
+    if has_mid_pipeline_background_server(workspace_root, command_str) {
+        return Err(ToolError::InvalidArguments {
+            name: "exec_cmd".to_string(),
+            reason: "Do not background a server with `&` / `nohup` chained with foreground commands in `exec_cmd` — the server process group is terminated as soon as the foreground shell exits. Start the server cleanly with `minitask(action=\"start\", command=\"<server cmd without &>\", is_daemon=true, process_type=\"frontend\")` (or `exec_cmd(command=\"<server cmd>\", is_daemon=true)`), then run `curl` / `browser_navigate` in the next step.".to_string(),
+        }
+        .into());
+    }
     if is_daemon || is_daemon_or_server_command(workspace_root, command_str) {
         return exec_daemon_or_server(workspace_root, command_str).await;
     }
@@ -1882,5 +1947,21 @@ grep -c "FeatureTabs" FeatureTabs.tsx"#;
                 pipe_out
             );
         }
+    }
+
+    #[test]
+    fn test_minitest77_mid_pipeline_background_server_rejected() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let mixed = "cd /tmp && nohup python3 -m http.server 8781 --bind 127.0.0.1 > /tmp/serve.log 2>&1 & sleep 2; curl -s http://127.0.0.1:8781/index.html";
+        assert!(has_mid_pipeline_background_server(temp.path(), mixed));
+        assert!(!is_daemon_or_server_command(temp.path(), mixed));
+
+        // Clean daemon server command without chained foreground probe must still classify as server daemon
+        let clean_server = "python3 -m http.server 8781 --bind 127.0.0.1";
+        assert!(!has_mid_pipeline_background_server(
+            temp.path(),
+            clean_server
+        ));
+        assert!(is_daemon_or_server_command(temp.path(), clean_server));
     }
 }

@@ -796,30 +796,46 @@ fn write_file_inner(
                     || orig_content.contains("TODO:")));
 
         if !is_template_placeholder {
-            // Check if a substantial file (> 40 lines) is being replaced by a tiny snippet (< 25% of original lines)
-            // without an active transaction or turn checkpoint backup
+            // Protect substantial existing files from accidental clobbering when the caller omits
+            // both `append: true` and `overwrite: true` (even inside an active turn transaction,
+            // since `prepare_file_mutation` journals files before `write_file_inner` runs):
+            // 1. Suspicious truncation (> 40 lines replaced by < 25% of original lines), OR
+            // 2. Replacing an existing full HTML document (`<!doctype`/`<html`) with a bare HTML
+            //    section fragment (a classic multi-chunk write where `append: true` was omitted).
             let orig_lines = orig_content.lines().count();
             let new_lines = content.lines().count();
-            let already_backed_up =
-                crate::session::transaction::TransactionManager::is_file_tracked_in_active_tx(
-                    workspace_root,
-                    &target_path,
-                ) || crate::session::backup::BackupManager::new(workspace_root)
-                    .is_file_backed_up_in_latest_turn(&target_path);
             let is_suspicious_truncation =
-                !already_backed_up && orig_lines > 40 && new_lines.saturating_mul(4) < orig_lines;
+                orig_lines > 40 && new_lines.saturating_mul(4) < orig_lines;
+            let is_html_file = clean_rel.ends_with(".html") || clean_rel.ends_with(".htm");
+            let is_html_document_clobber = if is_html_file {
+                let orig_lower = orig_content.to_ascii_lowercase();
+                let new_lower = content.to_ascii_lowercase();
+                let orig_is_full_doc =
+                    orig_lower.contains("<!doctype") || orig_lower.contains("<html");
+                let new_is_full_doc =
+                    new_lower.contains("<!doctype") || new_lower.contains("<html");
+                orig_is_full_doc && !new_is_full_doc
+            } else {
+                false
+            };
 
-            if is_suspicious_truncation {
+            if is_suspicious_truncation || is_html_document_clobber {
+                let detail = if is_html_document_clobber {
+                    "New content looks like an HTML fragment (missing `<!DOCTYPE html>` / `<html>`) that would wipe the existing HTML document."
+                } else {
+                    "New content would drop over 75% of the existing file."
+                };
                 return Err(ToolError::InvalidArguments {
                     name: "write_file".to_string(),
                     reason: format!(
-                        "Target file '{}' already exists ({} lines, {} bytes). To prevent accidental file destruction, write_file requires explicit intent:\n\
+                        "Target file '{}' already exists ({} lines, {} bytes). {} To prevent accidental file destruction, write_file requires explicit intent:\n\
                         • To append new sections to the end of the file: pass `append: true`.\n\
                         • To completely replace and overwrite the file: pass `overwrite: true`.\n\
                         • To surgically edit specific lines: use `patch_file`.",
                         relative_path,
                         orig_lines,
-                        orig_content.len()
+                        orig_content.len(),
+                        detail
                     ),
                 }
                 .into());
@@ -2023,6 +2039,33 @@ mod tests {
         let content2 = std::fs::read_to_string(temp_dir.join(rel_path)).unwrap();
         assert_eq!(content2, chunk3);
 
+        // minitest77 regression: replacing an existing full `<!DOCTYPE html>` document with a
+        // same-sized bare `<section>` fragment without `append: true` or `overwrite: true` MUST
+        // be rejected even when an active workspace transaction already tracks the file!
+        let _tx =
+            crate::session::transaction::TransactionManager::begin(&temp_dir, "test-tx").unwrap();
+        let _ = crate::session::transaction::TransactionManager::record_mutation_pre(
+            &temp_dir,
+            &temp_dir.join(rel_path),
+        );
+        let html_fragment =
+            "<!-- === SECTION 2 === -->\n<section id=\"swarm\"><h2>Swarm</h2></section>\n";
+        let res5 = write_file_with_options(&temp_dir, rel_path, html_fragment, false, false);
+        assert!(
+            res5.is_err(),
+            "Bare HTML fragment must not clobber full HTML document without append/overwrite"
+        );
+        assert!(res5.unwrap_err().to_string().contains("append: true"));
+
+        // Appending the fragment cleanly inserts before </body>
+        let res6 = write_file_with_options(&temp_dir, rel_path, html_fragment, true, false);
+        assert!(res6.is_ok());
+        let merged = std::fs::read_to_string(temp_dir.join(rel_path)).unwrap();
+        assert!(merged.contains("<!DOCTYPE html>"));
+        assert!(merged.contains("<section id=\"swarm\">"));
+        assert!(merged.ends_with("</body></html>"));
+
+        let _ = crate::session::transaction::TransactionManager::commit(&temp_dir, None);
         std::fs::remove_dir_all(&temp_dir).ok();
     }
 

@@ -103,11 +103,17 @@ pub fn tune_allocator_env_with_webgl(headless: bool, webgl: bool) {
         }
     }
 
-    if headless {
-        // Unconditionally lock headless scale to 1.0 so host Wayland/GNOME desktop fractional
-        // scaling or text-scaling-factor (e.g. 1.1x) never shrinks CSS viewports (e.g. 1440->1309).
+    let respect_host_dpi = std::env::var("MINIBROWSE_RESPECT_HOST_DPI")
+        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+        .unwrap_or(false);
+    if headless || !respect_host_dpi {
+        // Lock scale to 1.0 by default in both headless QA and GUI preview so host GNOME/Wayland
+        // fractional text-scaling-factor (e.g. 1.1x) never shrinks CSS viewports (1440->1309).
         std::env::set_var("GDK_SCALE", "1");
         std::env::set_var("GDK_DPI_SCALE", "1");
+    }
+
+    if headless {
         for &(key, val) in &[
             ("JSC_forceRAMSize", "100663296"),
             ("JSC_useFTLJIT", "0"),
@@ -120,12 +126,7 @@ pub fn tune_allocator_env_with_webgl(headless: bool, webgl: bool) {
             }
         }
     } else {
-        for &(key, val) in &[
-            ("GDK_SCALE", "1"),
-            ("GDK_DPI_SCALE", "1"),
-            ("JSC_forceRAMSize", "201326592"),
-            ("LP_NUM_THREADS", "2"),
-        ] {
+        for &(key, val) in &[("JSC_forceRAMSize", "201326592"), ("LP_NUM_THREADS", "2")] {
             if std::env::var_os(key).is_none() {
                 std::env::set_var(key, val);
             }

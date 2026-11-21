@@ -5,6 +5,25 @@ All notable changes to **minicode** will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.62] — 2026-11-21
+
+### Active-Transaction `write_file` Clobber & HTML-Fragment Guard, Mixed-`&` Server Rejection in `exec_cmd`, & `MiniBrowse` GUI 1:1 DPI Parity (`minitest77`)
+
+#### 🛡️ Enforced `write_file` Overwrite & HTML-Fragment Guard (`src/tools/fs.rs`)
+- **Fixed Dead Overwrite Guard Inside Active Transactions**:
+  - Removed the `!already_backed_up` bypass in `write_file_inner()` (which was always `false` after `prepare_file_mutation()` journaled the file in the active turn transaction), restoring truncation protection (`> 40` lines dropped by `> 75%` without `overwrite: true` or `append: true`).
+  - Added an HTML-document clobber guard that rejects replacing an existing `<!DOCTYPE html>` / `<html>` document with a bare HTML fragment (e.g. `<section>...`) when neither `append: true` nor `overwrite: true` is passed, preventing multi-chunk HTML writes from wiping earlier sections.
+
+#### ⚙️ `exec_cmd` Mixed-`&` Background Server Guard & Dotted Module Detection (`src/tools/exec.rs`)
+- **Eliminated False-Healthy Ephemeral `nohup ... & sleep; curl` Daemons**:
+  - Fixed `CommandProfile::analyze()` `-m <module>` slug normalization (`sanitize_module_slug()`) so dotted Python module names like `python3 -m http.server` (previously truncated to `"http"` by `Path::file_stem()`) and `python3 -m uvicorn` classify accurately as `ServerDaemon`.
+  - Added `has_mid_pipeline_background_server()` to detect commands that background a server mid-pipeline with `&` / `nohup` followed by foreground commands (which terminate the server process group as soon as the shell exits), returning an actionable error steering directly to `minitask(action="start", is_daemon=true)` or clean `exec_cmd(is_daemon=true)`.
+  - Updated `exec_daemon_or_server()` to fail clearly instead of reporting `Status: Healthy` if a spawned daemon exits immediately with code `0`.
+
+#### 🖥️ `MiniBrowse` GUI 1:1 DPI Parity (`crates/minibrowse/src/{ffi,webview}.rs`)
+- **Exact `1440×900` CSS Viewports in GUI Mode**:
+  - Applied the `gtk-xft-dpi = 96 * 1024` and `GDK_SCALE=1` / `GDK_DPI_SCALE=1` lock to both headless QA and GUI preview modes by default (opt-out via `MINIBROWSE_RESPECT_HOST_DPI=1`) so GUI previews match headless QA geometry pixel-for-pixel on GNOME/Wayland fractional text-scaling desktops.
+
 ## [0.5.61] — 2026-11-20
 
 ### Live GUI Preview & Dev-Server Preservation, Real MiniBrowse `Emulation.setEmulatedMedia` & Scoped Init Scripts, Configurable `browser_eval` Timeout, & `minitest75` Hardening
