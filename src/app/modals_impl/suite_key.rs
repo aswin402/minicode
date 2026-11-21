@@ -72,11 +72,11 @@ impl<'a> App<'a> {
                         state.scroll_offset = 0;
                     }
                 }
-                KeyCode::Esc | KeyCode::Char('q') => {
-                    self.modal = ModalState::None;
+                KeyCode::Esc | KeyCode::Backspace | KeyCode::Char('q') => {
+                    self.pop_modal();
                 }
                 KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                    self.modal = ModalState::None;
+                    self.close_all_modals();
                 }
                 _ => {}
             },
@@ -271,7 +271,7 @@ impl<'a> App<'a> {
                     }
                 }
                 KeyCode::Esc | KeyCode::F(6) => {
-                    self.modal = ModalState::None;
+                    self.pop_modal();
                 }
                 KeyCode::Backspace => {
                     state.handle_backspace();
@@ -381,7 +381,7 @@ impl<'a> App<'a> {
                     }
                 }
                 KeyCode::Esc => {
-                    self.modal = ModalState::None;
+                    self.pop_modal();
                 }
                 KeyCode::Backspace => {
                     state.handle_backspace();
@@ -747,14 +747,22 @@ impl<'a> App<'a> {
                     {
                         state.set_tab(crate::ui::modals::processes::ProcessesTab::All);
                     } else {
-                        self.modal = ModalState::None;
+                        self.pop_modal();
                     }
                 }
                 KeyCode::F(7) => {
-                    self.modal = ModalState::None;
+                    self.pop_modal();
                 }
                 KeyCode::Backspace => {
-                    state.handle_backspace();
+                    if state.is_searching {
+                        state.handle_backspace();
+                    } else if state.active_tab == crate::ui::modals::processes::ProcessesTab::Logs
+                        || state.active_tab == crate::ui::modals::processes::ProcessesTab::Telemetry
+                    {
+                        state.set_tab(crate::ui::modals::processes::ProcessesTab::All);
+                    } else {
+                        self.pop_modal();
+                    }
                 }
                 KeyCode::Char(c) => {
                     state.handle_char(c);
@@ -786,11 +794,11 @@ impl<'a> App<'a> {
                 KeyCode::Char(' ') | KeyCode::Char('a') => {
                     state.toggle_expand();
                 }
-                KeyCode::Esc | KeyCode::Char('q') | KeyCode::F(8) => {
-                    self.modal = ModalState::None;
+                KeyCode::Esc | KeyCode::Backspace | KeyCode::Char('q') | KeyCode::F(8) => {
+                    self.pop_modal();
                 }
                 KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                    self.modal = ModalState::None;
+                    self.close_all_modals();
                 }
                 _ => {}
             },
@@ -815,14 +823,14 @@ impl<'a> App<'a> {
                     if let Ok(diff_files) =
                         crate::git::GitDiffViewer::load_diffs(&self.workspace_root, is_staged).await
                     {
-                        self.modal = ModalState::new_git_diff(diff_files, is_staged);
+                        self.push_modal(ModalState::new_git_diff(diff_files, is_staged));
                     }
                 }
-                KeyCode::Esc | KeyCode::Char('q') => {
-                    self.modal = ModalState::None;
+                KeyCode::Esc | KeyCode::Backspace | KeyCode::Char('q') => {
+                    self.pop_modal();
                 }
                 KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                    self.modal = ModalState::None;
+                    self.close_all_modals();
                 }
                 _ => {}
             },

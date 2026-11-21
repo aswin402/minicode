@@ -14,12 +14,95 @@ mod settings_key;
 mod suite_key;
 
 impl<'a> App<'a> {
+    /// Steps back one navigation level inside the active modal (e.g., Settings drilldown -> Providers,
+    /// Processes Logs -> All, or popping to the parent modal in `modal_history`).
+    pub async fn handle_modal_back(&mut self, control_tx: &mpsc::UnboundedSender<AgentCommand>) {
+        match &mut self.modal {
+            ModalState::None => {}
+            ModalState::Settings(ref mut state) => {
+                if state.selecting_model_for_provider.is_some() {
+                    state.selecting_model_for_provider = None;
+                    state.provider_models.clear();
+                    state.model_selected_index = 0;
+                } else if state.selecting_provider_for_target {
+                    state.clear_drilldown();
+                } else {
+                    self.save_and_leave_settings(false, control_tx).await;
+                }
+            }
+            ModalState::Processes(ref mut state) => {
+                if state.is_searching {
+                    state.is_searching = false;
+                    state.search_query.clear();
+                    state.refresh_filtered();
+                } else if matches!(
+                    state.active_tab,
+                    crate::ui::modals::processes::ProcessesTab::Logs
+                        | crate::ui::modals::processes::ProcessesTab::Telemetry
+                ) {
+                    state.set_tab(crate::ui::modals::processes::ProcessesTab::All);
+                } else {
+                    self.pop_modal();
+                }
+            }
+            ModalState::ProviderSelect { .. }
+            | ModalState::ModelSelect { .. }
+            | ModalState::ApiKeyInput { .. } => {
+                self.pop_modal();
+                if !self.modal.is_active() {
+                    if let Some(sub) = self.pending_submission.take() {
+                        self.input_dock.textarea = tui_textarea::TextArea::default();
+                        self.input_dock.textarea.insert_str(&sub.display);
+                        self.timeline.add_status("ℹ Prompt cancelled.".to_string());
+                    }
+                }
+            }
+            _ => {
+                self.pop_modal();
+            }
+        }
+    }
+
+    /// Closes the entire modal stack and returns directly to the main TUI (saving Settings if active).
+    pub async fn handle_modal_close_all(
+        &mut self,
+        control_tx: &mpsc::UnboundedSender<AgentCommand>,
+    ) {
+        if matches!(self.modal, ModalState::Settings(_)) {
+            self.save_and_leave_settings(true, control_tx).await;
+            return;
+        }
+        if matches!(
+            self.modal,
+            ModalState::ProviderSelect { .. }
+                | ModalState::ModelSelect { .. }
+                | ModalState::ApiKeyInput { .. }
+        ) {
+            if let Some(sub) = self.pending_submission.take() {
+                self.input_dock.textarea = tui_textarea::TextArea::default();
+                self.input_dock.textarea.insert_str(&sub.display);
+                self.timeline.add_status("ℹ Prompt cancelled.".to_string());
+            }
+        }
+        self.close_all_modals();
+    }
+
     /// Handles keyboard interaction within in-TUI modal dialogs
     pub async fn handle_modal_key(
         &mut self,
         key: crossterm::event::KeyEvent,
         control_tx: &mpsc::UnboundedSender<AgentCommand>,
     ) {
+        if self.modal.supports_nav_chrome() {
+            if key.code == KeyCode::Left && key.modifiers.contains(KeyModifiers::ALT) {
+                self.handle_modal_back(control_tx).await;
+                return;
+            }
+            if key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL) {
+                self.handle_modal_close_all(control_tx).await;
+                return;
+            }
+        }
         match &mut self.modal {
             ModalState::None => {}
             ModalState::ExitConfirm { selected_yes, .. } => match key.code {
@@ -54,7 +137,7 @@ impl<'a> App<'a> {
                 cursor,
             } => match key.code {
                 KeyCode::Esc => {
-                    self.modal = ModalState::new_provider_select_with_config(&self.config);
+                    self.handle_modal_back(control_tx).await;
                 }
                 KeyCode::Left => {
                     *cursor = cursor.saturating_sub(1);
@@ -141,7 +224,24 @@ impl<'a> App<'a> {
                         }
                     };
 
-                    if models.is_empty() {
+                    if matches!(self.modal_history.last(), Some(ModalState::Settings(_))) {
+                        self.pop_modal();
+                        if !models.is_empty() {
+                            if let ModalState::Settings(ref mut s) = self.modal {
+                                let current_default =
+                                    self.config.get_default_model_for_provider(&prov_name);
+                                let def_idx = models
+                                    .iter()
+                                    .position(|m| {
+                                        m.id == current_default || m.name == current_default
+                                    })
+                                    .unwrap_or(0);
+                                s.selecting_model_for_provider = Some(prov_name);
+                                s.provider_models = models;
+                                s.model_selected_index = def_idx;
+                            }
+                        }
+                    } else if models.is_empty() {
                         let default_model = self.config.get_default_model_for_provider(&prov_name);
                         self.config.provider.default = prov_name.clone();
                         self.config.provider.model = default_model.clone();
@@ -160,8 +260,8 @@ impl<'a> App<'a> {
                                 prov_name, default_model
                             ));
                         }
-                        self.modal = ModalState::None;
                         if let Some(sub) = self.pending_submission.take() {
+                            self.close_all_modals();
                             let _ = self
                                 .handle_command_or_prompt(
                                     &sub.prompt,
@@ -169,6 +269,8 @@ impl<'a> App<'a> {
                                     control_tx,
                                 )
                                 .await;
+                        } else {
+                            self.pop_modal();
                         }
                     } else {
                         self.modal = ModalState::new_model_select(prov_name, models);
@@ -180,13 +282,8 @@ impl<'a> App<'a> {
                 providers,
                 selected_index,
             } => match key.code {
-                KeyCode::Esc | KeyCode::Char('q') => {
-                    self.modal = ModalState::None;
-                    if let Some(sub) = self.pending_submission.take() {
-                        self.input_dock.textarea = tui_textarea::TextArea::default();
-                        self.input_dock.textarea.insert_str(&sub.display);
-                        self.timeline.add_status("ℹ Prompt cancelled.".to_string());
-                    }
+                KeyCode::Esc | KeyCode::Backspace | KeyCode::Char('q') => {
+                    self.handle_modal_back(control_tx).await;
                 }
                 KeyCode::Up => {
                     *selected_index = selected_index.saturating_sub(1);
@@ -223,8 +320,10 @@ impl<'a> App<'a> {
                                 }
                             })
                             .collect();
-                        self.modal =
-                            ModalState::new_model_select("favorites".to_string(), fav_models);
+                        self.push_modal(ModalState::new_model_select(
+                            "favorites".to_string(),
+                            fav_models,
+                        ));
                         return;
                     }
 
@@ -235,7 +334,7 @@ impl<'a> App<'a> {
                     // If cloud provider and no key is configured, prompt with in-TUI ApiKeyInput modal
                     if !is_local && api_key.is_empty() {
                         let env_str = crate::ui::setup::SetupWizard::custom_env_var(&provider);
-                        self.modal = ModalState::new_api_key_input(provider, env_str, None);
+                        self.push_modal(ModalState::new_api_key_input(provider, env_str, None));
                         return;
                     }
 
@@ -315,8 +414,8 @@ impl<'a> App<'a> {
                                 provider, default_model
                             ));
                         }
-                        self.modal = ModalState::None;
                         if let Some(sub) = self.pending_submission.take() {
+                            self.close_all_modals();
                             let _ = self
                                 .handle_command_or_prompt(
                                     &sub.prompt,
@@ -326,7 +425,7 @@ impl<'a> App<'a> {
                                 .await;
                         }
                     } else {
-                        self.modal = ModalState::new_model_select(provider, models);
+                        self.push_modal(ModalState::new_model_select(provider, models));
                     }
                 }
                 _ => {}
@@ -340,7 +439,7 @@ impl<'a> App<'a> {
                 ..
             } => match key.code {
                 KeyCode::Esc => {
-                    self.modal = ModalState::new_provider_select_with_config(&self.config);
+                    self.handle_modal_back(control_tx).await;
                 }
                 KeyCode::Up => {
                     *selected_index = selected_index.saturating_sub(1);
@@ -463,8 +562,8 @@ impl<'a> App<'a> {
                             ));
                         }
                     }
-                    self.modal = ModalState::None;
                     if let Some(sub) = self.pending_submission.take() {
+                        self.close_all_modals();
                         let _ = self
                             .handle_command_or_prompt(&sub.prompt, Some(&sub.display), control_tx)
                             .await;
@@ -476,8 +575,8 @@ impl<'a> App<'a> {
                 ref checkpoints,
                 ref mut selected_index,
             } => match key.code {
-                KeyCode::Esc | KeyCode::Char('q') => {
-                    self.modal = ModalState::None;
+                KeyCode::Esc | KeyCode::Backspace | KeyCode::Char('q') => {
+                    self.pop_modal();
                 }
                 KeyCode::Up => {
                     *selected_index = selected_index.saturating_sub(1);
@@ -521,7 +620,7 @@ impl<'a> App<'a> {
                             }
                         }
                     }
-                    self.modal = ModalState::None;
+                    self.close_all_modals();
                 }
                 _ => {}
             },
@@ -546,8 +645,8 @@ impl<'a> App<'a> {
                 ref mut active_activity_style,
                 ref mut active_menu_style,
             } => match key.code {
-                KeyCode::Esc | KeyCode::Char('q') => {
-                    self.modal = ModalState::None;
+                KeyCode::Esc | KeyCode::Backspace | KeyCode::Char('q') => {
+                    self.pop_modal();
                 }
                 KeyCode::Tab | KeyCode::Right => {
                     *active_tab = active_tab.next();
@@ -911,7 +1010,6 @@ impl<'a> App<'a> {
                             }
                         }
                     }
-                    self.modal = ModalState::None;
                 }
                 _ => {}
             },
@@ -920,8 +1018,8 @@ impl<'a> App<'a> {
                 ref mut selected_index,
                 ref mut cached_summary,
             } => match key.code {
-                KeyCode::Esc | KeyCode::Char('q') => {
-                    self.modal = ModalState::None;
+                KeyCode::Esc | KeyCode::Backspace | KeyCode::Char('q') => {
+                    self.pop_modal();
                 }
                 KeyCode::Up | KeyCode::Char('k') => {
                     if *selected_index > 0 {
@@ -973,7 +1071,7 @@ impl<'a> App<'a> {
                             }
                         }
                     }
-                    self.modal = ModalState::None;
+                    self.close_all_modals();
                 }
                 KeyCode::Char('f') => {
                     if !sessions.is_empty() && *selected_index < sessions.len() {
@@ -1002,7 +1100,7 @@ impl<'a> App<'a> {
                             }
                         }
                     }
-                    self.modal = ModalState::None;
+                    self.close_all_modals();
                 }
                 KeyCode::Char('e') => {
                     if !sessions.is_empty() && *selected_index < sessions.len() {
@@ -1025,7 +1123,6 @@ impl<'a> App<'a> {
                             }
                         }
                     }
-                    self.modal = ModalState::None;
                 }
                 KeyCode::Char('d') => {
                     if !sessions.is_empty() && *selected_index < sessions.len() {
@@ -1066,18 +1163,19 @@ impl<'a> App<'a> {
             },
             ModalState::Help => {
                 if key.code == KeyCode::Esc
+                    || key.code == KeyCode::Backspace
                     || key.code == KeyCode::Enter
                     || key.code == KeyCode::Char('q')
                 {
-                    self.modal = ModalState::None;
+                    self.pop_modal();
                 }
             }
             ModalState::StreamingSelect {
                 selected_index,
-                current_streaming: _,
+                current_streaming,
             } => match key.code {
-                KeyCode::Esc | KeyCode::Char('q') | KeyCode::Char('Q') => {
-                    self.modal = ModalState::None;
+                KeyCode::Esc | KeyCode::Backspace | KeyCode::Char('q') | KeyCode::Char('Q') => {
+                    self.pop_modal();
                 }
                 KeyCode::Up | KeyCode::Char('k') | KeyCode::Char('K') | KeyCode::BackTab => {
                     if *selected_index == 0 {
@@ -1101,46 +1199,49 @@ impl<'a> App<'a> {
                 }
                 KeyCode::Char('1') => {
                     self.config.agent.streaming = true;
+                    *current_streaming = true;
+                    *selected_index = 0;
                     self.propagate_session_config(control_tx);
                     let _ = self.config.save(Some(&self.workspace_root));
                     self.toasts
                         .push_status("✔ Streaming mode enabled (persisted to config)".to_string());
-                    self.modal = ModalState::None;
                 }
                 KeyCode::Char('2') => {
                     self.config.agent.streaming = false;
+                    *current_streaming = false;
+                    *selected_index = 1;
                     self.propagate_session_config(control_tx);
                     let _ = self.config.save(Some(&self.workspace_root));
                     self.toasts
                         .push_status("✔ Streaming mode disabled (persisted to config)".to_string());
-                    self.modal = ModalState::None;
                 }
                 KeyCode::Char('3') => {
-                    self.modal = ModalState::None;
+                    self.pop_modal();
                 }
-                KeyCode::Enter => {
-                    match *selected_index {
-                        0 => {
-                            self.config.agent.streaming = true;
-                            self.propagate_session_config(control_tx);
-                            let _ = self.config.save(Some(&self.workspace_root));
-                            self.toasts.push_status(
-                                "✔ Streaming mode enabled (persisted to config)".to_string(),
-                            );
-                        }
-                        1 => {
-                            self.config.agent.streaming = false;
-                            self.propagate_session_config(control_tx);
-                            let _ = self.config.save(Some(&self.workspace_root));
-                            self.toasts.push_status(
-                                "✔ Streaming mode disabled (persisted to config)".to_string(),
-                            );
-                        }
-                        2 => {}
-                        _ => {}
+                KeyCode::Enter | KeyCode::Char(' ') => match *selected_index {
+                    0 => {
+                        self.config.agent.streaming = true;
+                        *current_streaming = true;
+                        self.propagate_session_config(control_tx);
+                        let _ = self.config.save(Some(&self.workspace_root));
+                        self.toasts.push_status(
+                            "✔ Streaming mode enabled (persisted to config)".to_string(),
+                        );
                     }
-                    self.modal = ModalState::None;
-                }
+                    1 => {
+                        self.config.agent.streaming = false;
+                        *current_streaming = false;
+                        self.propagate_session_config(control_tx);
+                        let _ = self.config.save(Some(&self.workspace_root));
+                        self.toasts.push_status(
+                            "✔ Streaming mode disabled (persisted to config)".to_string(),
+                        );
+                    }
+                    2 => {
+                        self.pop_modal();
+                    }
+                    _ => {}
+                },
                 _ => {}
             },
             ModalState::CommandCatalog {
@@ -1149,7 +1250,7 @@ impl<'a> App<'a> {
                 ref mut filter,
             } => match key.code {
                 KeyCode::Esc => {
-                    self.modal = ModalState::None;
+                    self.pop_modal();
                 }
                 KeyCode::Up => {
                     *selected_index = selected_index.saturating_sub(1);
@@ -1171,9 +1272,10 @@ impl<'a> App<'a> {
                     if !filtered_indices.is_empty() && *selected_index < filtered_indices.len() {
                         let real_idx = filtered_indices[*selected_index];
                         let selected_cmd = crate::ui::modal::COMMAND_CATALOG_ITEMS[real_idx].name;
+                        let catalog_snapshot = self.modal.clone();
                         self.modal = ModalState::None;
                         if selected_cmd == "/commands" {
-                            self.modal = ModalState::new_command_catalog();
+                            self.modal = catalog_snapshot;
                         } else {
                             let _ = self
                                 .handle_command_or_prompt(
@@ -1182,9 +1284,14 @@ impl<'a> App<'a> {
                                     control_tx,
                                 )
                                 .await;
+                            if self.modal.supports_nav_chrome()
+                                && !matches!(self.modal, ModalState::CommandCatalog { .. })
+                            {
+                                self.modal_history.push(catalog_snapshot);
+                            }
                         }
                     } else {
-                        self.modal = ModalState::None;
+                        self.pop_modal();
                     }
                 }
                 _ => {}
@@ -1196,7 +1303,7 @@ impl<'a> App<'a> {
                 ref mut filter,
             } => match key.code {
                 KeyCode::Esc => {
-                    self.modal = ModalState::None;
+                    self.pop_modal();
                 }
                 KeyCode::Up => {
                     *selected_index = selected_index.saturating_sub(1);
@@ -1250,7 +1357,7 @@ impl<'a> App<'a> {
                             }
                         });
                     }
-                    self.modal = ModalState::None;
+                    self.close_all_modals();
                 }
                 _ => {}
             },
@@ -1262,7 +1369,7 @@ impl<'a> App<'a> {
                 ..
             } => match key.code {
                 KeyCode::Esc => {
-                    self.modal = ModalState::None;
+                    self.pop_modal();
                 }
                 KeyCode::Up => {
                     *selected_index = selected_index.saturating_sub(1);
@@ -1294,8 +1401,8 @@ impl<'a> App<'a> {
                 ref mut scroll_offset,
                 ref mut staged_view,
             } => match key.code {
-                KeyCode::Esc | KeyCode::Char('q') => {
-                    self.modal = ModalState::None;
+                KeyCode::Esc | KeyCode::Backspace | KeyCode::Char('q') => {
+                    self.pop_modal();
                 }
                 KeyCode::Up => {
                     *selected_file_index = selected_file_index.saturating_sub(1);
@@ -1366,7 +1473,7 @@ impl<'a> App<'a> {
                 }
                 KeyCode::Char('r') => {
                     let is_staged = *staged_view;
-                    self.modal = ModalState::None;
+                    self.close_all_modals();
                     self.timeline.add_status(
                         "🛡️ Running multi-agent code review on git diff...".to_string(),
                     );

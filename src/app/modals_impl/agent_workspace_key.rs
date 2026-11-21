@@ -391,7 +391,7 @@ impl<'a> App<'a> {
                 let mut triggered_action: Option<usize> = None;
 
                 match key.code {
-                    KeyCode::Esc | KeyCode::Char('q') | KeyCode::Char('Q') => {
+                    KeyCode::Esc | KeyCode::Backspace | KeyCode::Char('q') | KeyCode::Char('Q') => {
                         triggered_action = Some(if !is_indexed_flag { 2 } else { 3 });
                     }
                     KeyCode::Up | KeyCode::Char('k') | KeyCode::Char('K') => {
@@ -421,7 +421,6 @@ impl<'a> App<'a> {
                 }
 
                 if let Some(act) = triggered_action {
-                    self.modal = ModalState::None;
                     self.execute_workspace_analysis_action(act, is_indexed_flag);
                 }
             }
@@ -468,8 +467,8 @@ impl<'a> App<'a> {
                 selected_index,
                 scroll_offset,
             } => match key.code {
-                KeyCode::Esc | KeyCode::Char('q') | KeyCode::Char('Q') => {
-                    self.modal = ModalState::None;
+                KeyCode::Esc | KeyCode::Backspace | KeyCode::Char('q') | KeyCode::Char('Q') => {
+                    self.pop_modal();
                 }
                 KeyCode::Tab => {
                     *active_tab = (*active_tab + 1) % 3;
@@ -523,8 +522,8 @@ impl<'a> App<'a> {
                 active_tab,
                 scroll_offset,
             } => match key.code {
-                KeyCode::Esc | KeyCode::Char('q') | KeyCode::Char('Q') => {
-                    self.modal = ModalState::None;
+                KeyCode::Esc | KeyCode::Backspace | KeyCode::Char('q') | KeyCode::Char('Q') => {
+                    self.pop_modal();
                 }
                 KeyCode::Tab => {
                     *active_tab = (*active_tab + 1) % 3;
@@ -601,7 +600,6 @@ impl<'a> App<'a> {
     }
     /// Executes the selected workspace analysis action from the interactive modal (`F5` / `/index`)
     fn execute_workspace_analysis_action(&mut self, action_index: usize, is_indexed: bool) {
-        self.modal = ModalState::None;
         if !is_indexed {
             match action_index {
                 0 => {
@@ -615,16 +613,20 @@ impl<'a> App<'a> {
                                 &self.workspace_root,
                                 std::sync::Arc::new(graph),
                             );
-                            self.timeline.add_status(format!(
+                            let msg = format!(
                                 "✔ Workspace indexed: {} symbols across {} files (saved to .minicode/graph.json)",
                                 sym_count, file_count
-                            ));
+                            );
+                            self.toasts.push_status(msg.clone());
+                            self.timeline.add_status(msg);
                         }
                         Err(e) => {
-                            self.timeline
-                                .add_status(format!("✗ Failed to index workspace: {}", e));
+                            let msg = format!("✗ Failed to index workspace: {}", e);
+                            self.toasts.push_status(msg.clone());
+                            self.timeline.add_status(msg);
                         }
                     }
+                    self.modal = ModalState::new_workspace_analysis(&self.workspace_root);
                 }
                 1 => {
                     // Deep Scan
@@ -648,17 +650,22 @@ impl<'a> App<'a> {
                                 report.layer_violations.len(),
                                 report.circular_cycles.len()
                             );
+                            self.toasts.push_status(format!(
+                                "✔ Deep analysis complete (Health {}/100, {} symbols)",
+                                report.health_score, sym_count
+                            ));
                             self.timeline.add_status(card);
                         }
                         Err(e) => {
-                            self.timeline
-                                .add_status(format!("✗ Deep scan encountered error: {}", e));
+                            let msg = format!("✗ Deep scan encountered error: {}", e);
+                            self.toasts.push_status(msg.clone());
+                            self.timeline.add_status(msg);
                         }
                     }
+                    self.modal = ModalState::new_workspace_analysis(&self.workspace_root);
                 }
                 _ => {
-                    self.timeline
-                        .add_status("ℹ Analysis menu closed.".to_string());
+                    self.pop_modal();
                 }
             }
         } else {
@@ -675,14 +682,17 @@ impl<'a> App<'a> {
                                     &self.workspace_root,
                                     std::sync::Arc::new(graph),
                                 );
-                                self.timeline.add_status(format!(
+                                let msg = format!(
                                     "✔ Incremental graph sync complete ({} files scanned, {} reparsed, {} removed) — {} active symbols",
                                     stats.files_scanned, stats.files_reparsed, stats.files_removed, sym_count
-                                ));
+                                );
+                                self.toasts.push_status(msg.clone());
+                                self.timeline.add_status(msg);
                             }
                             Err(e) => {
-                                self.timeline
-                                    .add_status(format!("✗ Incremental update failed: {}", e));
+                                let msg = format!("✗ Incremental update failed: {}", e);
+                                self.toasts.push_status(msg.clone());
+                                self.timeline.add_status(msg);
                             }
                         }
                     } else {
@@ -694,17 +704,21 @@ impl<'a> App<'a> {
                                     &self.workspace_root,
                                     std::sync::Arc::new(graph),
                                 );
-                                self.timeline.add_status(format!(
+                                let msg = format!(
                                     "✔ Code graph rebuilt: {} symbols (saved to .minicode/graph.json)",
                                     sym_count
-                                ));
+                                );
+                                self.toasts.push_status(msg.clone());
+                                self.timeline.add_status(msg);
                             }
                             Err(e) => {
-                                self.timeline
-                                    .add_status(format!("✗ Failed to build graph: {}", e));
+                                let msg = format!("✗ Failed to build graph: {}", e);
+                                self.toasts.push_status(msg.clone());
+                                self.timeline.add_status(msg);
                             }
                         }
                     }
+                    self.modal = ModalState::new_workspace_analysis(&self.workspace_root);
                 }
                 1 => {
                     // Full Rebuild
@@ -718,19 +732,24 @@ impl<'a> App<'a> {
                                 &self.workspace_root,
                                 std::sync::Arc::new(graph),
                             );
-                            self.timeline.add_status(format!(
+                            let msg = format!(
                                 "🔄 Full cold re-index complete: {} symbols across {} files (saved to .minicode/graph.json)",
                                 sym_count, file_count
-                            ));
+                            );
+                            self.toasts.push_status(msg.clone());
+                            self.timeline.add_status(msg);
                         }
                         Err(e) => {
-                            self.timeline
-                                .add_status(format!("✗ Failed full re-index: {}", e));
+                            let msg = format!("✗ Failed full re-index: {}", e);
+                            self.toasts.push_status(msg.clone());
+                            self.timeline.add_status(msg);
                         }
                     }
+                    self.modal = ModalState::new_workspace_analysis(&self.workspace_root);
                 }
                 2 => {
                     // View Repo Map
+                    self.close_all_modals();
                     let mut graph = crate::context::graph::CodeGraph::new();
                     if let Err(e) = graph.build_graph(&self.workspace_root) {
                         self.timeline
@@ -750,9 +769,7 @@ impl<'a> App<'a> {
                     }
                 }
                 _ => {
-                    // Close
-                    self.timeline
-                        .add_status("ℹ Analysis menu closed.".to_string());
+                    self.pop_modal();
                 }
             }
         }

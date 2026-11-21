@@ -30,7 +30,10 @@ pub mod workspace_analysis;
 #[allow(unused_imports)]
 pub use command_catalog::{CommandCatalogItem, COMMAND_CATALOG_ITEMS};
 #[allow(unused_imports)]
-pub use common::{compute_scroll_offset, format_time_ago, TurnCheckpointInfo};
+pub use common::{
+    compute_scroll_offset, format_time_ago, render_modal_nav_buttons, ModalNavInfo,
+    ModalNavRegions, TurnCheckpointInfo,
+};
 
 use crate::agent::models::ModelInfo;
 use crate::ui::theme::Theme;
@@ -961,9 +964,156 @@ impl ModalState {
         }
     }
 
-    pub fn render(&self, frame: &mut Frame, area: Rect, theme: &Theme) {
+    /// Returns whether this modal uses the unified browsing navigation chrome (`[← Back]` / `[× Close]`).
+    /// Confirmation gates (`Approval`, `Inquiry`, `ExitConfirm`, `ConfigApproval`, `ProviderSetupRequired`)
+    /// have dedicated accept/reject buttons and opt out of navigation stack chrome.
+    pub fn supports_nav_chrome(&self) -> bool {
+        !matches!(
+            self,
+            ModalState::None
+                | ModalState::Approval(_)
+                | ModalState::Inquiry(_)
+                | ModalState::ExitConfirm { .. }
+                | ModalState::ConfigApproval { .. }
+                | ModalState::ProviderSetupRequired { .. }
+        )
+    }
+
+    /// Short human-readable label for breadcrumbs and `[← Back: <Parent>]` buttons.
+    pub fn nav_label(&self) -> &'static str {
         match self {
-            ModalState::None => {}
+            ModalState::None => "Chat",
+            ModalState::ApiKeyInput { .. } => "API Key",
+            ModalState::ProviderSelect { .. } => "Providers",
+            ModalState::ModelSelect { .. } => "Models",
+            ModalState::UndoCheckpoint { .. } => "Undo",
+            ModalState::ThemeSelect { .. } => "Themes",
+            ModalState::SessionBrowser { .. } => "Sessions",
+            ModalState::StackSelect { .. } => "Stacks",
+            ModalState::CommandCatalog { .. } => "Commands",
+            ModalState::CodeExplorer { .. } => "Explorer",
+            ModalState::GitDiff { .. } => "Git Diff",
+            ModalState::Help => "Help",
+            ModalState::StreamingSelect { .. } => "Streaming",
+            ModalState::WorkspaceAnalysis { .. } => "Workspace",
+            ModalState::ArchitectureAudit { .. } => "Architecture",
+            ModalState::ContextDiagnostics { .. } => "Context",
+            ModalState::Settings(_) => "Settings",
+            ModalState::MiniPower(_) => "MiniPower",
+            ModalState::Blocks(_) => "MiniBlocks",
+            ModalState::Processes(_) => "Tasks",
+            ModalState::Todo(_) => "Roadmap",
+            ModalState::Vault(_) => "MiniVault",
+            ModalState::CodeReview(_) => "Review",
+            ModalState::Approval(_)
+            | ModalState::Inquiry(_)
+            | ModalState::ExitConfirm { .. }
+            | ModalState::ConfigApproval { .. }
+            | ModalState::ProviderSetupRequired { .. } => "Dialog",
+        }
+    }
+
+    /// Returns the outer bounding rectangle drawn by this modal, used to anchor the top-right
+    /// clickable `[← Back]` / `[× Close]` chrome cleanly on the modal border.
+    pub fn outer_rect(&self, area: Rect) -> Option<Rect> {
+        use crate::constants::*;
+        use crate::ui::layout_utils::{centered_rect, centered_rect_exact};
+        match self {
+            ModalState::ThemeSelect { .. } | ModalState::Settings(_) | ModalState::Todo(_) => {
+                Some(area)
+            }
+            ModalState::ApiKeyInput { .. } => Some(centered_rect(
+                API_KEY_MODAL_WIDTH_PCT,
+                API_KEY_MODAL_HEIGHT_PCT,
+                area,
+            )),
+            ModalState::ProviderSelect { .. } => Some(centered_rect(
+                PROVIDER_SELECT_WIDTH_PCT,
+                PROVIDER_SELECT_HEIGHT_PCT,
+                area,
+            )),
+            ModalState::ModelSelect { .. } => Some(centered_rect(
+                MODEL_SELECT_WIDTH_PCT,
+                MODEL_SELECT_HEIGHT_PCT,
+                area,
+            )),
+            ModalState::UndoCheckpoint { .. } => Some(centered_rect(
+                UNDO_CHECKPOINT_WIDTH_PCT,
+                UNDO_CHECKPOINT_HEIGHT_PCT,
+                area,
+            )),
+            ModalState::SessionBrowser { .. } => {
+                let width = (area.width.saturating_sub(4))
+                    .clamp(SESSION_BROWSER_MIN_WIDTH, SESSION_BROWSER_MAX_WIDTH);
+                let height = (area.height.saturating_sub(4))
+                    .clamp(SESSION_BROWSER_MIN_HEIGHT, SESSION_BROWSER_MAX_HEIGHT);
+                Some(centered_rect_exact(width, height, area))
+            }
+            ModalState::StackSelect { .. } => Some(centered_rect(
+                STACK_SELECT_WIDTH_PCT,
+                STACK_SELECT_HEIGHT_PCT,
+                area,
+            )),
+            ModalState::CommandCatalog { .. } => Some(centered_rect(
+                COMMAND_CATALOG_WIDTH_PCT,
+                COMMAND_CATALOG_HEIGHT_PCT,
+                area,
+            )),
+            ModalState::CodeExplorer { .. } => Some(centered_rect(
+                CODE_EXPLORER_WIDTH_PCT,
+                CODE_EXPLORER_HEIGHT_PCT,
+                area,
+            )),
+            ModalState::GitDiff { .. } => {
+                Some(centered_rect(GIT_DIFF_WIDTH_PCT, GIT_DIFF_HEIGHT_PCT, area))
+            }
+            ModalState::Help => Some(centered_rect(HELP_WIDTH_PCT, HELP_HEIGHT_PCT, area)),
+            ModalState::StreamingSelect { .. } => Some(centered_rect(
+                PROVIDER_SELECT_WIDTH_PCT.max(52),
+                STREAMING_SELECT_HEIGHT_PCT,
+                area,
+            )),
+            ModalState::WorkspaceAnalysis { .. } => Some(centered_rect_exact(
+                WORKSPACE_ANALYSIS_WIDTH,
+                WORKSPACE_ANALYSIS_HEIGHT,
+                area,
+            )),
+            ModalState::ArchitectureAudit { .. } => Some(centered_rect(
+                ARCHITECTURE_MODAL_WIDTH_PCT,
+                ARCHITECTURE_MODAL_HEIGHT_PCT,
+                area,
+            )),
+            ModalState::ContextDiagnostics { .. } => Some(centered_rect(
+                CONTEXT_MODAL_WIDTH_PCT,
+                CONTEXT_MODAL_HEIGHT_PCT,
+                area,
+            )),
+            ModalState::MiniPower(_) => Some(centered_rect(82, 80, area)),
+            ModalState::Blocks(_) => Some(centered_rect(90, 85, area)),
+            ModalState::Processes(_) | ModalState::Vault(_) => Some(centered_rect(92, 86, area)),
+            ModalState::CodeReview(_) => Some(centered_rect(82, 78, area)),
+            ModalState::None
+            | ModalState::Approval(_)
+            | ModalState::Inquiry(_)
+            | ModalState::ExitConfirm { .. }
+            | ModalState::ConfigApproval { .. }
+            | ModalState::ProviderSetupRequired { .. } => None,
+        }
+    }
+
+    pub fn render(&self, frame: &mut Frame, area: Rect, theme: &Theme) {
+        let _ = self.render_with_nav(frame, area, theme, &ModalNavInfo::default());
+    }
+
+    pub fn render_with_nav(
+        &self,
+        frame: &mut Frame,
+        area: Rect,
+        theme: &Theme,
+        nav: &ModalNavInfo,
+    ) -> ModalNavRegions {
+        match self {
+            ModalState::None => return ModalNavRegions::default(),
             ModalState::ApiKeyInput {
                 provider,
                 env_var,
@@ -976,12 +1126,14 @@ impl ModalState {
                 providers,
                 selected_index,
             } => {
-                provider_select::render_provider_select(
+                provider_select::render_provider_select_with_active(
                     frame,
                     area,
                     theme,
                     providers,
                     *selected_index,
+                    nav.active_provider.as_deref(),
+                    nav.parent_label.as_deref(),
                 );
             }
             ModalState::ModelSelect {
@@ -992,7 +1144,7 @@ impl ModalState {
                 filter,
                 loading,
             } => {
-                model_select::render_model_select(
+                model_select::render_model_select_with_active(
                     frame,
                     area,
                     theme,
@@ -1002,6 +1154,9 @@ impl ModalState {
                     *selected_index,
                     filter,
                     *loading,
+                    nav.active_provider.as_deref(),
+                    nav.active_model.as_deref(),
+                    nav.parent_label.as_deref(),
                 );
             }
             ModalState::UndoCheckpoint {
@@ -1063,6 +1218,7 @@ impl ModalState {
                     active_toast_symbols,
                     active_activity_style,
                     active_menu_style,
+                    parent_label: nav.parent_label.as_deref(),
                 };
                 theme_select::render_theme_select(frame, area, theme, &ctx);
             }
@@ -1237,7 +1393,13 @@ impl ModalState {
                 );
             }
             ModalState::Settings(state) => {
-                settings::render_settings(frame, area, theme, state);
+                settings::render_settings_with_nav(
+                    frame,
+                    area,
+                    theme,
+                    state,
+                    nav.parent_label.as_deref(),
+                );
             }
             ModalState::ConfigApproval {
                 proposal,
@@ -1266,6 +1428,12 @@ impl ModalState {
             ModalState::CodeReview(ref state) => {
                 code_review::render_code_review(frame, area, state, theme);
             }
+        }
+
+        if let Some(modal_rect) = self.outer_rect(area) {
+            render_modal_nav_buttons(frame, modal_rect, theme, nav)
+        } else {
+            ModalNavRegions::default()
         }
     }
 }

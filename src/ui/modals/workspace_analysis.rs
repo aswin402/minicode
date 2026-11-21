@@ -81,7 +81,7 @@ pub fn render_workspace_analysis(
             "[ENTER]",
         ),
         ("[2] ◉ Deep Scan", "Symbol graph & architecture scan", "[2]"),
-        ("[3] ▸ Skip", "Instant lightweight chat", "[ESC]"),
+        ("[3] ← Back", "Return without indexing", "[ESC]"),
     ];
     const INDEXED_OPTIONS: &[(&str, &str, &str)] = &[
         (
@@ -95,7 +95,7 @@ pub fn render_workspace_analysis(
             "Display AST centrality hierarchy",
             "[3]",
         ),
-        ("[4] ▸ Close", "Resume chat without re-indexing", "[ESC]"),
+        ("[4] ← Back", "Return to previous menu", "[ESC]"),
     ];
 
     let options = if !is_indexed {

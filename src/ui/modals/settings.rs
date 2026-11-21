@@ -520,7 +520,7 @@ fn render_provider_and_model_picker(
                     .fg(theme.text_primary)
                     .add_modifier(Modifier::BOLD),
             ),
-            Span::styled("  ([Esc] Back)", Style::default().fg(theme.muted)),
+            Span::styled("  ([Esc/Bksp] ← Back)", Style::default().fg(theme.muted)),
         ]));
         content_lines.push(Line::from(""));
     }
@@ -823,6 +823,17 @@ fn render_provider_and_model_picker(
 /// Renders the `/settings` configuration dialog as a minimal Go / Charmbracelet-style
 /// Full-Screen Workbench with a Left Menu Bar and a Right Main Panel.
 pub fn render_settings(frame: &mut Frame, area: Rect, theme: &Theme, state: &SettingsModalState) {
+    render_settings_with_nav(frame, area, theme, state, None);
+}
+
+/// Renders `/settings` with parent-menu aware Back hints in the footer.
+pub fn render_settings_with_nav(
+    frame: &mut Frame,
+    area: Rect,
+    theme: &Theme,
+    state: &SettingsModalState,
+    parent_label: Option<&str>,
+) {
     let popup_area = area;
     frame.render_widget(Clear, popup_area);
 
@@ -1764,13 +1775,19 @@ pub fn render_settings(frame: &mut Frame, area: Rect, theme: &Theme, state: &Set
                 Span::styled("  ↑/↓ ", Style::default().fg(theme.brand_accent)),
                 Span::styled("navigate   ", Style::default().fg(theme.muted)),
                 Span::styled("enter/1 ", Style::default().fg(theme.brand_accent)),
-                Span::styled("primary   ", Style::default().fg(theme.muted)),
+                Span::styled("primary (stay)   ", Style::default().fg(theme.muted)),
                 Span::styled("2/3/4 ", Style::default().fg(theme.brand_accent)),
-                Span::styled("fallback slots   ", Style::default().fg(theme.muted)),
-                Span::styled("esc ", Style::default().fg(theme.brand_accent)),
-                Span::styled("back", Style::default().fg(theme.muted)),
+                Span::styled("fallbacks   ", Style::default().fg(theme.muted)),
+                Span::styled("f ", Style::default().fg(theme.brand_accent)),
+                Span::styled("fav   ", Style::default().fg(theme.muted)),
+                Span::styled("esc/bksp ", Style::default().fg(theme.brand_accent)),
+                Span::styled("← back", Style::default().fg(theme.muted)),
             ])
         } else {
+            let back_hint = match parent_label {
+                Some(parent) => format!("save & ← back to {}", parent),
+                None => "save & ← back".to_string(),
+            };
             Line::from(vec![
                 Span::styled("  tab/←→ ", Style::default().fg(theme.brand_accent)),
                 Span::styled("section   ", Style::default().fg(theme.muted)),
@@ -1782,8 +1799,8 @@ pub fn render_settings(frame: &mut Frame, area: Rect, theme: &Theme, state: &Set
                 Span::styled("clear/reset   ", Style::default().fg(theme.muted)),
                 Span::styled("a ", Style::default().fg(theme.brand_accent)),
                 Span::styled("sync minipubs   ", Style::default().fg(theme.muted)),
-                Span::styled("esc ", Style::default().fg(theme.brand_accent)),
-                Span::styled("save & quit", Style::default().fg(theme.muted)),
+                Span::styled("esc/bksp ", Style::default().fg(theme.brand_accent)),
+                Span::styled(back_hint, Style::default().fg(theme.muted)),
             ])
         };
     frame.render_widget(Paragraph::new(footer_line), outer_chunks[2]);

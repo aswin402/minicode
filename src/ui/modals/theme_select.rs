@@ -554,6 +554,7 @@ pub struct ThemeSelectContext<'a> {
     pub active_toast_symbols: &'a str,
     pub active_activity_style: &'a str,
     pub active_menu_style: &'a str,
+    pub parent_label: Option<&'a str>,
 }
 
 /// Renders the `/theme` customization workbench using the same Left Sidebar + Right Main Panel
@@ -591,6 +592,7 @@ pub fn render_theme_select(
         active_toast_symbols,
         active_activity_style,
         active_menu_style,
+        parent_label,
     } = *ctx;
 
     let popup_area = area;
@@ -1264,15 +1266,19 @@ pub fn render_theme_select(
     frame.render_widget(bot_divider, outer_chunks[1]);
 
     // 5. Minimal Go-style Footer Key Hints (matching /settings)
+    let back_hint = match parent_label {
+        Some(parent) => format!("← back to {}", parent),
+        None => "← back".to_string(),
+    };
     let footer_line = Line::from(vec![
         Span::styled("  tab/←→/1-8 ", Style::default().fg(theme.brand_accent)),
         Span::styled("section   ", Style::default().fg(theme.muted)),
         Span::styled("↑/↓/j/k ", Style::default().fg(theme.brand_accent)),
         Span::styled("navigate   ", Style::default().fg(theme.muted)),
         Span::styled("enter/space ", Style::default().fg(theme.brand_accent)),
-        Span::styled("apply style   ", Style::default().fg(theme.muted)),
-        Span::styled("esc ", Style::default().fg(theme.brand_accent)),
-        Span::styled("save & close", Style::default().fg(theme.muted)),
+        Span::styled("apply (stay)   ", Style::default().fg(theme.muted)),
+        Span::styled("esc/bksp ", Style::default().fg(theme.brand_accent)),
+        Span::styled(back_hint, Style::default().fg(theme.muted)),
     ]);
     frame.render_widget(Paragraph::new(footer_line), outer_chunks[2]);
 }
@@ -1464,6 +1470,7 @@ mod tests {
                 active_toast_symbols: "ascii",
                 active_activity_style: "action_detail",
                 active_menu_style: "minimal",
+                parent_label: Some("Commands"),
             };
 
             terminal

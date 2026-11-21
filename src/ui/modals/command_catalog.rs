@@ -211,6 +211,7 @@ pub fn render_command_catalog(
         .constraints([
             Constraint::Length(crate::constants::MODAL_SEARCH_INPUT_HEIGHT),
             Constraint::Min(8),
+            Constraint::Length(1),
         ])
         .split(inner_area);
 
@@ -403,4 +404,16 @@ pub fn render_command_catalog(
 
     let right_p = Paragraph::new(detail_lines);
     frame.render_widget(right_p, h_chunks[1]);
+
+    let footer = Line::from(vec![
+        Span::styled("  Type ", Style::default().fg(theme.brand_accent)),
+        Span::styled("filter   ", Style::default().fg(theme.muted)),
+        Span::styled("↑/↓ ", Style::default().fg(theme.brand_accent)),
+        Span::styled("navigate   ", Style::default().fg(theme.muted)),
+        Span::styled("Enter ", Style::default().fg(theme.brand_accent)),
+        Span::styled("open command   ", Style::default().fg(theme.muted)),
+        Span::styled("Esc ", Style::default().fg(theme.brand_accent)),
+        Span::styled("← back", Style::default().fg(theme.muted)),
+    ]);
+    frame.render_widget(Paragraph::new(footer), v_chunks[2]);
 }

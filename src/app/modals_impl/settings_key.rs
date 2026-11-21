@@ -149,7 +149,8 @@ impl<'a> App<'a> {
                             if !state.provider_models.is_empty()
                                 && state.model_selected_index < state.provider_models.len()
                             {
-                                let close_drilldown = matches!(key.code, KeyCode::Enter);
+                                let close_drilldown = matches!(key.code, KeyCode::Enter)
+                                    && state.pending_slot.is_some();
                                 let slot_num: usize = match key.code {
                                     KeyCode::Char('1') => 1,
                                     KeyCode::Char('2') => 2,
@@ -431,8 +432,11 @@ impl<'a> App<'a> {
                                 ));
                             } else {
                                 let env_str = crate::ui::setup::SetupWizard::custom_env_var(prov);
-                                self.modal =
-                                    ModalState::new_api_key_input(prov.to_string(), env_str, None);
+                                self.push_modal(ModalState::new_api_key_input(
+                                    prov.to_string(),
+                                    env_str,
+                                    None,
+                                ));
                             }
                         }
                     }
@@ -447,7 +451,9 @@ impl<'a> App<'a> {
                             // (which persists to global ~/.config/minicode/config.toml & .env).
                             if !is_local && api_key.trim().is_empty() {
                                 let env_str = crate::ui::setup::SetupWizard::custom_env_var(prov);
-                                self.modal = ModalState::new_api_key_input(prov_str, env_str, None);
+                                self.push_modal(ModalState::new_api_key_input(
+                                    prov_str, env_str, None,
+                                ));
                                 return;
                             }
 
@@ -687,126 +693,8 @@ impl<'a> App<'a> {
                             }
                         }
                     },
-                    KeyCode::Esc | KeyCode::Char('q') => {
-                        let old_provider = self.config.provider.default.clone();
-                        let old_model = self.config.provider.model.clone();
-                        let old_fb1 = self.config.provider.fallback_1.clone();
-                        let old_fb2 = self.config.provider.fallback_2.clone();
-                        let old_gfb = self.config.provider.global_last_fallback.clone();
-                        let old_streaming = self.config.agent.streaming;
-                        let old_caveman = self.config.agent.caveman_mode;
-                        let old_caveman_level = self.config.agent.caveman_level.clone();
-                        let old_ponytail = self.config.agent.ponytail_mode;
-                        let old_ponytail_level = self.config.agent.ponytail_level.clone();
-                        let old_effort = self.config.provider.effective_level_label();
-                        let old_auto_approve = self.config.agent.auto_approve;
-                        let old_thinking = self.config.provider.thinking_budget;
-                        let old_policy = self.config.agent.approval_policy.clone();
-                        let old_minipub = self.config.agent.minipub.clone();
-                        let old_stream_idle = self.config.provider.stream_idle_timeout_secs;
-                        let old_browser = self.config.browser.clone();
-
-                        self.config.provider.default = state.active_provider.clone();
-                        self.config.provider.model = state.active_model.clone();
-                        self.config.provider.fallback_1 = state.fallback_1.clone();
-                        self.config.provider.fallback_2 = state.fallback_2.clone();
-                        self.config.provider.global_last_fallback =
-                            state.global_last_fallback.clone();
-                        self.config.agent.streaming = state.streaming;
-                        self.config.agent.caveman_mode = state.caveman_mode;
-                        self.config.agent.caveman_level = state.caveman_level.clone();
-                        let flag_path =
-                            crate::agent::caveman::default_flag_path(&self.workspace_root);
-                        let level_flag = if state.caveman_mode {
-                            crate::agent::caveman::CavemanLevel::from_str_loose(
-                                &self.config.agent.caveman_level,
-                            )
-                        } else {
-                            crate::agent::caveman::CavemanLevel::Off
-                        };
-                        let _ = crate::agent::caveman::write_flag_safe(&flag_path, level_flag);
-                        self.config.agent.ponytail_mode = state.ponytail_mode;
-                        self.config.agent.ponytail_level = state.ponytail_level.clone();
-                        let ponytail_flag_path =
-                            crate::agent::ponytail::default_flag_path(&self.workspace_root);
-                        let ponytail_flag = if state.ponytail_mode {
-                            crate::agent::ponytail::PonytailLevel::from_str_active(
-                                &self.config.agent.ponytail_level,
-                            )
-                        } else {
-                            crate::agent::ponytail::PonytailLevel::Off
-                        };
-                        let _ = crate::agent::ponytail::write_flag_safe(
-                            &ponytail_flag_path,
-                            ponytail_flag,
-                        );
-                        if old_effort != state.effort_level {
-                            self.config.provider.apply_effort_level(&state.effort_level);
-                        }
-                        self.config.agent.auto_approve = state.auto_approve;
-                        self.config.provider.thinking_budget = if state.thinking_budget == 0 {
-                            None
-                        } else {
-                            Some(state.thinking_budget)
-                        };
-                        self.config.agent.approval_policy = state.approval_policy.clone();
-                        self.config.agent.minipub.max_parallel = state.minipub_max_parallel;
-                        self.config.agent.minipub.inactivity_timeout_secs =
-                            state.minipub_inactivity_timeout_secs;
-                        self.config.agent.minipub.worktree_isolation =
-                            state.minipub_worktree_isolation.clone();
-                        self.config.agent.minipub.sync_with_orchestrator =
-                            state.minipub_sync_with_orchestrator;
-                        self.config.agent.minipub.default_chain =
-                            state.minipub_default_chain.clone();
-                        self.config.agent.minipub.role_models = state.minipub_role_models.clone();
-                        self.config.provider.stream_idle_timeout_secs =
-                            Some(state.stream_idle_timeout_secs);
-                        self.config.sync_runtime_timeouts();
-                        self.config.browser.default_engine = state.browser_default_engine.clone();
-                        self.config.browser.headless_priority =
-                            state.browser_headless_priority.clone();
-                        self.config.browser.gui_priority = state.browser_gui_priority.clone();
-
-                        persist_settings_modal(
-                            &self.config,
-                            &self.workspace_root,
-                            state.save_to_workspace,
-                            true,
-                        );
-
-                        let config_changed = old_provider != self.config.provider.default
-                            || old_model != self.config.provider.model
-                            || old_fb1 != self.config.provider.fallback_1
-                            || old_fb2 != self.config.provider.fallback_2
-                            || old_gfb != self.config.provider.global_last_fallback
-                            || old_streaming != self.config.agent.streaming
-                            || old_caveman != self.config.agent.caveman_mode
-                            || old_caveman_level != self.config.agent.caveman_level
-                            || old_ponytail != self.config.agent.ponytail_mode
-                            || old_ponytail_level != self.config.agent.ponytail_level
-                            || old_effort != state.effort_level
-                            || old_auto_approve != self.config.agent.auto_approve
-                            || old_thinking != self.config.provider.thinking_budget
-                            || old_policy != self.config.agent.approval_policy
-                            || old_minipub != self.config.agent.minipub
-                            || old_stream_idle != self.config.provider.stream_idle_timeout_secs
-                            || old_browser != self.config.browser;
-
-                        if old_browser != self.config.browser {
-                            crate::tools::browser::BrowserManager::notify_config_updated(
-                                self.config.browser.default_engine.as_deref(),
-                            )
-                            .await;
-                        }
-
-                        if config_changed {
-                            let _ = self.sync_orchestrator_config(control_tx);
-                        }
-
-                        self.toasts
-                            .push_status("✔ Settings saved successfully".to_string());
-                        self.modal = ModalState::None;
+                    KeyCode::Esc | KeyCode::Backspace | KeyCode::Char('q') => {
+                        self.save_and_leave_settings(false, control_tx).await;
                     }
                     _ => {}
                 }
@@ -849,6 +737,133 @@ impl<'a> App<'a> {
                 }
             }
             _ => {}
+        }
+    }
+
+    /// Persists all pending `/settings` state and leaves either back to the parent modal
+    /// (`close_all = false`) or all the way to the main TUI (`close_all = true`).
+    pub(super) async fn save_and_leave_settings(
+        &mut self,
+        close_all: bool,
+        control_tx: &mpsc::UnboundedSender<AgentCommand>,
+    ) {
+        let ModalState::Settings(state) = self.modal.clone() else {
+            if close_all {
+                self.close_all_modals();
+            } else {
+                self.pop_modal();
+            }
+            return;
+        };
+
+        let old_provider = self.config.provider.default.clone();
+        let old_model = self.config.provider.model.clone();
+        let old_fb1 = self.config.provider.fallback_1.clone();
+        let old_fb2 = self.config.provider.fallback_2.clone();
+        let old_gfb = self.config.provider.global_last_fallback.clone();
+        let old_streaming = self.config.agent.streaming;
+        let old_caveman = self.config.agent.caveman_mode;
+        let old_caveman_level = self.config.agent.caveman_level.clone();
+        let old_ponytail = self.config.agent.ponytail_mode;
+        let old_ponytail_level = self.config.agent.ponytail_level.clone();
+        let old_effort = self.config.provider.effective_level_label();
+        let old_auto_approve = self.config.agent.auto_approve;
+        let old_thinking = self.config.provider.thinking_budget;
+        let old_policy = self.config.agent.approval_policy.clone();
+        let old_minipub = self.config.agent.minipub.clone();
+        let old_stream_idle = self.config.provider.stream_idle_timeout_secs;
+        let old_browser = self.config.browser.clone();
+
+        self.config.provider.default = state.active_provider.clone();
+        self.config.provider.model = state.active_model.clone();
+        self.config.provider.fallback_1 = state.fallback_1.clone();
+        self.config.provider.fallback_2 = state.fallback_2.clone();
+        self.config.provider.global_last_fallback = state.global_last_fallback.clone();
+        self.config.agent.streaming = state.streaming;
+        self.config.agent.caveman_mode = state.caveman_mode;
+        self.config.agent.caveman_level = state.caveman_level.clone();
+        let flag_path = crate::agent::caveman::default_flag_path(&self.workspace_root);
+        let level_flag = if state.caveman_mode {
+            crate::agent::caveman::CavemanLevel::from_str_loose(&self.config.agent.caveman_level)
+        } else {
+            crate::agent::caveman::CavemanLevel::Off
+        };
+        let _ = crate::agent::caveman::write_flag_safe(&flag_path, level_flag);
+        self.config.agent.ponytail_mode = state.ponytail_mode;
+        self.config.agent.ponytail_level = state.ponytail_level.clone();
+        let ponytail_flag_path = crate::agent::ponytail::default_flag_path(&self.workspace_root);
+        let ponytail_flag = if state.ponytail_mode {
+            crate::agent::ponytail::PonytailLevel::from_str_active(
+                &self.config.agent.ponytail_level,
+            )
+        } else {
+            crate::agent::ponytail::PonytailLevel::Off
+        };
+        let _ = crate::agent::ponytail::write_flag_safe(&ponytail_flag_path, ponytail_flag);
+        if old_effort != state.effort_level {
+            self.config.provider.apply_effort_level(&state.effort_level);
+        }
+        self.config.agent.auto_approve = state.auto_approve;
+        self.config.provider.thinking_budget = if state.thinking_budget == 0 {
+            None
+        } else {
+            Some(state.thinking_budget)
+        };
+        self.config.agent.approval_policy = state.approval_policy.clone();
+        self.config.agent.minipub.max_parallel = state.minipub_max_parallel;
+        self.config.agent.minipub.inactivity_timeout_secs = state.minipub_inactivity_timeout_secs;
+        self.config.agent.minipub.worktree_isolation = state.minipub_worktree_isolation.clone();
+        self.config.agent.minipub.sync_with_orchestrator = state.minipub_sync_with_orchestrator;
+        self.config.agent.minipub.default_chain = state.minipub_default_chain.clone();
+        self.config.agent.minipub.role_models = state.minipub_role_models.clone();
+        self.config.provider.stream_idle_timeout_secs = Some(state.stream_idle_timeout_secs);
+        self.config.sync_runtime_timeouts();
+        self.config.browser.default_engine = state.browser_default_engine.clone();
+        self.config.browser.headless_priority = state.browser_headless_priority.clone();
+        self.config.browser.gui_priority = state.browser_gui_priority.clone();
+
+        persist_settings_modal(
+            &self.config,
+            &self.workspace_root,
+            state.save_to_workspace,
+            true,
+        );
+
+        let config_changed = old_provider != self.config.provider.default
+            || old_model != self.config.provider.model
+            || old_fb1 != self.config.provider.fallback_1
+            || old_fb2 != self.config.provider.fallback_2
+            || old_gfb != self.config.provider.global_last_fallback
+            || old_streaming != self.config.agent.streaming
+            || old_caveman != self.config.agent.caveman_mode
+            || old_caveman_level != self.config.agent.caveman_level
+            || old_ponytail != self.config.agent.ponytail_mode
+            || old_ponytail_level != self.config.agent.ponytail_level
+            || old_effort != state.effort_level
+            || old_auto_approve != self.config.agent.auto_approve
+            || old_thinking != self.config.provider.thinking_budget
+            || old_policy != self.config.agent.approval_policy
+            || old_minipub != self.config.agent.minipub
+            || old_stream_idle != self.config.provider.stream_idle_timeout_secs
+            || old_browser != self.config.browser;
+
+        if old_browser != self.config.browser {
+            crate::tools::browser::BrowserManager::notify_config_updated(
+                self.config.browser.default_engine.as_deref(),
+            )
+            .await;
+        }
+
+        if config_changed {
+            let _ = self.sync_orchestrator_config(control_tx);
+        }
+
+        self.toasts
+            .push_status("✔ Settings saved successfully".to_string());
+        if close_all {
+            self.close_all_modals();
+        } else {
+            self.pop_modal();
         }
     }
 

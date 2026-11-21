@@ -62,7 +62,7 @@ pub fn render_streaming_select(
             "Disable Streaming",
             "Wait for full response before rendering",
         ),
-        ("Cancel / Back", "Keep current setting and return"),
+        ("← Back", "Keep current setting and return to previous menu"),
     ];
 
     let items: Vec<ListItem> = options
@@ -147,14 +147,14 @@ pub fn render_streaming_select(
                 .fg(theme.brand_accent)
                 .add_modifier(Modifier::BOLD),
         ),
-        Span::styled("Select  ", Style::default().fg(theme.muted)),
+        Span::styled("Apply (Stay)  ", Style::default().fg(theme.muted)),
         Span::styled(
-            "Esc: ",
+            "3/Esc/Bksp: ",
             Style::default()
                 .fg(theme.brand_accent)
                 .add_modifier(Modifier::BOLD),
         ),
-        Span::styled("Close", Style::default().fg(theme.muted)),
+        Span::styled("← Back", Style::default().fg(theme.muted)),
     ]);
     frame.render_widget(Paragraph::new(footer), chunks[2]);
 }

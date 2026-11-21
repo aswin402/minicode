@@ -53,7 +53,7 @@ pub fn render_api_key_input(
                 .add_modifier(Modifier::BOLD),
         ),
         Span::styled(
-            "  (Enter to save, Esc to cancel)",
+            "  (Enter to save, Esc ← Back)",
             Style::default().fg(theme.muted),
         ),
     ]);

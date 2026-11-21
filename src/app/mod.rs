@@ -54,6 +54,10 @@ pub struct App<'a> {
     pub pty_drawer: crate::ui::PtyDrawer,
     pub subagent_drawer: crate::ui::SubagentDrawer,
     pub modal: ModalState,
+    /// Navigation stack of parent modals (e.g. `/commands` -> `/theme`) so `[← Back]` / `Esc` returns cleanly.
+    pub modal_history: Vec<ModalState>,
+    /// Cell hitboxes of the `[← Back]` and `[× Close]` pill buttons rendered on the active modal.
+    modal_nav_chrome: std::cell::RefCell<crate::ui::modals::ModalNavRegions>,
     model_fetcher: ModelFetcher,
     is_working: bool,
     current_activity: Option<crate::ui::AgentActivity>,
@@ -178,6 +182,8 @@ impl<'a> App<'a> {
             pty_drawer: crate::ui::PtyDrawer::new(),
             subagent_drawer: crate::ui::SubagentDrawer::new(),
             modal: initial_modal,
+            modal_history: Vec::new(),
+            modal_nav_chrome: std::cell::RefCell::new(crate::ui::modals::ModalNavRegions::default()),
             model_fetcher: ModelFetcher::new(),
             is_working: false,
             current_activity: None,
@@ -241,6 +247,7 @@ impl<'a> App<'a> {
     /// Hydrates past session events into the timeline view
     pub fn hydrate_session(&mut self, events: &[AgentEvent]) {
         self.modal = ModalState::None;
+        self.modal_history.clear();
         for event in events {
             match event {
                 AgentEvent::UserPrompt { prompt, .. } => {
@@ -734,7 +741,14 @@ impl<'a> App<'a> {
 
                     // Render Modal Overlay if active
                     if self.modal.is_active() {
-                        self.modal.render(frame, frame.area(), &self.theme);
+                        let nav_info = self.current_modal_nav_info();
+                        let regions =
+                            self.modal
+                                .render_with_nav(frame, frame.area(), &self.theme, &nav_info);
+                        *self.modal_nav_chrome.borrow_mut() = regions;
+                    } else {
+                        *self.modal_nav_chrome.borrow_mut() =
+                            crate::ui::modals::ModalNavRegions::default();
                     }
 
                     // Render Embedded PTY Terminal Drawer if active
@@ -1416,7 +1430,20 @@ impl<'a> App<'a> {
                                         }
                                     }
                                     MouseEventKind::Down(MouseButton::Left) => {
-                                        if !self.pty_drawer.is_open && !self.subagent_drawer.is_open && !self.modal.is_active() {
+                                        if self.modal.is_active() {
+                                            let regions = *self.modal_nav_chrome.borrow();
+                                            if regions.hit_back(mouse_event.column, mouse_event.row) {
+                                                self.handle_modal_back(&control_tx).await;
+                                            } else if regions.hit_close(mouse_event.column, mouse_event.row) {
+                                                self.handle_modal_close_all(&control_tx).await;
+                                            }
+                                            if !self.modal.is_active() && !self.is_working {
+                                                let bg_flags = self
+                                                    .sync_background_telemetry_and_continuation(&control_tx)
+                                                    .await;
+                                                scheduler.mark_dirty(bg_flags | crate::ui::DirtyFlags::STATUS);
+                                            }
+                                        } else if !self.pty_drawer.is_open && !self.subagent_drawer.is_open {
                                             self.timeline.handle_mouse_down(mouse_event.column, mouse_event.row);
                                         }
                                     }
@@ -2295,6 +2322,97 @@ impl<'a> App<'a> {
         }
     }
 
+    /// Pushes the currently active browsing modal onto `modal_history` and transitions to `next`.
+    pub(crate) fn push_modal(&mut self, next: ModalState) {
+        if self.modal.supports_nav_chrome() {
+            let prev = std::mem::replace(&mut self.modal, next);
+            self.modal_history.push(prev);
+        } else {
+            self.modal = next;
+        }
+    }
+
+    /// Pops back to the immediate parent modal in `modal_history` (syncing live config/UI badges),
+    /// or closes the modal overlay when at the root level.
+    pub(crate) fn pop_modal(&mut self) {
+        if let Some(mut prev) = self.modal_history.pop() {
+            match &mut prev {
+                ModalState::Settings(ref mut s) => {
+                    s.sync_from_config(&self.config);
+                }
+                ModalState::StreamingSelect {
+                    ref mut current_streaming,
+                    ..
+                } => {
+                    *current_streaming = self.config.agent.streaming;
+                }
+                ModalState::ThemeSelect {
+                    ref mut active_theme_id,
+                    ref mut active_animation_id,
+                    ref mut active_todo_style,
+                    ref mut active_swarm_style,
+                    ref mut active_toast_style,
+                    ref mut active_toast_symbols,
+                    ref mut active_activity_style,
+                    ref mut active_menu_style,
+                    ..
+                } => {
+                    *active_theme_id = self.config.ui.theme.clone();
+                    *active_animation_id = self.config.ui.animation.clone();
+                    *active_todo_style = self.config.ui.todo_style.clone();
+                    *active_swarm_style = self.config.ui.swarm_style.clone();
+                    *active_toast_style = self.config.ui.toast_style.clone();
+                    *active_toast_symbols = self.config.ui.toast_symbols.clone();
+                    *active_activity_style = self.config.ui.activity_style.clone();
+                    *active_menu_style = self.config.ui.menu_style.clone();
+                }
+                _ => {}
+            }
+            self.modal = prev;
+        } else {
+            self.modal = ModalState::None;
+        }
+    }
+
+    /// Closes the active modal and clears the entire parent modal stack.
+    pub(crate) fn close_all_modals(&mut self) {
+        self.modal_history.clear();
+        self.modal = ModalState::None;
+    }
+
+    /// Computes navigation chrome metadata (`[← Back: <Parent>]`, `[× Close]`, active provider/model)
+    /// for the currently rendered modal.
+    pub(crate) fn current_modal_nav_info(&self) -> crate::ui::modals::ModalNavInfo {
+        let (parent_label, can_go_back) = match &self.modal {
+            ModalState::Settings(s) if s.selecting_model_for_provider.is_some() => {
+                (Some("Providers".to_string()), true)
+            }
+            ModalState::Settings(s) if s.selecting_provider_for_target => {
+                (Some(s.active_tab.sidebar_label().to_string()), true)
+            }
+            ModalState::Processes(s)
+                if matches!(
+                    s.active_tab,
+                    crate::ui::modals::processes::ProcessesTab::Logs
+                        | crate::ui::modals::processes::ProcessesTab::Telemetry
+                ) =>
+            {
+                (Some("Tasks".to_string()), true)
+            }
+            _ => match self.modal_history.last() {
+                Some(parent) => (Some(parent.nav_label().to_string()), true),
+                None => (None, false),
+            },
+        };
+
+        crate::ui::modals::ModalNavInfo {
+            parent_label,
+            can_go_back,
+            active_provider: Some(self.config.provider.default.clone()),
+            active_model: Some(self.config.provider.model.clone()),
+        }
+    }
+
     /// Opens the Theme & Style selector modal, optionally pre-selecting a specific tab.
     pub(crate) fn open_theme_modal(&mut self, tab: Option<crate::ui::modals::ThemeModalTab>) {
         let mut m = ModalState::new_theme_select(
@@ -2416,5 +2534,253 @@ mod tests {
         let popped = app.pending_submission.take().unwrap();
         assert_eq!(popped.prompt, "add login to auth.rs");
         assert!(app.pending_submission.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_commands_to_theme_enter_stays_and_back_returns_to_commands() {
+        use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+        use ratatui::backend::TestBackend;
+        use ratatui::Terminal;
+
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+        let config = Config::default();
+        let mut app = App::new(temp_dir.path(), config);
+        let (control_tx, _control_rx) = mpsc::unbounded_channel::<AgentCommand>();
+
+        // 1. Open /commands catalog
+        app.handle_command_or_prompt("/commands", None, &control_tx)
+            .await
+            .unwrap();
+        assert!(matches!(app.modal, ModalState::CommandCatalog { .. }));
+
+        // 2. Filter for "theme" and press Enter -> opens ThemeSelect while pushing CommandCatalog
+        for ch in "theme".chars() {
+            app.handle_modal_key(
+                KeyEvent::new(KeyCode::Char(ch), KeyModifiers::NONE),
+                &control_tx,
+            )
+            .await;
+        }
+        app.handle_modal_key(
+            KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+            &control_tx,
+        )
+        .await;
+
+        assert!(
+            matches!(app.modal, ModalState::ThemeSelect { .. }),
+            "Selecting /theme from /commands must open ThemeSelect"
+        );
+        assert_eq!(app.modal_history.len(), 1);
+        let nav = app.current_modal_nav_info();
+        assert!(nav.can_go_back);
+        assert_eq!(nav.parent_label.as_deref(), Some("Commands"));
+
+        // 3. Render with nav chrome -> verify clickable [← Back: Commands] & [× Close] buttons
+        let backend = TestBackend::new(110, 30);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let mut regions = crate::ui::modals::ModalNavRegions::default();
+        terminal
+            .draw(|f| {
+                regions = app.modal.render_with_nav(f, f.area(), &app.theme, &nav);
+            })
+            .unwrap();
+        assert!(regions.back_button.is_some());
+        assert!(regions.close_button.is_some());
+        let buf = terminal.backend().buffer();
+        let top_row: String = (0..110).map(|x| buf[(x, 0)].symbol()).collect();
+        assert!(top_row.contains("[← Back: Commands]"), "top_row: {top_row}");
+        assert!(top_row.contains("[× Close]"), "top_row: {top_row}");
+
+        // 4. Move to next theme and press Enter -> applies theme AND STAYS inside ThemeSelect!
+        let initial_theme = app.config.ui.theme.clone();
+        app.handle_modal_key(
+            KeyEvent::new(KeyCode::Down, KeyModifiers::NONE),
+            &control_tx,
+        )
+        .await;
+        app.handle_modal_key(
+            KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+            &control_tx,
+        )
+        .await;
+        assert!(
+            matches!(app.modal, ModalState::ThemeSelect { .. }),
+            "Pressing Enter in ThemeSelect must stay in ThemeSelect instead of quitting"
+        );
+        assert_ne!(app.config.ui.theme, initial_theme);
+
+        // 5. Press Backspace -> returns to CommandCatalog with "theme" filter preserved!
+        app.handle_modal_key(
+            KeyEvent::new(KeyCode::Backspace, KeyModifiers::NONE),
+            &control_tx,
+        )
+        .await;
+        match &app.modal {
+            ModalState::CommandCatalog { filter, .. } => {
+                assert_eq!(filter, "theme");
+            }
+            other => panic!("Expected CommandCatalog on Back, got {:?}", other),
+        }
+        assert!(app.modal_history.is_empty());
+
+        // 6. Re-open /theme and simulate clicking [← Back] via handle_modal_back -> back to /commands -> back to chat
+        app.handle_modal_key(
+            KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+            &control_tx,
+        )
+        .await;
+        assert!(matches!(app.modal, ModalState::ThemeSelect { .. }));
+        app.handle_modal_back(&control_tx).await;
+        assert!(matches!(app.modal, ModalState::CommandCatalog { .. }));
+        app.handle_modal_back(&control_tx).await;
+        assert!(matches!(app.modal, ModalState::None));
+    }
+
+    #[tokio::test]
+    async fn test_model_and_streaming_select_stay_on_enter_and_back_pops() {
+        use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+        let config = Config::default();
+        let mut app = App::new(temp_dir.path(), config);
+        let (control_tx, _control_rx) = mpsc::unbounded_channel::<AgentCommand>();
+
+        // 1. ModelSelect stays open on Enter (when no pending submission) and returns to ProviderSelect on Esc
+        app.modal = ModalState::new_provider_select_with_config(&app.config);
+        app.push_modal(ModalState::new_model_select(
+            "ollama".to_string(),
+            vec![
+                crate::agent::models::ModelInfo {
+                    id: "llama3.2".to_string(),
+                    name: "Llama 3.2".to_string(),
+                    description: None,
+                    context_length: Some(128_000),
+                    is_free: false,
+                },
+                crate::agent::models::ModelInfo {
+                    id: "qwen2.5-coder".to_string(),
+                    name: "Qwen 2.5 Coder".to_string(),
+                    description: None,
+                    context_length: Some(128_000),
+                    is_free: false,
+                },
+            ],
+        ));
+        app.handle_modal_key(
+            KeyEvent::new(KeyCode::Down, KeyModifiers::NONE),
+            &control_tx,
+        )
+        .await;
+        app.handle_modal_key(
+            KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+            &control_tx,
+        )
+        .await;
+        assert_eq!(app.config.provider.default, "ollama");
+        assert_eq!(app.config.provider.model, "qwen2.5-coder");
+        assert!(
+            matches!(app.modal, ModalState::ModelSelect { .. }),
+            "ModelSelect must stay open after selecting a model"
+        );
+        app.handle_modal_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE), &control_tx)
+            .await;
+        assert!(matches!(app.modal, ModalState::ProviderSelect { .. }));
+
+        // 2. StreamingSelect stays open on Enter/1/2 and pops back on '3' / Esc
+        app.push_modal(ModalState::new_streaming_select(true));
+        app.handle_modal_key(
+            KeyEvent::new(KeyCode::Char('2'), KeyModifiers::NONE),
+            &control_tx,
+        )
+        .await;
+        assert!(!app.config.agent.streaming);
+        match app.modal {
+            ModalState::StreamingSelect {
+                current_streaming, ..
+            } => assert!(!current_streaming),
+            ref other => panic!("Expected StreamingSelect to stay open, got {:?}", other),
+        }
+        app.handle_modal_key(
+            KeyEvent::new(KeyCode::Char('3'), KeyModifiers::NONE),
+            &control_tx,
+        )
+        .await;
+        assert!(matches!(app.modal, ModalState::ProviderSelect { .. }));
+    }
+
+    #[tokio::test]
+    async fn test_settings_drilldown_apikey_back_and_close_all_saves() {
+        use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+        let config = Config::default();
+        let mut app = App::new(temp_dir.path(), config);
+        let (control_tx, _control_rx) = mpsc::unbounded_channel::<AgentCommand>();
+
+        // Open Settings from CommandCatalog
+        app.modal = ModalState::new_command_catalog();
+        app.push_modal(ModalState::new_settings(&app.config, temp_dir.path()));
+
+        // Enter synthetic model drilldown on Providers tab and press Enter -> stays in drilldown!
+        if let ModalState::Settings(ref mut s) = app.modal {
+            s.selecting_model_for_provider = Some("ollama".to_string());
+            s.provider_models = vec![crate::agent::models::ModelInfo {
+                id: "deepseek-r1".to_string(),
+                name: "DeepSeek R1".to_string(),
+                description: None,
+                context_length: Some(64_000),
+                is_free: false,
+            }];
+            s.model_selected_index = 0;
+        }
+        assert_eq!(
+            app.current_modal_nav_info().parent_label.as_deref(),
+            Some("Providers")
+        );
+        app.handle_modal_key(
+            KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+            &control_tx,
+        )
+        .await;
+        if let ModalState::Settings(ref s) = app.modal {
+            assert!(
+                s.selecting_model_for_provider.is_some(),
+                "Providers tab model drilldown must stay open on Enter"
+            );
+        } else {
+            panic!("Expected Settings modal");
+        }
+
+        // Back steps out of model drilldown -> still in Settings
+        app.handle_modal_back(&control_tx).await;
+        if let ModalState::Settings(ref s) = app.modal {
+            assert!(s.selecting_model_for_provider.is_none());
+        } else {
+            panic!("Expected Settings modal");
+        }
+
+        // Opening ApiKeyInput from Settings and pressing Esc returns to Settings (not ProviderSelect!)
+        app.push_modal(ModalState::new_api_key_input(
+            "anthropic".to_string(),
+            "ANTHROPIC_API_KEY".to_string(),
+            None,
+        ));
+        app.handle_modal_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE), &control_tx)
+            .await;
+        assert!(
+            matches!(app.modal, ModalState::Settings(_)),
+            "Esc from ApiKeyInput opened via Settings must return to Settings"
+        );
+
+        // Toggle streaming in Settings and click [× Close] -> persists setting & clears whole stack
+        let prev_streaming = app.config.agent.streaming;
+        if let ModalState::Settings(ref mut s) = app.modal {
+            s.streaming = !prev_streaming;
+        }
+        app.handle_modal_close_all(&control_tx).await;
+        assert_eq!(app.config.agent.streaming, !prev_streaming);
+        assert!(matches!(app.modal, ModalState::None));
+        assert!(app.modal_history.is_empty());
     }
 }

@@ -427,14 +427,7 @@ pub fn render_todo_modal(frame: &mut Frame, area: Rect, state: &TodoModalState, 
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
         .border_style(Style::default().fg(theme.brand_accent))
-        .title(title_span)
-        .title(
-            Line::from(vec![Span::styled(
-                " [↑/↓/PgUp/PgDn] Scroll · [Esc] Close ",
-                Style::default().fg(theme.muted),
-            )])
-            .alignment(ratatui::layout::Alignment::Right),
-        );
+        .title(title_span);
 
     let inner_area = main_block.inner(popup_area);
     frame.render_widget(main_block, popup_area);
