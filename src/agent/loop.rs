@@ -948,6 +948,7 @@ impl AgentLoop {
         let mut turn_tool_results = Vec::new();
         let mut last_prompt_tokens: usize = 0;
         let mut last_cached_prompt_tokens: usize = 0;
+        let mut last_completion_tokens: usize = 0;
         let mut cumulative_completion_tokens: usize = 0;
         let mut turn_files_modified = Vec::new();
         let turn_started_at = std::time::SystemTime::now();
@@ -1245,12 +1246,16 @@ impl AgentLoop {
                                 if prompt_tokens > 0 {
                                     last_prompt_tokens = prompt_tokens;
                                     last_cached_prompt_tokens = cached_prompt_tokens;
+                                    last_completion_tokens = 0;
                                 } else if cached_prompt_tokens > 0 {
                                     last_cached_prompt_tokens = cached_prompt_tokens;
                                 }
-                                cumulative_completion_tokens += completion_tokens;
+                                if completion_tokens > 0 {
+                                    last_completion_tokens = completion_tokens;
+                                    cumulative_completion_tokens += completion_tokens;
+                                }
                                 let live_used =
-                                    last_prompt_tokens.saturating_add(completion_tokens);
+                                    last_prompt_tokens.saturating_add(last_completion_tokens);
                                 let update_event = AgentEvent::ContextTokensUpdated {
                                     turn_id,
                                     used_tokens: live_used,
@@ -1432,11 +1437,16 @@ impl AgentLoop {
                             if last_pt > 0 {
                                 last_prompt_tokens = last_pt;
                                 last_cached_prompt_tokens = cached_pt;
+                                last_completion_tokens = 0;
                             } else if cached_pt > 0 {
                                 last_cached_prompt_tokens = cached_pt;
                             }
-                            cumulative_completion_tokens += cum_ct;
-                            let live_used = last_prompt_tokens.saturating_add(cum_ct);
+                            if cum_ct > 0 {
+                                last_completion_tokens = cum_ct;
+                                cumulative_completion_tokens += cum_ct;
+                            }
+                            let live_used =
+                                last_prompt_tokens.saturating_add(last_completion_tokens);
                             let update_event = AgentEvent::ContextTokensUpdated {
                                 turn_id,
                                 used_tokens: live_used,
@@ -2321,10 +2331,10 @@ impl AgentLoop {
                     });
                 }
 
-                // Emit updated real-time context token count after tool results are added
+                // Emit updated real-time active context occupancy (never inflated by cumulative multi-step output tokens)
                 let current_context_tokens = self.count_current_context_tokens();
-                let live_used =
-                    current_context_tokens.max(last_prompt_tokens + cumulative_completion_tokens);
+                let live_used = current_context_tokens
+                    .max(last_prompt_tokens.saturating_add(last_completion_tokens));
                 let update_event = AgentEvent::ContextTokensUpdated {
                     turn_id,
                     used_tokens: live_used,
@@ -3195,10 +3205,14 @@ impl AgentLoop {
                 }
             }
         }
+        let final_active_context = self
+            .count_current_context_tokens()
+            .max(last_prompt_tokens.saturating_add(last_completion_tokens));
         if last_cached_prompt_tokens > 0 {
             tracing::info!(
                 turn_id,
                 turn_tokens_used,
+                active_context_tokens = final_active_context,
                 cached_prompt_tokens = last_cached_prompt_tokens,
                 "Turn completed with prompt cache hits"
             );
@@ -3252,6 +3266,18 @@ impl AgentLoop {
                     );
                 }
             }
+        }
+
+        if final_active_context > 0 || last_cached_prompt_tokens > 0 {
+            let final_ctx_event = AgentEvent::ContextTokensUpdated {
+                turn_id,
+                used_tokens: final_active_context,
+                cached_tokens: last_cached_prompt_tokens,
+            };
+            let _ = self
+                .session_store
+                .append_event(&self.session_id, &final_ctx_event);
+            let _ = event_sender.send(final_ctx_event);
         }
 
         let end_event = AgentEvent::TurnEnd {

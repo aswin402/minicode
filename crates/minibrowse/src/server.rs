@@ -1342,9 +1342,10 @@ async fn dispatch_cdp_method(
                 .map_err(|e| (-32000, e))?;
             Ok(json!({ "mock_routes": count }))
         }
-        "MiniBrowse.setBlockedUrls" => {
+        "MiniBrowse.setBlockedUrls" | "Network.setBlockedURLs" => {
             let patterns: Vec<String> = params
                 .get("patterns")
+                .or_else(|| params.get("urls"))
                 .cloned()
                 .and_then(|v| serde_json::from_value(v).ok())
                 .unwrap_or_default();

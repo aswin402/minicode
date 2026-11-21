@@ -253,6 +253,17 @@ mod tests {
         );
         assert_eq!(main_cookies["result"]["cookies"][0]["name"], "session_a");
 
+        // 5b. Standard CDP `Network.setBlockedURLs` alias maps cleanly onto MiniBrowse blocker
+        let block_res = call_cdp(
+            155,
+            "Network.setBlockedURLs",
+            json!({ "urls": ["*assets/js/main.js*"] }),
+        )
+        .await;
+        assert_eq!(block_res["result"]["blocked_patterns"], 1);
+        let unblock_res = call_cdp(156, "Network.setBlockedURLs", json!({ "urls": [] })).await;
+        assert_eq!(unblock_res["result"]["blocked_patterns"], 0);
+
         // 6. Concurrent `sessionId` ScopedTarget routing WITHOUT switching global active tab!
         // Active tab is currently "main" (at Mocked Page). Query tab-2 via sessionId while main stays active.
         let attach_tab2 = call_cdp(

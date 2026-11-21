@@ -561,6 +561,57 @@ impl CommandProfile {
         segments
     }
 
+    /// Splits a single shell segment into whitespace-delimited words while keeping quoted
+    /// substrings (`'...'`, `"..."`) and backslash-escaped spaces intact so variable assignments
+    /// like `UA="Mozilla/5.0 (X11; Linux x86_64)..."` stay a single token.
+    fn split_shell_words(seg: &str) -> Vec<&str> {
+        let bytes = seg.as_bytes();
+        let len = bytes.len();
+        let mut words = Vec::new();
+        let mut i = 0usize;
+        while i < len {
+            while i < len && bytes[i].is_ascii_whitespace() {
+                i += 1;
+            }
+            if i >= len {
+                break;
+            }
+            let start = i;
+            let mut in_single = false;
+            let mut in_double = false;
+            let mut escaped = false;
+            while i < len {
+                let b = bytes[i];
+                if escaped {
+                    escaped = false;
+                    i += 1;
+                    continue;
+                }
+                if b == b'\\' && !in_single {
+                    escaped = true;
+                    i += 1;
+                    continue;
+                }
+                if b == b'\'' && !in_double {
+                    in_single = !in_single;
+                    i += 1;
+                    continue;
+                }
+                if b == b'"' && !in_single {
+                    in_double = !in_double;
+                    i += 1;
+                    continue;
+                }
+                if !in_single && !in_double && b.is_ascii_whitespace() {
+                    break;
+                }
+                i += 1;
+            }
+            words.push(&seg[start..i]);
+        }
+        words
+    }
+
     /// Returns true if `seg` is a self-detaching subshell `( ... & )` that returns immediately to the parent shell.
     fn is_detached_subshell(seg: &str) -> bool {
         let t = seg.trim();
@@ -637,7 +688,7 @@ impl CommandProfile {
             if seg.is_empty() {
                 continue;
             }
-            let tokens: Vec<&str> = seg.split_whitespace().collect();
+            let tokens: Vec<&str> = Self::split_shell_words(seg);
             let mut idx = 0;
 
             // Skip leading ENV=VAL assignments (unless `VAR=$(cmd ...)` command substitution),
@@ -647,9 +698,11 @@ impl CommandProfile {
                 let tok = tokens[idx];
                 if tok.contains('=') && !tok.starts_with('-') {
                     if let Some((_, rhs)) = tok.split_once('=') {
-                        if let Some(inner) = rhs
+                        let rhs_unquoted = rhs.trim_matches(['"', '\'']);
+                        if let Some(inner) = rhs_unquoted
                             .strip_prefix("$(")
-                            .or_else(|| rhs.strip_prefix('`'))
+                            .or_else(|| rhs_unquoted.strip_prefix('`'))
+                            .and_then(|s| s.split_whitespace().next())
                             .map(|s| s.trim_end_matches([')', '`']))
                             .filter(|s| !s.is_empty())
                         {
@@ -2095,5 +2148,14 @@ grep -c "FeatureTabs" FeatureTabs.tsx"#;
             classify_background_task_name("python3 -m py_compile app.py"),
             None
         );
+
+        // minitest81 regression: quoted shell variable assignments containing spaces & semicolons
+        // (`UA="Mozilla/5.0 (X11; Linux x86_64)..."`) must remain a single skipped token so
+        // `cd && rm && curl` stays InstantProbe instead of spawning a `x11-linux` minitask log!
+        let quoted_ua_curl = "cd assets/fonts && rm -f *.woff2\nUA=\"Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/120.0 Safari/537.36\"\ncurl -s -A \"$UA\" \"https://fonts.googleapis.com/css2?family=Inter\" -o inter.css\ncat inter.css";
+        let ua_prof = CommandProfile::analyze(quoted_ua_curl);
+        assert_eq!(ua_prof.workload, CommandWorkload::InstantProbe);
+        assert_eq!(classify_background_task_name(quoted_ua_curl), None);
+        assert_ne!(ua_prof.task_slug, "x11-linux");
     }
 }

@@ -62,6 +62,7 @@ pub struct App<'a> {
     last_user_prompt: Option<String>,
     last_turn_tokens: usize,
     last_turn_cached_tokens: usize,
+    saw_turn_context_update: bool,
     cumulative_tokens: usize,
     total_cost_usd: f64,
     /// Handle to the agent's in-flight approval requests.
@@ -185,6 +186,7 @@ impl<'a> App<'a> {
             last_user_prompt: None,
             last_turn_tokens: 0,
             last_turn_cached_tokens: 0,
+            saw_turn_context_update: false,
             cumulative_tokens: 0,
             total_cost_usd: 0.0,
             approvals: std::sync::Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
@@ -248,6 +250,7 @@ impl<'a> App<'a> {
                     }
                 }
                 AgentEvent::TurnStart { context_tokens, .. } => {
+                    self.saw_turn_context_update = false;
                     if *context_tokens > 0 {
                         self.last_turn_tokens = *context_tokens;
                     }
@@ -275,13 +278,20 @@ impl<'a> App<'a> {
                         .finish_tool_call(tool, *success, output.clone(), *duration_ms);
                 }
                 AgentEvent::TurnEnd {
-                    total_tokens_used, ..
+                    total_tokens_used,
+                    cached_prompt_tokens,
+                    ..
                 } => {
                     self.timeline.finalize_open_entries_on_turn_end();
                     if *total_tokens_used > 0 {
-                        self.last_turn_tokens = *total_tokens_used;
+                        if !self.saw_turn_context_update {
+                            self.last_turn_tokens = *total_tokens_used;
+                        }
                         self.cumulative_tokens =
                             self.cumulative_tokens.saturating_add(*total_tokens_used);
+                    }
+                    if *cached_prompt_tokens > 0 {
+                        self.last_turn_cached_tokens = *cached_prompt_tokens;
                     }
                 }
                 AgentEvent::ContextTokensUpdated {
@@ -291,6 +301,7 @@ impl<'a> App<'a> {
                 } => {
                     if *used_tokens > 0 {
                         self.last_turn_tokens = *used_tokens;
+                        self.saw_turn_context_update = true;
                     }
                     if *cached_tokens > 0 {
                         self.last_turn_cached_tokens = *cached_tokens;
@@ -878,7 +889,9 @@ impl<'a> App<'a> {
                                     ..
                                 } => {
                                     if total_tokens_used > 0 {
-                                        self.last_turn_tokens = total_tokens_used;
+                                        if !self.saw_turn_context_update {
+                                            self.last_turn_tokens = total_tokens_used;
+                                        }
                                         self.cumulative_tokens =
                                             self.cumulative_tokens.saturating_add(total_tokens_used);
                                     }
@@ -893,6 +906,7 @@ impl<'a> App<'a> {
                                 } => {
                                     if used_tokens > 0 {
                                         self.last_turn_tokens = used_tokens;
+                                        self.saw_turn_context_update = true;
                                     }
                                     if cached_tokens > 0 {
                                         self.last_turn_cached_tokens = cached_tokens;
@@ -943,6 +957,7 @@ impl<'a> App<'a> {
                         match agent_event {
                             AgentEvent::TurnStart { context_tokens, .. } => {
                                 self.is_working = true;
+                                self.saw_turn_context_update = false;
                                 self.turn_tool_steps = 0;
                                 if self.active_plan.as_ref().is_some_and(|p| {
                                     p.total_tasks > 0 && p.completed_tasks >= p.total_tasks
@@ -1030,6 +1045,7 @@ impl<'a> App<'a> {
                             } => {
                                 if used_tokens > 0 {
                                     self.last_turn_tokens = used_tokens;
+                                    self.saw_turn_context_update = true;
                                 }
                                 if cached_tokens > 0 {
                                     self.last_turn_cached_tokens = cached_tokens;
@@ -1042,7 +1058,9 @@ impl<'a> App<'a> {
                                 ..
                             } => {
                                 if total_tokens_used > 0 {
-                                    self.last_turn_tokens = total_tokens_used;
+                                    if !self.saw_turn_context_update {
+                                        self.last_turn_tokens = total_tokens_used;
+                                    }
                                     self.cumulative_tokens = self.cumulative_tokens.saturating_add(total_tokens_used);
                                 }
                                 self.last_turn_cached_tokens = cached_prompt_tokens;
@@ -2342,6 +2360,34 @@ mod tests {
 
         app.hydrate_session(&events);
         assert_eq!(app.last_turn_tokens, 1580);
+
+        // minitest81 regression: when ContextTokensUpdated reports true active context occupancy
+        // before TurnEnd, TurnEnd's cumulative turn spend must update `cumulative_tokens` without
+        // overwriting `last_turn_tokens` (preserving accurate context bar & `kv (%)` cache hit rate).
+        let multi_step_events = vec![
+            AgentEvent::TurnStart {
+                turn_id: 2,
+                timestamp: "2026-11-21T17:13:54Z".to_string(),
+                model: "MiniMax-M3.1-Flash".to_string(),
+                context_tokens: 12153,
+            },
+            AgentEvent::ContextTokensUpdated {
+                turn_id: 2,
+                used_tokens: 175_000,
+                cached_tokens: 157_184,
+            },
+            AgentEvent::TurnEnd {
+                turn_id: 2,
+                status: "complete".to_string(),
+                total_tokens_used: 385_375,
+                files_modified: vec![],
+                cached_prompt_tokens: 157_184,
+            },
+        ];
+        app.hydrate_session(&multi_step_events);
+        assert_eq!(app.last_turn_tokens, 175_000);
+        assert_eq!(app.last_turn_cached_tokens, 157_184);
+        assert_eq!(app.cumulative_tokens, 1580 + 385_375);
     }
 
     #[test]

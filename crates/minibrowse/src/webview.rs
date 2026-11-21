@@ -1470,9 +1470,14 @@ async fn handle_supervisor_cmd(sup: &mut SupervisorState, cmd: BrowserBackendCmd
         BrowserBackendCmd::EvaluateJs { expression, reply } => {
             let eval_started = std::time::Instant::now();
             // Keep lightweight probes ("1 + 1", "document.title", "outerHTML", PageAgent read probes)
-            // in Gear 0 when WebKit is asleep!
-            if sup.webkit.is_none()
-                && (!sup.can_use_webkit || is_lightweight_probe_expr(&expression))
+            // in Gear 0 when WebKit is asleep, AND answer pure liveness probes directly in Gear 0
+            // when the active tab is hibernated (`suspended`) so pool health-checks never trigger
+            // a WebKit reload that times out the 2-second liveness probe.
+            let is_liveness_probe = matches!(expression.trim(), "1 + 1" | "true" | "false");
+            let active_suspended = sup.active_tab_mut().suspended;
+            if (sup.webkit.is_none()
+                && (!sup.can_use_webkit || is_lightweight_probe_expr(&expression)))
+                || (active_suspended && is_liveness_probe)
             {
                 let val = sup.active_tab_mut().page.evaluate_expression(&expression);
                 let rtype = match &val {
