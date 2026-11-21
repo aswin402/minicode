@@ -751,10 +751,19 @@ impl CommandProfile {
                     continue;
                 }
                 let lower_tok = tok.to_ascii_lowercase();
+                let is_syntax_check_flag = (lower_tok == "--check"
+                    && matches!(
+                        prog_slug.as_str(),
+                        "node" | "nodejs" | "deno" | "bun" | "rustfmt" | "prettier"
+                    ))
+                    || (lower_tok == "-n"
+                        && matches!(prog_slug.as_str(), "sh" | "bash" | "zsh" | "dash" | "ksh"))
+                    || (lower_tok == "-l" && prog_slug == "php");
                 if matches!(
                     lower_tok.as_str(),
                     "--version" | "--help" | "-v" | "-h" | "version" | "help"
-                ) {
+                ) || is_syntax_check_flag
+                {
                     seg_meta_flag = true;
                 }
                 let is_combined_eval_short_flag = lower_tok.starts_with('-')
@@ -786,13 +795,18 @@ impl CommandProfile {
                 }
                 if lower_tok == "-m" && j + 1 < tokens.len() {
                     let mod_slug = Self::sanitize_module_slug(tokens[j + 1]);
+                    if mod_slug == "py-compile" {
+                        seg_meta_flag = true;
+                    }
                     if !mod_slug.is_empty() {
                         seg_action = Some(mod_slug);
                     }
                     j += 2;
                     continue;
                 }
+                let trimmed_tok = tok.trim_matches(['"', '\'']);
                 if !tok.starts_with('-')
+                    && !trimmed_tok.starts_with('$')
                     && !tok
                         .chars()
                         .all(|c| c.is_ascii_digit() || c == '.' || c == 's')
@@ -826,7 +840,10 @@ impl CommandProfile {
             if seg_server_flag {
                 has_server_flag = true;
             }
-            if !Self::INSTANT_UTILITIES.contains(&prog_slug.as_str()) && !selected_inline_eval {
+            if !Self::INSTANT_UTILITIES.contains(&prog_slug.as_str())
+                && !selected_inline_eval
+                && !has_meta_flag
+            {
                 break;
             }
         }
@@ -2061,5 +2078,22 @@ grep -c "FeatureTabs" FeatureTabs.tsx"#;
         );
         assert_eq!(classify_background_task_name(du_probe), None);
         assert_eq!(classify_background_task_name("sha256sum index.html"), None);
+
+        // minitest79 regression: syntax-only checks (`node --check "$f"`, `bash -n`, `python3 -m py_compile`)
+        // must classify as InstantProbe and never spawn a managed `node-f` minitask log!
+        let node_check_loop = r#"for f in js/*.js; do node --check "$f" && echo "OK $f"; done; grep -n 'foo' index.html || echo "CLEAN""#;
+        assert_eq!(
+            CommandProfile::analyze(node_check_loop).workload,
+            CommandWorkload::InstantProbe
+        );
+        assert_eq!(classify_background_task_name(node_check_loop), None);
+        assert_eq!(
+            classify_background_task_name("bash -n localupdate.sh"),
+            None
+        );
+        assert_eq!(
+            classify_background_task_name("python3 -m py_compile app.py"),
+            None
+        );
     }
 }

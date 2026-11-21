@@ -540,6 +540,34 @@ fn extract_changed_files_from_diff(raw_diff: &str) -> Vec<String> {
     files
 }
 
+/// Returns true iff `workspace_root` is a git repo with an existing `HEAD` commit AND non-empty
+/// tracked diff output (`git diff --cached --name-only` when `staged_only`, else `git diff HEAD --name-only`).
+/// Prevents 0-commit repositories (whose `power_review` synthetic diff includes untracked files) from
+/// falsely telling the Reviewer subagent to run `git_diff` or truncating its file list to the diff cap.
+fn workspace_has_tracked_git_diff(workspace_root: &Path, staged_only: bool) -> bool {
+    if !workspace_root.join(".git").exists() {
+        return false;
+    }
+    let has_head = std::process::Command::new("git")
+        .args(["rev-parse", "--verify", "HEAD"])
+        .current_dir(workspace_root)
+        .output()
+        .is_ok_and(|o| o.status.success());
+    if !has_head {
+        return false;
+    }
+    let args: &[&str] = if staged_only {
+        &["diff", "--cached", "--name-only"]
+    } else {
+        &["diff", "HEAD", "--name-only"]
+    };
+    std::process::Command::new("git")
+        .args(args)
+        .current_dir(workspace_root)
+        .output()
+        .is_ok_and(|o| o.status.success() && !String::from_utf8_lossy(&o.stdout).trim().is_empty())
+}
+
 /// Lists untracked authored source files from `git status --porcelain --untracked-files=all`
 /// so fresh 0-commit repositories (where `git diff` is empty) still scope the Reviewer to real
 /// workspace files and tell it not to waste a turn calling `git_diff`.
@@ -575,11 +603,20 @@ fn collect_untracked_workspace_files(workspace_root: &Path, limit: usize) -> Vec
         }
         if seen.insert(clean.clone()) {
             files.push(clean);
-            if files.len() >= limit {
-                break;
-            }
         }
     }
+    // Prioritize authored source code before docs/dotfiles so large repos never crowd out code files.
+    files.sort_by_key(|p| {
+        let rank = if p.starts_with("minikit_docs/") || p.starts_with('.') {
+            2u8
+        } else if p.ends_with(".md") || p.ends_with(".json") {
+            1u8
+        } else {
+            0u8
+        };
+        (rank, p.clone())
+    });
+    files.truncate(limit);
     files
 }
 
@@ -1497,6 +1534,9 @@ pub async fn dispatch(
 
                 let explicit_subagent = args.get("subagent_review").and_then(|v| v.as_bool());
                 let has_live_runtime = crate::agent::subagent::has_live_non_mock_runtime();
+                let existing_active_reviewer =
+                    crate::agent::subagent::try_get_global_subagent_pool()
+                        .is_some_and(|p| p.has_active_worker_with_role(SubagentRole::Reviewer));
                 let should_run_subagent_review = should_spawn_power_review_subagent(
                     explicit_subagent,
                     report.files_audited,
@@ -1505,14 +1545,23 @@ pub async fn dispatch(
                     fix_round,
                     has_live_runtime,
                 );
-                if should_run_subagent_review {
+                if existing_active_reviewer {
+                    formatted.push_str(
+                        "\n### 🧑‍⚖️ Reviewer Subagent Report\n⏳ **Reviewer Subagent Already Running**: An async Reviewer MiniPub worker is still executing in the background. Do NOT spawn a duplicate reviewer or archive the plan yet — wait for its `<completed_minipub_boomerang>` notification.\n",
+                    );
+                } else if should_run_subagent_review {
                     let subagent_payload = if formatted.contains(&reviewer_rubric) {
                         formatted.clone()
                     } else {
                         format!("{formatted}\n---\n{reviewer_rubric}")
                     };
-                    let diff_changed_files = extract_changed_files_from_diff(&raw_audited_diff);
-                    let has_tracked_diff = !diff_changed_files.is_empty();
+                    let has_tracked_diff =
+                        workspace_has_tracked_git_diff(workspace_root, staged_only);
+                    let diff_changed_files = if has_tracked_diff {
+                        extract_changed_files_from_diff(&raw_audited_diff)
+                    } else {
+                        Vec::new()
+                    };
                     let reviewer_target_files: Vec<String> = if !mp_task.target_files.is_empty() {
                         mp_task.target_files.clone()
                     } else {
@@ -1541,9 +1590,11 @@ pub async fn dispatch(
                         "\n✔ **Re-Review Gate Complete (fix_round={fix_round})**: Static audit passed with 0 HIGH/MEDIUM findings — skipping another Reviewer subagent pass to prevent endless nitpick loops (pass `subagent_review=true` to force). Proceed directly to `power_verify` / `archive_plan`.\n"
                     ));
                 }
-                let reviewer_still_running = should_run_subagent_review
-                    && crate::agent::subagent::try_get_global_subagent_pool()
-                        .is_some_and(|p| p.active_worker_count() > 0);
+                let reviewer_still_running = crate::agent::subagent::try_get_global_subagent_pool()
+                    .is_some_and(|p| p.has_active_worker_with_role(SubagentRole::Reviewer))
+                    || (should_run_subagent_review
+                        && crate::agent::subagent::try_get_global_subagent_pool()
+                            .is_some_and(|p| p.active_worker_count() > 0));
                 let review_state = json!({
                     "passed": actionable_count == 0 && !reviewer_still_running,
                     "pending_reviewer": reviewer_still_running,
@@ -1569,7 +1620,8 @@ pub async fn dispatch(
                 } else if reviewer_still_running {
                     let wm = crate::context::working_memory::WorkingMemory::new(workspace_root);
                     let plan_hint = wm.format_remaining_tasks_hint();
-                    if !plan_hint.is_empty() {
+                    if !plan_hint.is_empty() && !plan_hint.contains("call `archive_plan` directly")
+                    {
                         formatted.push_str(&format!("\n{}\n", plan_hint));
                     }
                     formatted.push_str(
@@ -2252,5 +2304,35 @@ diff --git a/old.ts b/old.ts
                 "old.ts".to_string()
             ]
         );
+    }
+
+    #[test]
+    fn test_zero_commit_repo_reports_no_tracked_diff_and_prioritizes_source_files() {
+        let temp = tempfile::tempdir().unwrap();
+        let init_ok = std::process::Command::new("git")
+            .args(["init", "-q"])
+            .current_dir(temp.path())
+            .status()
+            .is_ok_and(|s| s.success());
+        if !init_ok {
+            return;
+        }
+        std::fs::create_dir_all(temp.path().join("js")).unwrap();
+        std::fs::write(temp.path().join(".gitignore"), "node_modules/\n").unwrap();
+        std::fs::write(temp.path().join("README.md"), "# Demo\n").unwrap();
+        std::fs::write(temp.path().join("index.html"), "<!doctype html>\n").unwrap();
+        std::fs::write(temp.path().join("style.css"), "body {}\n").unwrap();
+        std::fs::write(temp.path().join("js/site.js"), "console.log('ok');\n").unwrap();
+
+        // 0-commit git repo must report has_tracked_diff == false so Reviewer skips `git_diff`
+        assert!(!workspace_has_tracked_git_diff(temp.path(), false));
+        assert!(!workspace_has_tracked_git_diff(temp.path(), true));
+
+        // And untracked file collection must return all authored files with source prioritized before dotfiles
+        let untracked = collect_untracked_workspace_files(temp.path(), 30);
+        assert!(untracked.contains(&"index.html".to_string()));
+        assert!(untracked.contains(&"style.css".to_string()));
+        assert!(untracked.contains(&"js/site.js".to_string()));
+        assert_eq!(untracked.last().map(String::as_str), Some(".gitignore"));
     }
 }

@@ -1215,11 +1215,15 @@ pub async fn dispatch(
                     } else {
                         String::new()
                     };
+                    let type_label = match p.process_type {
+                        DevProcessType::Chrome => "Browser".to_string(),
+                        other => format!("{:?}", other),
+                    };
                     out.push_str(&format!(
-                        "• [{}] {} ({:?}) | Status: {:?} | URL: {} | PID: {} | CPU: {:.1}% | RSS: {:.1}MB | Uptime: {}s{}\n",
+                        "• [{}] {} ({}) | Status: {:?} | URL: {} | PID: {} | CPU: {:.1}% | RSS: {:.1}MB | Uptime: {}s{}\n",
                         p.id,
                         p.name,
-                        p.process_type,
+                        type_label,
                         p.status,
                         url_disp,
                         p.pid.unwrap_or(0),

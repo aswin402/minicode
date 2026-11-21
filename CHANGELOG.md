@@ -5,6 +5,25 @@ All notable changes to **minicode** will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.64] — 2026-11-21
+
+### `power_review` Active-Reviewer Gate & 0-Commit Untracked File Scope, Instant Syntax-Check Classification, & `minitask` Browser Labeling (`minitest79`)
+
+#### 🛡️ `power_review` Reviewer Subagent Guard & 0-Commit Repo Discovery (`src/agent/subagent/pool.rs`, `src/tools/registry/minipower_tools.rs`)
+- **Prevented Premature `pending_reviewer: false` Overwrites & Duplicate Reviewer Spawns**:
+  - Added `SubagentPool::has_active_worker_with_role()` and updated `power_review` to preserve `pending_reviewer: true` (and block duplicate spawns) whenever a `Reviewer` MiniPub worker is still active — even if a subsequent `power_review(stage="re-review", subagent_review=false)` is called mid-flight.
+  - Suppressed the contradictory `"call archive_plan directly"` plan status hint while an async `Reviewer` worker is still pending.
+- **Fixed 0-Commit Repo File Discovery for Reviewer Subagents**:
+  - Added `workspace_has_tracked_git_diff()` checking `git rev-parse --verify HEAD` and real tracked diff output instead of parsing the byte-capped synthetic diff string, so fresh 0-commit repos pass all authored untracked files (source prioritized before dotfiles) to `reviewer-1` and explicitly instruct it to skip empty `git_diff`.
+
+#### ⚡ Instant Syntax-Check Classification (`src/tools/exec.rs`)
+- **Stopped `node --check "$f"` Loops from Spawning `minitask` Logs (`dev-node-f-*`)**:
+  - Treated syntax-only checks (`node/bun/deno/rustfmt/prettier --check`, `sh/bash/zsh -n`, `php -l`, `python3 -m py_compile`) as `InstantProbe` and ignored shell variable tokens (`$f`) when selecting `seg_action`.
+
+#### 🖥️ Accurate `minitask` Browser Type Label (`src/tools/registry/dev_tools.rs`)
+- **Displayed `(Browser)` Instead of `(Chrome)` for Managed Browser Engines**:
+  - `minitask(action="ps")` now renders `DevProcessType::Chrome` as `(Browser)` so `MiniBrowse` entries display as `browser-minibrowse (Browser)`.
+
 ## [0.5.63] — 2026-11-21
 
 ### `browser_emulate` Reset Polling & Media Emulation (`reduced_motion` / `color_scheme`), Actionable Taste-Linter Culprits, & Instant CLI Probe Classification (`minitest78`)

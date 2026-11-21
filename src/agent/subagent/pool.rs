@@ -246,6 +246,20 @@ impl SubagentPool {
         }
     }
 
+    /// Returns true if any currently active worker in the pool has the specified role.
+    pub fn has_active_worker_with_role(&self, role: SubagentRole) -> bool {
+        if let Ok(workers) = self.workers.try_read() {
+            for handle in workers.values() {
+                if let Ok(info) = handle.info.try_read() {
+                    if info.state.is_active() && info.role == role {
+                        return true;
+                    }
+                }
+            }
+        }
+        false
+    }
+
     /// Returns the canonical workspace root associated with this subagent pool.
     pub fn workspace_root(&self) -> &Path {
         &self.workspace_root
