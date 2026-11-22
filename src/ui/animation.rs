@@ -760,11 +760,106 @@ pub fn render_live_activity_line(
     )
 }
 
+/// Renders the elapsed timer and interrupt hint suffix according to the active `ActivityHintStyle`
+/// and visibility setting (`show_interrupt_hint`).
+pub fn render_activity_hint_spans(
+    elapsed_secs: f64,
+    hint_style: crate::config::ActivityHintStyle,
+    show_interrupt_hint: bool,
+    classic_wording: bool,
+    theme: &Theme,
+) -> Vec<Span<'static>> {
+    use crate::config::ActivityHintStyle;
+    if !show_interrupt_hint || hint_style == ActivityHintStyle::Hidden {
+        return Vec::new();
+    }
+
+    match hint_style {
+        ActivityHintStyle::Classic => {
+            let text = if classic_wording {
+                format!(" ({:.1}s • esc to interrupt)", elapsed_secs)
+            } else {
+                format!(" ({:.1}s · esc to cancel)", elapsed_secs)
+            };
+            vec![Span::styled(text, Style::default().fg(theme.muted))]
+        }
+        ActivityHintStyle::TimerOnly => vec![Span::styled(
+            format!(" ({:.1}s)", elapsed_secs),
+            Style::default().fg(theme.muted),
+        )],
+        ActivityHintStyle::Minimal => vec![
+            Span::styled(
+                format!(" {:.1}s", elapsed_secs),
+                Style::default().fg(theme.muted),
+            ),
+            Span::styled(" · esc", Style::default().fg(theme.border)),
+        ],
+        ActivityHintStyle::Pill => vec![
+            Span::raw(" "),
+            Span::styled("[", Style::default().fg(theme.border)),
+            Span::styled(
+                format!("{:.1}s", elapsed_secs),
+                Style::default().fg(theme.info).add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(" | ", Style::default().fg(theme.border)),
+            Span::styled("esc", Style::default().fg(theme.muted)),
+            Span::styled("]", Style::default().fg(theme.border)),
+        ],
+        ActivityHintStyle::Bracket => vec![
+            Span::styled(" ⟨", Style::default().fg(theme.border)),
+            Span::styled(
+                format!("{:.1}s", elapsed_secs),
+                Style::default().fg(theme.text_primary),
+            ),
+            Span::styled(" · ⎋ interrupt", Style::default().fg(theme.muted)),
+            Span::styled("⟩", Style::default().fg(theme.border)),
+        ],
+        ActivityHintStyle::Dot => vec![
+            Span::styled(" · ", Style::default().fg(theme.brand_accent)),
+            Span::styled(
+                format!("{:.1}s", elapsed_secs),
+                Style::default().fg(theme.muted),
+            ),
+            Span::styled(" · esc to stop", Style::default().fg(theme.border)),
+        ],
+        ActivityHintStyle::Compact => vec![Span::styled(
+            format!(" {:.1}s", elapsed_secs),
+            Style::default().fg(theme.muted),
+        )],
+        ActivityHintStyle::Hidden => Vec::new(),
+    }
+}
+
 /// Renders the live activity status bar according to the user's selected `ActivityBarStyle`.
 pub fn render_live_activity_line_with_style(
     activity: &AgentActivity,
     spinner_style: SpinnerStyle,
     activity_style: crate::config::ActivityBarStyle,
+    millis: u64,
+    elapsed_secs: f64,
+    theme: &Theme,
+) -> Line<'static> {
+    render_live_activity_line_full(
+        activity,
+        spinner_style,
+        activity_style,
+        crate::config::ActivityHintStyle::Classic,
+        true,
+        millis,
+        elapsed_secs,
+        theme,
+    )
+}
+
+/// Renders the live activity status bar with full control over `ActivityBarStyle`,
+/// `ActivityHintStyle`, and interrupt hint visibility.
+#[allow(clippy::too_many_arguments)]
+pub fn render_live_activity_line_full(
+    activity: &AgentActivity,
+    spinner_style: SpinnerStyle,
+    activity_style: crate::config::ActivityBarStyle,
+    hint_style: crate::config::ActivityHintStyle,
+    show_interrupt_hint: bool,
     millis: u64,
     elapsed_secs: f64,
     theme: &Theme,
@@ -976,9 +1071,12 @@ pub fn render_live_activity_line_with_style(
             Some(kaomoji_face),
         );
         spans.extend(render_shimmer_spans(&label, c1, c2, millis, 160.0, 0.32));
-        spans.push(Span::styled(
-            format!(" ({:.1}s • esc to interrupt)", elapsed_secs),
-            Style::default().fg(theme.muted),
+        spans.extend(render_activity_hint_spans(
+            elapsed_secs,
+            hint_style,
+            show_interrupt_hint,
+            true,
+            theme,
         ));
         return Line::from(spans);
     }
@@ -1195,9 +1293,12 @@ pub fn render_live_activity_line_with_style(
     }
 
     // Elapsed timer & cancel hint
-    spans.push(Span::styled(
-        format!(" ({:.1}s · esc to cancel)", elapsed_secs),
-        Style::default().fg(theme.muted),
+    spans.extend(render_activity_hint_spans(
+        elapsed_secs,
+        hint_style,
+        show_interrupt_hint,
+        false,
+        theme,
     ));
 
     Line::from(spans)
@@ -1640,5 +1741,51 @@ mod tests {
                 frames.len()
             );
         }
+    }
+
+    #[test]
+    fn test_activity_hint_styles_and_hide_toggle() {
+        use crate::config::{ActivityBarStyle, ActivityHintStyle};
+
+        let theme = Theme::default();
+        let line_text = |style: ActivityHintStyle, show: bool, classic: bool| -> String {
+            let line = render_live_activity_line_full(
+                &AgentActivity::Thinking,
+                SpinnerStyle::BrailleWave,
+                if classic {
+                    ActivityBarStyle::Classic
+                } else {
+                    ActivityBarStyle::ActionDetail
+                },
+                style,
+                show,
+                250,
+                6.3,
+                &theme,
+            );
+            line.spans
+                .into_iter()
+                .map(|s| s.content.into_owned())
+                .collect()
+        };
+
+        assert!(
+            line_text(ActivityHintStyle::Classic, true, true).contains("(6.3s • esc to interrupt)")
+        );
+        assert!(
+            line_text(ActivityHintStyle::Classic, true, false).contains("(6.3s · esc to cancel)")
+        );
+        assert!(line_text(ActivityHintStyle::TimerOnly, true, false).ends_with("(6.3s)"));
+        assert!(line_text(ActivityHintStyle::Minimal, true, false).contains("6.3s · esc"));
+        assert!(line_text(ActivityHintStyle::Pill, true, false).contains("[6.3s | esc]"));
+        assert!(line_text(ActivityHintStyle::Bracket, true, false).contains("⟨6.3s · ⎋ interrupt⟩"));
+        assert!(line_text(ActivityHintStyle::Dot, true, false).contains("· 6.3s · esc to stop"));
+        assert!(line_text(ActivityHintStyle::Compact, true, false).ends_with(" 6.3s"));
+
+        // Hidden style or show_interrupt_hint == false hides both timer & hint
+        let hidden_by_style = line_text(ActivityHintStyle::Hidden, true, true);
+        assert!(!hidden_by_style.contains("6.3s") && !hidden_by_style.contains("esc"));
+        let hidden_by_toggle = line_text(ActivityHintStyle::Classic, false, true);
+        assert!(!hidden_by_toggle.contains("6.3s") && !hidden_by_toggle.contains("esc"));
     }
 }

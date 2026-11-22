@@ -172,6 +172,7 @@ impl<'a> App<'a> {
 
         let mut input_dock = InputDock::new_with_workspace(workspace_root);
         input_dock.menu_style = config.ui.menu_style_enum();
+        input_dock.box_style = config.ui.input_box_style_enum();
 
         Self {
             workspace_root: workspace_root.to_path_buf(),
@@ -514,6 +515,7 @@ impl<'a> App<'a> {
                     frame.render_widget(background_block, frame.area());
 
                     if self.timeline.is_empty() {
+                        self.input_dock.box_style = self.config.ui.input_box_style_enum();
                         let welcome_ctx = crate::ui::WelcomeContext {
                             workspace: &self.workspace_root,
                             provider: &self.config.provider.default,
@@ -575,6 +577,7 @@ impl<'a> App<'a> {
                             workspace: &self.workspace_root,
                             provider: &self.config.provider.default,
                             model: &self.config.provider.model,
+                            show_thought_tokens: self.config.ui.show_thought_tokens,
                         };
                         self.timeline.render(frame, chunks[0], &timeline_ctx);
 
@@ -594,17 +597,19 @@ impl<'a> App<'a> {
                             }
                         }
 
-                        // 2. Render thinking animation line on left + `· caveman | streaming` status on right
+                        // 2. Render thinking animation line on left + mode badges strip on right
                         let mut left_spans: Vec<Span> = Vec::new();
                         if self.is_working {
                             let elapsed_secs = (working_millis as f64) / 1000.0;
                             let default_act = crate::ui::animation::AgentActivity::Thinking;
                             let act = self.current_activity.as_ref().unwrap_or(&default_act);
                             let activity_line =
-                                crate::ui::animation::render_live_activity_line_with_style(
+                                crate::ui::animation::render_live_activity_line_full(
                                     act,
                                     spinner_style,
                                     self.config.ui.activity_style_enum(),
+                                    self.config.ui.activity_hint_style_enum(),
+                                    self.config.ui.show_interrupt_hint,
                                     working_millis,
                                     elapsed_secs,
                                     &self.theme,
@@ -613,56 +618,18 @@ impl<'a> App<'a> {
                             left_spans.extend(activity_line.spans);
                         }
 
-                        let ponytail_active = self.config.agent.ponytail_mode;
-                        let ponytail_lvl = crate::agent::ponytail::PonytailLevel::from_str_active(
+                        let right_spans = StatusWidgets::render_mode_bar_spans(
+                            &self.theme,
+                            self.config.agent.ponytail_mode,
                             &self.config.agent.ponytail_level,
-                        );
-                        let ponytail_label = if ponytail_active {
-                            format!("· ponytail:{}", ponytail_lvl.as_str())
-                        } else {
-                            "· ponytail:off".to_string()
-                        };
-                        let ponytail_style = if ponytail_active {
-                            Style::default()
-                                .fg(self.theme.brand_accent)
-                                .add_modifier(ratatui::style::Modifier::BOLD)
-                        } else {
-                            Style::default().fg(self.theme.muted)
-                        };
-
-                        let caveman_active = self.config.agent.caveman_mode;
-                        let caveman_lvl = crate::agent::caveman::CavemanLevel::from_str_active(
+                            self.config.agent.caveman_mode,
                             &self.config.agent.caveman_level,
+                            self.config.agent.streaming,
+                            self.config.ui.mode_bar_style_enum(),
+                            self.config.ui.show_ponytail_badge,
+                            self.config.ui.show_caveman_badge,
+                            self.config.ui.show_streaming_badge,
                         );
-                        let caveman_label = if caveman_active {
-                            format!("caveman:{}", caveman_lvl.as_str())
-                        } else {
-                            "caveman:off".to_string()
-                        };
-                        let caveman_style = if caveman_active {
-                            Style::default()
-                                .fg(self.theme.warning)
-                                .add_modifier(ratatui::style::Modifier::BOLD)
-                        } else {
-                            Style::default().fg(self.theme.muted)
-                        };
-
-                        let streaming_active = self.config.agent.streaming;
-                        let streaming_style = if streaming_active {
-                            Style::default()
-                                .fg(self.theme.success)
-                                .add_modifier(ratatui::style::Modifier::BOLD)
-                        } else {
-                            Style::default().fg(self.theme.muted)
-                        };
-
-                        let right_spans = vec![
-                            Span::styled(ponytail_label, ponytail_style),
-                            Span::styled(" | ", Style::default().fg(self.theme.muted)),
-                            Span::styled(caveman_label, caveman_style),
-                            Span::styled(" | ", Style::default().fg(self.theme.muted)),
-                            Span::styled("streaming ", streaming_style),
-                        ];
 
                         let left_w: usize = left_spans
                             .iter()
@@ -675,12 +642,14 @@ impl<'a> App<'a> {
                         let total_w = chunks[1].width as usize;
 
                         let mut combined_spans = left_spans;
-                        if left_w + right_w < total_w {
-                            let pad = total_w.saturating_sub(left_w + right_w);
-                            combined_spans.push(Span::raw(" ".repeat(pad)));
-                            combined_spans.extend(right_spans);
-                        } else if left_w == 0 {
-                            combined_spans.extend(right_spans);
+                        if right_w > 0 {
+                            if left_w + right_w < total_w {
+                                let pad = total_w.saturating_sub(left_w + right_w);
+                                combined_spans.push(Span::raw(" ".repeat(pad)));
+                                combined_spans.extend(right_spans);
+                            } else if left_w == 0 {
+                                combined_spans.extend(right_spans);
+                            }
                         }
                         activity_lines.push(Line::from(combined_spans));
                         activity_lines.push(Line::from(String::new()));
@@ -693,6 +662,7 @@ impl<'a> App<'a> {
                             );
                         }
 
+                        self.input_dock.box_style = self.config.ui.input_box_style_enum();
                         self.input_dock.render(frame, chunks[2], &self.theme);
 
                         let active_mcp_count = self
@@ -726,6 +696,9 @@ impl<'a> App<'a> {
                             tasks_summary: Some(
                                 crate::dev::registry::get_global_dev_registry()
                                     .get_telemetry_snapshot(),
+                            ),
+                            display: crate::ui::StatusDisplayOptions::from_ui_config(
+                                &self.config.ui,
                             ),
                         };
 
@@ -2356,6 +2329,7 @@ impl<'a> App<'a> {
                     ref mut active_toast_symbols,
                     ref mut active_activity_style,
                     ref mut active_menu_style,
+                    ref mut ui_prefs,
                     ..
                 } => {
                     *active_theme_id = self.config.ui.theme.clone();
@@ -2366,6 +2340,7 @@ impl<'a> App<'a> {
                     *active_toast_symbols = self.config.ui.toast_symbols.clone();
                     *active_activity_style = self.config.ui.activity_style.clone();
                     *active_menu_style = self.config.ui.menu_style.clone();
+                    *ui_prefs = self.config.ui.clone();
                 }
                 _ => {}
             }
@@ -2416,25 +2391,11 @@ impl<'a> App<'a> {
 
     /// Opens the Theme & Style selector modal, optionally pre-selecting a specific tab.
     pub(crate) fn open_theme_modal(&mut self, tab: Option<crate::ui::modals::ThemeModalTab>) {
-        let mut m = ModalState::new_theme_select(
-            &self.config.ui.theme,
-            &self.config.ui.animation,
-            &self.config.ui.todo_style,
-            &self.config.ui.swarm_style,
-            &self.config.ui.toast_style,
-            &self.config.ui.toast_symbols,
-            &self.config.ui.activity_style,
-        );
+        let mut m = ModalState::new_theme_select_from_ui(&self.config.ui);
         if let ModalState::ThemeSelect {
-            ref mut active_tab,
-            ref mut menu_style_selected_index,
-            ref mut active_menu_style,
-            ..
+            ref mut active_tab, ..
         } = &mut m
         {
-            let active_enum = self.config.ui.menu_style_enum();
-            *menu_style_selected_index = active_enum as usize;
-            *active_menu_style = active_enum.as_str().to_string();
             if let Some(target_tab) = tab {
                 *active_tab = target_tab;
             }
@@ -2815,5 +2776,85 @@ mod tests {
         // Activity Bar tab -> actively ticks FrameScheduler too
         app.open_theme_modal(Some(crate::ui::modals::ThemeModalTab::ActivityStyles));
         assert!(app.modal.has_live_animation());
+
+        // Timer & Hint and Visibility tabs also animate live previews
+        app.open_theme_modal(Some(crate::ui::modals::ThemeModalTab::ActivityHintStyles));
+        assert!(app.modal.has_live_animation());
+        app.open_theme_modal(Some(crate::ui::modals::ThemeModalTab::Visibility));
+        assert!(app.modal.has_live_animation());
+    }
+
+    #[tokio::test]
+    async fn test_theme_modal_new_style_tabs_visibility_toggles_and_persistence() {
+        use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+        let config = Config::default();
+        let mut app = App::new(temp_dir.path(), config);
+        let (control_tx, _control_rx) = mpsc::unbounded_channel::<AgentCommand>();
+
+        // 1. Open Input Box Styles tab -> choose LeftBar -> stays open & updates InputDock live
+        app.open_theme_modal(Some(crate::ui::modals::ThemeModalTab::InputBoxStyles));
+        app.handle_modal_key(
+            KeyEvent::new(KeyCode::Down, KeyModifiers::NONE),
+            &control_tx,
+        )
+        .await;
+        app.handle_modal_key(
+            KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+            &control_tx,
+        )
+        .await;
+        assert!(matches!(app.modal, ModalState::ThemeSelect { .. }));
+        assert_eq!(app.config.ui.input_box_style, "left_bar");
+        assert_eq!(
+            app.input_dock.box_style,
+            crate::config::InputBoxStyle::LeftBar
+        );
+
+        // 2. Context & KV tab -> select Circle style
+        app.open_theme_modal(Some(crate::ui::modals::ThemeModalTab::ContextMeterStyles));
+        app.handle_modal_key(
+            KeyEvent::new(KeyCode::Down, KeyModifiers::NONE),
+            &control_tx,
+        )
+        .await;
+        app.handle_modal_key(
+            KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+            &control_tx,
+        )
+        .await;
+        assert_eq!(app.config.ui.context_meter_style, "circle");
+
+        // 3. Visibility tab -> toggle Thought Token Usage (index 0: false -> true)
+        //    and KV Cache Hit Rate (index 1: true -> false)
+        app.open_theme_modal(Some(crate::ui::modals::ThemeModalTab::Visibility));
+        assert!(!app.config.ui.show_thought_tokens);
+        assert!(app.config.ui.show_kv_cache);
+        app.handle_modal_key(
+            KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+            &control_tx,
+        )
+        .await;
+        assert!(app.config.ui.show_thought_tokens);
+        app.handle_modal_key(
+            KeyEvent::new(KeyCode::Down, KeyModifiers::NONE),
+            &control_tx,
+        )
+        .await;
+        app.handle_modal_key(
+            KeyEvent::new(KeyCode::Char(' '), KeyModifiers::NONE),
+            &control_tx,
+        )
+        .await;
+        assert!(!app.config.ui.show_kv_cache);
+        assert!(matches!(app.modal, ModalState::ThemeSelect { .. }));
+
+        // 4. Reload Config from workspace disk and verify every setting round-tripped cleanly!
+        let reloaded = Config::load(Some(temp_dir.path()), None).expect("reload config");
+        assert_eq!(reloaded.ui.input_box_style, "left_bar");
+        assert_eq!(reloaded.ui.context_meter_style, "circle");
+        assert!(reloaded.ui.show_thought_tokens);
+        assert!(!reloaded.ui.show_kv_cache);
     }
 }

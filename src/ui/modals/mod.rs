@@ -50,6 +50,12 @@ pub enum ThemeModalTab {
     ToastSymbols,
     ActivityStyles,
     MenuStyles,
+    InputBoxStyles,
+    StatusBarStyles,
+    ContextMeterStyles,
+    ModeBarStyles,
+    ActivityHintStyles,
+    Visibility,
 }
 
 impl ThemeModalTab {
@@ -64,6 +70,12 @@ impl ThemeModalTab {
             ThemeModalTab::ToastSymbols,
             ThemeModalTab::ActivityStyles,
             ThemeModalTab::MenuStyles,
+            ThemeModalTab::InputBoxStyles,
+            ThemeModalTab::StatusBarStyles,
+            ThemeModalTab::ContextMeterStyles,
+            ThemeModalTab::ModeBarStyles,
+            ThemeModalTab::ActivityHintStyles,
+            ThemeModalTab::Visibility,
         ]
     }
 
@@ -78,6 +90,12 @@ impl ThemeModalTab {
             ThemeModalTab::ToastSymbols => "6. Toast Symbols",
             ThemeModalTab::ActivityStyles => "7. Activity Bar",
             ThemeModalTab::MenuStyles => "8. Menu Styles",
+            ThemeModalTab::InputBoxStyles => "9. Input Box",
+            ThemeModalTab::StatusBarStyles => "10. Status Bar",
+            ThemeModalTab::ContextMeterStyles => "11. Context & KV",
+            ThemeModalTab::ModeBarStyles => "12. Mode Badges",
+            ThemeModalTab::ActivityHintStyles => "13. Timer & Hint",
+            ThemeModalTab::Visibility => "14. Show / Hide",
         }
     }
 
@@ -115,6 +133,30 @@ impl ThemeModalTab {
             ThemeModalTab::MenuStyles => (
                 "Intellisense & Autocomplete Menu Styles",
                 "Customize chatbox autocomplete popup border, badges, and indicator style",
+            ),
+            ThemeModalTab::InputBoxStyles => (
+                "Input Chat Box Frame & Styles",
+                "Choose prompt input container geometry (rounded, left rail, split bar, rules, minimal)",
+            ),
+            ThemeModalTab::StatusBarStyles => (
+                "Bottom Status Bar Layout Styles",
+                "Style provider/model, effort, workspace path, and git badges along the bottom bar",
+            ),
+            ThemeModalTab::ContextMeterStyles => (
+                "Context Occupancy & KV Cache Meters",
+                "Select visual meter for context tokens and KV cache (circle, bar, blocks, braille, gauge)",
+            ),
+            ThemeModalTab::ModeBarStyles => (
+                "Mode Strip Styles (Ponytail · Caveman · Streaming)",
+                "Style or hide the right-side mode badge strip above the input box",
+            ),
+            ThemeModalTab::ActivityHintStyles => (
+                "Activity Timer & Interrupt Hint Styles",
+                "Style or hide the elapsed timer and '(esc to interrupt)' activity bar suffix",
+            ),
+            ThemeModalTab::Visibility => (
+                "Show / Hide TUI Elements & Inline Thought Tokens",
+                "Toggle individual status elements, KV cache, mode badges, interrupt hint, and thought tokens",
             ),
         }
     }
@@ -172,6 +214,12 @@ pub enum ModalState {
         toast_symbol_selected_index: usize,
         activity_style_selected_index: usize,
         menu_style_selected_index: usize,
+        input_box_style_selected_index: usize,
+        status_bar_style_selected_index: usize,
+        context_meter_style_selected_index: usize,
+        mode_bar_style_selected_index: usize,
+        activity_hint_style_selected_index: usize,
+        visibility_selected_index: usize,
         active_theme_id: String,
         active_animation_id: String,
         active_todo_style: String,
@@ -180,6 +228,7 @@ pub enum ModalState {
         active_toast_symbols: String,
         active_activity_style: String,
         active_menu_style: String,
+        ui_prefs: crate::config::UiConfig,
     },
     SessionBrowser {
         sessions: Vec<crate::session::store::SessionMetadata>,
@@ -270,7 +319,10 @@ impl ModalState {
         match self {
             ModalState::ThemeSelect { active_tab, .. } => matches!(
                 active_tab,
-                ThemeModalTab::Animations | ThemeModalTab::ActivityStyles
+                ThemeModalTab::Animations
+                    | ThemeModalTab::ActivityStyles
+                    | ThemeModalTab::ActivityHintStyles
+                    | ThemeModalTab::Visibility
             ),
             ModalState::ModelSelect { loading: true, .. } => true,
             ModalState::Settings(state) => state.probing,
@@ -696,6 +748,12 @@ impl ModalState {
             toast_symbol_selected_index,
             activity_style_selected_index,
             menu_style_selected_index: 0,
+            input_box_style_selected_index: 0,
+            status_bar_style_selected_index: 0,
+            context_meter_style_selected_index: 0,
+            mode_bar_style_selected_index: 0,
+            activity_hint_style_selected_index: 0,
+            visibility_selected_index: 0,
             active_theme_id: active_theme_id.to_string(),
             active_animation_id: active_animation_id.to_string(),
             active_todo_style: active_todo_style.to_string(),
@@ -704,7 +762,72 @@ impl ModalState {
             active_toast_symbols: active_toast_symbols.to_string(),
             active_activity_style: active_activity_style.to_string(),
             active_menu_style: crate::constants::DEFAULT_MENU_STYLE.to_string(),
+            ui_prefs: crate::config::UiConfig {
+                theme: active_theme_id.to_string(),
+                animation: active_animation_id.to_string(),
+                todo_style: active_todo_style.to_string(),
+                swarm_style: active_swarm_style.to_string(),
+                toast_style: active_toast_style.to_string(),
+                toast_symbols: active_toast_symbols.to_string(),
+                activity_style: active_activity_style.to_string(),
+                ..Default::default()
+            },
         }
+    }
+
+    pub fn new_theme_select_from_ui(ui: &crate::config::UiConfig) -> Self {
+        let mut modal = Self::new_theme_select(
+            &ui.theme,
+            &ui.animation,
+            &ui.todo_style,
+            &ui.swarm_style,
+            &ui.toast_style,
+            &ui.toast_symbols,
+            &ui.activity_style,
+        );
+        if let ModalState::ThemeSelect {
+            ref mut menu_style_selected_index,
+            ref mut input_box_style_selected_index,
+            ref mut status_bar_style_selected_index,
+            ref mut context_meter_style_selected_index,
+            ref mut mode_bar_style_selected_index,
+            ref mut activity_hint_style_selected_index,
+            ref mut active_menu_style,
+            ref mut ui_prefs,
+            ..
+        } = &mut modal
+        {
+            let active_menu = ui.menu_style_enum();
+            *menu_style_selected_index = active_menu as usize;
+            *active_menu_style = active_menu.as_str().to_string();
+            let active_input = ui.input_box_style_enum().as_str();
+            *input_box_style_selected_index = theme_select::INPUT_BOX_STYLE_OPTIONS
+                .iter()
+                .position(|s| s.id == active_input)
+                .unwrap_or(0);
+            let active_status = ui.status_bar_style_enum().as_str();
+            *status_bar_style_selected_index = theme_select::STATUS_BAR_STYLE_OPTIONS
+                .iter()
+                .position(|s| s.id == active_status)
+                .unwrap_or(0);
+            let active_ctx = ui.context_meter_style_enum().as_str();
+            *context_meter_style_selected_index = theme_select::CONTEXT_METER_STYLE_OPTIONS
+                .iter()
+                .position(|s| s.id == active_ctx)
+                .unwrap_or(0);
+            let active_mode = ui.mode_bar_style_enum().as_str();
+            *mode_bar_style_selected_index = theme_select::MODE_BAR_STYLE_OPTIONS
+                .iter()
+                .position(|s| s.id == active_mode)
+                .unwrap_or(0);
+            let active_hint = ui.activity_hint_style_enum().as_str();
+            *activity_hint_style_selected_index = theme_select::ACTIVITY_HINT_STYLE_OPTIONS
+                .iter()
+                .position(|s| s.id == active_hint)
+                .unwrap_or(0);
+            *ui_prefs = ui.clone();
+        }
+        modal
     }
 
     pub fn new_session_browser(
@@ -1199,6 +1322,12 @@ impl ModalState {
                 toast_symbol_selected_index,
                 activity_style_selected_index,
                 menu_style_selected_index,
+                input_box_style_selected_index,
+                status_bar_style_selected_index,
+                context_meter_style_selected_index,
+                mode_bar_style_selected_index,
+                activity_hint_style_selected_index,
+                visibility_selected_index,
                 active_theme_id,
                 active_animation_id,
                 active_todo_style,
@@ -1207,6 +1336,7 @@ impl ModalState {
                 active_toast_symbols,
                 active_activity_style,
                 active_menu_style,
+                ui_prefs,
             } => {
                 let ctx = theme_select::ThemeSelectContext {
                     themes,
@@ -1217,6 +1347,11 @@ impl ModalState {
                     toast_symbols: theme_select::TOAST_SYMBOL_OPTIONS,
                     activity_styles: theme_select::ACTIVITY_STYLE_OPTIONS,
                     menu_styles: theme_select::MENU_STYLE_OPTIONS,
+                    input_box_styles: theme_select::INPUT_BOX_STYLE_OPTIONS,
+                    status_bar_styles: theme_select::STATUS_BAR_STYLE_OPTIONS,
+                    context_meter_styles: theme_select::CONTEXT_METER_STYLE_OPTIONS,
+                    mode_bar_styles: theme_select::MODE_BAR_STYLE_OPTIONS,
+                    activity_hint_styles: theme_select::ACTIVITY_HINT_STYLE_OPTIONS,
                     active_tab: *active_tab,
                     theme_selected_index: *theme_selected_index,
                     animation_selected_index: *animation_selected_index,
@@ -1226,6 +1361,12 @@ impl ModalState {
                     toast_symbol_selected_index: *toast_symbol_selected_index,
                     activity_style_selected_index: *activity_style_selected_index,
                     menu_style_selected_index: *menu_style_selected_index,
+                    input_box_style_selected_index: *input_box_style_selected_index,
+                    status_bar_style_selected_index: *status_bar_style_selected_index,
+                    context_meter_style_selected_index: *context_meter_style_selected_index,
+                    mode_bar_style_selected_index: *mode_bar_style_selected_index,
+                    activity_hint_style_selected_index: *activity_hint_style_selected_index,
+                    visibility_selected_index: *visibility_selected_index,
                     active_theme_id,
                     active_animation_id,
                     active_todo_style,
@@ -1234,6 +1375,7 @@ impl ModalState {
                     active_toast_symbols,
                     active_activity_style,
                     active_menu_style,
+                    ui_prefs,
                     parent_label: nav.parent_label.as_deref(),
                 };
                 theme_select::render_theme_select(frame, area, theme, &ctx);

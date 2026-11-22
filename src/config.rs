@@ -1119,6 +1119,276 @@ impl ActivityBarStyle {
     }
 }
 
+/// Visual border & container style for the bottom chat Input Box.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum InputBoxStyle {
+    /// Clean rounded card frame `╭──╮ / │ › … │ / ╰──╯` (Default)
+    #[default]
+    Rounded,
+    /// Sleek thick left accent rail `┃` on an elevated surface, open top/right/bottom
+    LeftBar,
+    /// OpenCode-style dual vertical accent bars `┃ … ┃` with zero horizontal borders
+    SplitBar,
+    /// Crisp thin horizontal top and bottom rules `───` with open sides
+    TopBottom,
+    /// Architectural sharp square frame `┌──┐ / │ … │ / └──┘`
+    Square,
+    /// Bold double-line frame `╔══╗ / ║ … ║ / ╚══╝`
+    Double,
+    /// Borderless elevated surface with clean vertical breathing room
+    Minimal,
+    /// Clean open surface anchored by a single accent bottom underline `───`
+    Underline,
+}
+
+#[allow(dead_code)]
+impl InputBoxStyle {
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Rounded => "rounded",
+            Self::LeftBar => "left_bar",
+            Self::SplitBar => "split_bar",
+            Self::TopBottom => "top_bottom",
+            Self::Square => "square",
+            Self::Double => "double",
+            Self::Minimal => "minimal",
+            Self::Underline => "underline",
+        }
+    }
+
+    #[must_use]
+    pub fn from_str_loose(s: &str) -> Self {
+        match s.trim().to_lowercase().as_str() {
+            "left_bar" | "left" | "rail" | "bar" => Self::LeftBar,
+            "split_bar" | "split" | "opencode" => Self::SplitBar,
+            "top_bottom" | "rules" | "horizontal" | "lines" => Self::TopBottom,
+            "square" | "box" | "sharp" => Self::Square,
+            "double" | "heavy" => Self::Double,
+            "minimal" | "clean" | "borderless" | "flat" => Self::Minimal,
+            "underline" | "bottom" => Self::Underline,
+            _ => Self::Rounded,
+        }
+    }
+}
+
+/// Visual layout style for the bottom Status Bar left telemetry (`provider/model · effort | path · git`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum StatusBarStyle {
+    /// Classic dot/pipe layout `provider/model · effort | path · git:branch` (Default)
+    #[default]
+    Classic,
+    /// Elevated pill chips with subtle background contrast per segment
+    Pills,
+    /// Directional chevron stream `▸ provider/model › effort ▸ path › git:branch`
+    Powerline,
+    /// Ultra-compact terse readout (short model name, short effort, repo basename)
+    Compact,
+    /// Airy minimalist spacing without separator glyphs
+    Minimal,
+    /// Structured bracketed CLI badges `[model] [effort] [path] [git:branch]`
+    Brackets,
+    /// Crisp geometric operator indicators (`◈ model · ⚡effort · ⌂ path · ⎇ branch`)
+    Icons,
+}
+
+#[allow(dead_code)]
+impl StatusBarStyle {
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Classic => "classic",
+            Self::Pills => "pills",
+            Self::Powerline => "powerline",
+            Self::Compact => "compact",
+            Self::Minimal => "minimal",
+            Self::Brackets => "brackets",
+            Self::Icons => "icons",
+        }
+    }
+
+    #[must_use]
+    pub fn from_str_loose(s: &str) -> Self {
+        match s.trim().to_lowercase().as_str() {
+            "pills" | "pill" | "chips" => Self::Pills,
+            "powerline" | "chevron" | "arrows" => Self::Powerline,
+            "compact" | "dense" | "short" => Self::Compact,
+            "minimal" | "clean" | "plain" => Self::Minimal,
+            "brackets" | "bracket" | "tags" => Self::Brackets,
+            "icons" | "icon" | "glyphs" | "nerd" => Self::Icons,
+            _ => Self::Classic,
+        }
+    }
+}
+
+/// Visual meter style for the bottom-right Context Occupancy & KV Cache indicator.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum ContextMeterStyle {
+    /// Compact numeric readout `kv (99%) • 212.7k / 1M` (Default)
+    #[default]
+    Compact,
+    /// Progressive pie circle ring `○◔◑◕●` + percentage & tokens
+    Circle,
+    /// Crisp horizontal block progress bar `[██░░░░░░░░] 212.7k/1M`
+    Bar,
+    /// Shaded density blocks `▓▓▒▒░░░░░░ 21%`
+    Blocks,
+    /// High-resolution braille fill meter `⣿⣦⣀⣀⣀ 212.7k/1M`
+    Braille,
+    /// Percentage-first readout `21% · 212.7k/1M`
+    Percent,
+    /// Elevated pill chips ` kv 99% ` ` ◔ 212.7k / 1M `
+    Pills,
+    /// Ultra-minimal compact readout `99% kv · 212.7k/1M`
+    Minimal,
+    /// Sleek thin horizontal line gauge `━━──────── 21%`
+    Gauge,
+}
+
+#[allow(dead_code)]
+impl ContextMeterStyle {
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Compact => "compact",
+            Self::Circle => "circle",
+            Self::Bar => "bar",
+            Self::Blocks => "blocks",
+            Self::Braille => "braille",
+            Self::Percent => "percent",
+            Self::Pills => "pills",
+            Self::Minimal => "minimal",
+            Self::Gauge => "gauge",
+        }
+    }
+
+    #[must_use]
+    pub fn from_str_loose(s: &str) -> Self {
+        match s.trim().to_lowercase().as_str() {
+            "circle" | "pie" | "ring" | "donut" => Self::Circle,
+            "bar" | "progress" | "meter" => Self::Bar,
+            "blocks" | "shade" | "shaded" => Self::Blocks,
+            "braille" | "dots" => Self::Braille,
+            "percent" | "pct" | "percentage" => Self::Percent,
+            "pills" | "pill" | "chips" => Self::Pills,
+            "minimal" | "clean" => Self::Minimal,
+            "gauge" | "line" | "thin" => Self::Gauge,
+            _ => Self::Compact,
+        }
+    }
+}
+
+/// Visual style for the Mode Badges strip (`· ponytail:full | caveman:full | streaming`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum ModeBarStyle {
+    /// Classic piped mode strip `· ponytail:full | caveman:full | streaming` (Default)
+    #[default]
+    Classic,
+    /// Elevated subtle pill chips per active mode
+    Pills,
+    /// Status dot indicators (`● ponytail:full  ● caveman:full  ● streaming`)
+    Dots,
+    /// Ultra-compact abbreviations (`pt:full · cm:full · strm`)
+    Compact,
+    /// Minimal clean spaced labels without pipes or leading dot
+    Minimal,
+    /// Structured CLI bracket badges (`[ponytail:full] [caveman:full] [streaming]`)
+    Brackets,
+    /// Operator glyph indicators (`✦ ponytail:full · ◈ caveman:full · ⚡stream`)
+    Icons,
+    /// Hide the entire mode strip
+    Hidden,
+}
+
+#[allow(dead_code)]
+impl ModeBarStyle {
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Classic => "classic",
+            Self::Pills => "pills",
+            Self::Dots => "dots",
+            Self::Compact => "compact",
+            Self::Minimal => "minimal",
+            Self::Brackets => "brackets",
+            Self::Icons => "icons",
+            Self::Hidden => "hidden",
+        }
+    }
+
+    #[must_use]
+    pub fn from_str_loose(s: &str) -> Self {
+        match s.trim().to_lowercase().as_str() {
+            "pills" | "pill" | "chips" => Self::Pills,
+            "dots" | "dot" | "led" => Self::Dots,
+            "compact" | "short" | "mini" => Self::Compact,
+            "minimal" | "clean" | "plain" => Self::Minimal,
+            "brackets" | "bracket" | "tags" => Self::Brackets,
+            "icons" | "icon" | "glyphs" => Self::Icons,
+            "hidden" | "hide" | "off" | "none" => Self::Hidden,
+            _ => Self::Classic,
+        }
+    }
+}
+
+/// Visual style for the Activity Bar elapsed timer and interrupt hint (`(6.3s • esc to interrupt)`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum ActivityHintStyle {
+    /// Classic parenthesized timer + cancel hint `(6.3s · esc to cancel)` (Default)
+    #[default]
+    Classic,
+    /// Elapsed timer only `(6.3s)` without the interrupt hint text
+    TimerOnly,
+    /// Minimal inline readout `6.3s · esc`
+    Minimal,
+    /// Structured pill tag `[6.3s | esc]`
+    Pill,
+    /// Sleek angle-bracket badge `⟨6.3s · ⎋ interrupt⟩`
+    Bracket,
+    /// Subtle dot-prefixed hint `· 6.3s · esc to stop`
+    Dot,
+    /// Bare compact seconds `6.3s`
+    Compact,
+    /// Hide both elapsed timer and interrupt hint completely
+    Hidden,
+}
+
+#[allow(dead_code)]
+impl ActivityHintStyle {
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Classic => "classic",
+            Self::TimerOnly => "timer_only",
+            Self::Minimal => "minimal",
+            Self::Pill => "pill",
+            Self::Bracket => "bracket",
+            Self::Dot => "dot",
+            Self::Compact => "compact",
+            Self::Hidden => "hidden",
+        }
+    }
+
+    #[must_use]
+    pub fn from_str_loose(s: &str) -> Self {
+        match s.trim().to_lowercase().as_str() {
+            "timer_only" | "timer" | "time" => Self::TimerOnly,
+            "minimal" | "short" | "clean" => Self::Minimal,
+            "pill" | "pills" | "badge" => Self::Pill,
+            "bracket" | "brackets" | "angle" => Self::Bracket,
+            "dot" | "dots" | "subtle" => Self::Dot,
+            "compact" | "bare" | "seconds" => Self::Compact,
+            "hidden" | "hide" | "off" | "none" => Self::Hidden,
+            _ => Self::Classic,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct UiConfig {
     #[serde(default = "default_theme")]
@@ -1145,6 +1415,21 @@ pub struct UiConfig {
     #[serde(default = "default_menu_style")]
     pub menu_style: String,
 
+    #[serde(default = "default_input_box_style")]
+    pub input_box_style: String,
+
+    #[serde(default = "default_status_bar_style")]
+    pub status_bar_style: String,
+
+    #[serde(default = "default_context_meter_style")]
+    pub context_meter_style: String,
+
+    #[serde(default = "default_mode_bar_style")]
+    pub mode_bar_style: String,
+
+    #[serde(default = "default_activity_hint_style")]
+    pub activity_hint_style: String,
+
     #[serde(default)]
     pub plain: bool,
 
@@ -1153,6 +1438,42 @@ pub struct UiConfig {
 
     #[serde(default)]
     pub show_cost: bool,
+
+    #[serde(default = "default_true")]
+    pub show_ponytail_badge: bool,
+
+    #[serde(default = "default_true")]
+    pub show_caveman_badge: bool,
+
+    #[serde(default = "default_true")]
+    pub show_streaming_badge: bool,
+
+    #[serde(default = "default_true")]
+    pub show_kv_cache: bool,
+
+    #[serde(default = "default_true")]
+    pub show_context_meter: bool,
+
+    #[serde(default = "default_true")]
+    pub show_status_model: bool,
+
+    #[serde(default = "default_true")]
+    pub show_status_effort: bool,
+
+    #[serde(default = "default_true")]
+    pub show_status_path: bool,
+
+    #[serde(default = "default_true")]
+    pub show_status_git: bool,
+
+    #[serde(default = "default_true")]
+    pub show_status_badges: bool,
+
+    #[serde(default = "default_true")]
+    pub show_interrupt_hint: bool,
+
+    #[serde(default)]
+    pub show_thought_tokens: bool,
 }
 
 impl UiConfig {
@@ -1191,6 +1512,31 @@ impl UiConfig {
     pub fn menu_style_enum(&self) -> crate::ui::intellisense::MenuStyle {
         crate::ui::intellisense::MenuStyle::from_str_loose(&self.menu_style)
     }
+
+    #[must_use]
+    pub fn input_box_style_enum(&self) -> InputBoxStyle {
+        InputBoxStyle::from_str_loose(&self.input_box_style)
+    }
+
+    #[must_use]
+    pub fn status_bar_style_enum(&self) -> StatusBarStyle {
+        StatusBarStyle::from_str_loose(&self.status_bar_style)
+    }
+
+    #[must_use]
+    pub fn context_meter_style_enum(&self) -> ContextMeterStyle {
+        ContextMeterStyle::from_str_loose(&self.context_meter_style)
+    }
+
+    #[must_use]
+    pub fn mode_bar_style_enum(&self) -> ModeBarStyle {
+        ModeBarStyle::from_str_loose(&self.mode_bar_style)
+    }
+
+    #[must_use]
+    pub fn activity_hint_style_enum(&self) -> ActivityHintStyle {
+        ActivityHintStyle::from_str_loose(&self.activity_hint_style)
+    }
 }
 
 impl Default for UiConfig {
@@ -1204,9 +1550,26 @@ impl Default for UiConfig {
             toast_symbols: default_toast_symbols(),
             activity_style: default_activity_style(),
             menu_style: default_menu_style(),
+            input_box_style: default_input_box_style(),
+            status_bar_style: default_status_bar_style(),
+            context_meter_style: default_context_meter_style(),
+            mode_bar_style: default_mode_bar_style(),
+            activity_hint_style: default_activity_hint_style(),
             plain: false,
             max_width: default_max_width(),
             show_cost: false,
+            show_ponytail_badge: true,
+            show_caveman_badge: true,
+            show_streaming_badge: true,
+            show_kv_cache: true,
+            show_context_meter: true,
+            show_status_model: true,
+            show_status_effort: true,
+            show_status_path: true,
+            show_status_git: true,
+            show_status_badges: true,
+            show_interrupt_hint: true,
+            show_thought_tokens: false,
         }
     }
 }
@@ -1241,6 +1604,26 @@ fn default_activity_style() -> String {
 
 fn default_menu_style() -> String {
     crate::constants::DEFAULT_MENU_STYLE.to_string()
+}
+
+fn default_input_box_style() -> String {
+    "rounded".to_string()
+}
+
+fn default_status_bar_style() -> String {
+    "classic".to_string()
+}
+
+fn default_context_meter_style() -> String {
+    "compact".to_string()
+}
+
+fn default_mode_bar_style() -> String {
+    "classic".to_string()
+}
+
+fn default_activity_hint_style() -> String {
+    "classic".to_string()
 }
 
 fn default_max_width() -> usize {

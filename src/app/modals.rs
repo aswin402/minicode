@@ -636,6 +636,12 @@ impl<'a> App<'a> {
                 ref mut toast_symbol_selected_index,
                 ref mut activity_style_selected_index,
                 ref mut menu_style_selected_index,
+                ref mut input_box_style_selected_index,
+                ref mut status_bar_style_selected_index,
+                ref mut context_meter_style_selected_index,
+                ref mut mode_bar_style_selected_index,
+                ref mut activity_hint_style_selected_index,
+                ref mut visibility_selected_index,
                 ref mut active_theme_id,
                 ref mut active_animation_id,
                 ref mut active_todo_style,
@@ -644,6 +650,7 @@ impl<'a> App<'a> {
                 ref mut active_toast_symbols,
                 ref mut active_activity_style,
                 ref mut active_menu_style,
+                ref mut ui_prefs,
             } => match key.code {
                 KeyCode::Esc | KeyCode::Backspace | KeyCode::Char('q') => {
                     self.pop_modal();
@@ -678,6 +685,12 @@ impl<'a> App<'a> {
                 KeyCode::Char('8') => {
                     *active_tab = crate::ui::modals::ThemeModalTab::MenuStyles;
                 }
+                KeyCode::Char('9') => {
+                    *active_tab = crate::ui::modals::ThemeModalTab::InputBoxStyles;
+                }
+                KeyCode::Char('0') => {
+                    *active_tab = crate::ui::modals::ThemeModalTab::StatusBarStyles;
+                }
                 KeyCode::Up | KeyCode::Char('k') => match *active_tab {
                     crate::ui::modals::ThemeModalTab::Themes => {
                         *theme_selected_index = theme_selected_index.saturating_sub(1);
@@ -704,6 +717,29 @@ impl<'a> App<'a> {
                     }
                     crate::ui::modals::ThemeModalTab::MenuStyles => {
                         *menu_style_selected_index = menu_style_selected_index.saturating_sub(1);
+                    }
+                    crate::ui::modals::ThemeModalTab::InputBoxStyles => {
+                        *input_box_style_selected_index =
+                            input_box_style_selected_index.saturating_sub(1);
+                    }
+                    crate::ui::modals::ThemeModalTab::StatusBarStyles => {
+                        *status_bar_style_selected_index =
+                            status_bar_style_selected_index.saturating_sub(1);
+                    }
+                    crate::ui::modals::ThemeModalTab::ContextMeterStyles => {
+                        *context_meter_style_selected_index =
+                            context_meter_style_selected_index.saturating_sub(1);
+                    }
+                    crate::ui::modals::ThemeModalTab::ModeBarStyles => {
+                        *mode_bar_style_selected_index =
+                            mode_bar_style_selected_index.saturating_sub(1);
+                    }
+                    crate::ui::modals::ThemeModalTab::ActivityHintStyles => {
+                        *activity_hint_style_selected_index =
+                            activity_hint_style_selected_index.saturating_sub(1);
+                    }
+                    crate::ui::modals::ThemeModalTab::Visibility => {
+                        *visibility_selected_index = visibility_selected_index.saturating_sub(1);
                     }
                 },
                 KeyCode::Down | KeyCode::Char('j') => match *active_tab {
@@ -753,6 +789,45 @@ impl<'a> App<'a> {
                             *menu_style_selected_index += 1;
                         }
                     }
+                    crate::ui::modals::ThemeModalTab::InputBoxStyles => {
+                        let total = crate::ui::modals::theme_select::INPUT_BOX_STYLE_OPTIONS.len();
+                        if *input_box_style_selected_index + 1 < total {
+                            *input_box_style_selected_index += 1;
+                        }
+                    }
+                    crate::ui::modals::ThemeModalTab::StatusBarStyles => {
+                        let total = crate::ui::modals::theme_select::STATUS_BAR_STYLE_OPTIONS.len();
+                        if *status_bar_style_selected_index + 1 < total {
+                            *status_bar_style_selected_index += 1;
+                        }
+                    }
+                    crate::ui::modals::ThemeModalTab::ContextMeterStyles => {
+                        let total =
+                            crate::ui::modals::theme_select::CONTEXT_METER_STYLE_OPTIONS.len();
+                        if *context_meter_style_selected_index + 1 < total {
+                            *context_meter_style_selected_index += 1;
+                        }
+                    }
+                    crate::ui::modals::ThemeModalTab::ModeBarStyles => {
+                        let total = crate::ui::modals::theme_select::MODE_BAR_STYLE_OPTIONS.len();
+                        if *mode_bar_style_selected_index + 1 < total {
+                            *mode_bar_style_selected_index += 1;
+                        }
+                    }
+                    crate::ui::modals::ThemeModalTab::ActivityHintStyles => {
+                        let total =
+                            crate::ui::modals::theme_select::ACTIVITY_HINT_STYLE_OPTIONS.len();
+                        if *activity_hint_style_selected_index + 1 < total {
+                            *activity_hint_style_selected_index += 1;
+                        }
+                    }
+                    crate::ui::modals::ThemeModalTab::Visibility => {
+                        let total =
+                            crate::ui::modals::theme_select::VISIBILITY_TOGGLE_OPTIONS.len();
+                        if *visibility_selected_index + 1 < total {
+                            *visibility_selected_index += 1;
+                        }
+                    }
                 },
                 KeyCode::Enter | KeyCode::Char(' ') => {
                     match *active_tab {
@@ -766,6 +841,7 @@ impl<'a> App<'a> {
                                 self.theme = Theme::detect(&chosen_id);
                                 self.config.ui.theme = chosen_id.clone();
                                 *active_theme_id = chosen_id;
+                                *ui_prefs = self.config.ui.clone();
 
                                 // Persist to configuration file (workspace and global)
                                 if let Err(e) = self.config.save(Some(&self.workspace_root)) {
@@ -797,6 +873,7 @@ impl<'a> App<'a> {
 
                                 self.config.ui.animation = chosen_id.clone();
                                 *active_animation_id = chosen_id;
+                                *ui_prefs = self.config.ui.clone();
 
                                 // Persist to configuration file (workspace and global)
                                 if let Err(e) = self.config.save(Some(&self.workspace_root)) {
@@ -827,6 +904,7 @@ impl<'a> App<'a> {
 
                                 self.config.ui.todo_style = chosen_id.clone();
                                 *active_todo_style = chosen_id;
+                                *ui_prefs = self.config.ui.clone();
 
                                 // Persist to configuration file (workspace and global)
                                 if let Err(e) = self.config.save(Some(&self.workspace_root)) {
@@ -857,6 +935,7 @@ impl<'a> App<'a> {
 
                                 self.config.ui.swarm_style = chosen_id.clone();
                                 *active_swarm_style = chosen_id;
+                                *ui_prefs = self.config.ui.clone();
 
                                 // Persist to configuration file (workspace and global)
                                 if let Err(e) = self.config.save(Some(&self.workspace_root)) {
@@ -887,6 +966,7 @@ impl<'a> App<'a> {
 
                                 self.config.ui.toast_style = chosen_id.clone();
                                 *active_toast_style = chosen_id.clone();
+                                *ui_prefs = self.config.ui.clone();
 
                                 // Persist to configuration file (workspace and global)
                                 if let Err(e) = self.config.save(Some(&self.workspace_root)) {
@@ -920,6 +1000,7 @@ impl<'a> App<'a> {
 
                                 self.config.ui.toast_symbols = chosen_id.clone();
                                 *active_toast_symbols = chosen_id.clone();
+                                *ui_prefs = self.config.ui.clone();
 
                                 if let Err(e) = self.config.save(Some(&self.workspace_root)) {
                                     tracing::warn!(
@@ -953,6 +1034,7 @@ impl<'a> App<'a> {
 
                                 self.config.ui.activity_style = chosen_id.clone();
                                 *active_activity_style = chosen_id.clone();
+                                *ui_prefs = self.config.ui.clone();
 
                                 if let Err(e) = self.config.save(Some(&self.workspace_root)) {
                                     tracing::warn!(
@@ -986,6 +1068,7 @@ impl<'a> App<'a> {
                                 self.config.ui.menu_style = chosen_id.clone();
                                 self.input_dock.menu_style = self.config.ui.menu_style_enum();
                                 *active_menu_style = chosen_id.clone();
+                                *ui_prefs = self.config.ui.clone();
 
                                 if let Err(e) = self.config.save(Some(&self.workspace_root)) {
                                     tracing::warn!(
@@ -1007,6 +1090,153 @@ impl<'a> App<'a> {
                                     Some(chosen_id),
                                     Some("menu_style_preview".to_string()),
                                 );
+                            }
+                        }
+                        crate::ui::modals::ThemeModalTab::InputBoxStyles => {
+                            let options = crate::ui::modals::theme_select::INPUT_BOX_STYLE_OPTIONS;
+                            if !options.is_empty()
+                                && *input_box_style_selected_index < options.len()
+                            {
+                                let chosen = &options[*input_box_style_selected_index];
+                                let chosen_id = chosen.id.to_string();
+                                let chosen_name = chosen.name.to_string();
+
+                                self.config.ui.input_box_style = chosen_id.clone();
+                                self.input_dock.box_style = self.config.ui.input_box_style_enum();
+                                *ui_prefs = self.config.ui.clone();
+
+                                let _ = self.config.save(Some(&self.workspace_root));
+                                let _ = self.config.save(None);
+
+                                self.toasts.push(
+                                    crate::ui::ToastKind::Success,
+                                    "Input Box Style Updated",
+                                    format!("Switched to \"{chosen_name}\"."),
+                                    Some(chosen_id),
+                                    Some("input_box_style_preview".to_string()),
+                                );
+                            }
+                        }
+                        crate::ui::modals::ThemeModalTab::StatusBarStyles => {
+                            let options = crate::ui::modals::theme_select::STATUS_BAR_STYLE_OPTIONS;
+                            if !options.is_empty()
+                                && *status_bar_style_selected_index < options.len()
+                            {
+                                let chosen = &options[*status_bar_style_selected_index];
+                                let chosen_id = chosen.id.to_string();
+                                let chosen_name = chosen.name.to_string();
+
+                                self.config.ui.status_bar_style = chosen_id.clone();
+                                *ui_prefs = self.config.ui.clone();
+
+                                let _ = self.config.save(Some(&self.workspace_root));
+                                let _ = self.config.save(None);
+
+                                self.toasts.push(
+                                    crate::ui::ToastKind::Success,
+                                    "Status Bar Style Updated",
+                                    format!("Switched to \"{chosen_name}\"."),
+                                    Some(chosen_id),
+                                    Some("status_bar_style_preview".to_string()),
+                                );
+                            }
+                        }
+                        crate::ui::modals::ThemeModalTab::ContextMeterStyles => {
+                            let options =
+                                crate::ui::modals::theme_select::CONTEXT_METER_STYLE_OPTIONS;
+                            if !options.is_empty()
+                                && *context_meter_style_selected_index < options.len()
+                            {
+                                let chosen = &options[*context_meter_style_selected_index];
+                                let chosen_id = chosen.id.to_string();
+                                let chosen_name = chosen.name.to_string();
+
+                                self.config.ui.context_meter_style = chosen_id.clone();
+                                *ui_prefs = self.config.ui.clone();
+
+                                let _ = self.config.save(Some(&self.workspace_root));
+                                let _ = self.config.save(None);
+
+                                self.toasts.push(
+                                    crate::ui::ToastKind::Success,
+                                    "Context & KV Style Updated",
+                                    format!("Switched to \"{chosen_name}\"."),
+                                    Some(chosen_id),
+                                    Some("context_meter_style_preview".to_string()),
+                                );
+                            }
+                        }
+                        crate::ui::modals::ThemeModalTab::ModeBarStyles => {
+                            let options = crate::ui::modals::theme_select::MODE_BAR_STYLE_OPTIONS;
+                            if !options.is_empty() && *mode_bar_style_selected_index < options.len()
+                            {
+                                let chosen = &options[*mode_bar_style_selected_index];
+                                let chosen_id = chosen.id.to_string();
+                                let chosen_name = chosen.name.to_string();
+
+                                self.config.ui.mode_bar_style = chosen_id.clone();
+                                *ui_prefs = self.config.ui.clone();
+
+                                let _ = self.config.save(Some(&self.workspace_root));
+                                let _ = self.config.save(None);
+
+                                self.toasts.push(
+                                    crate::ui::ToastKind::Success,
+                                    "Mode Strip Style Updated",
+                                    format!("Switched to \"{chosen_name}\"."),
+                                    Some(chosen_id),
+                                    Some("mode_bar_style_preview".to_string()),
+                                );
+                            }
+                        }
+                        crate::ui::modals::ThemeModalTab::ActivityHintStyles => {
+                            let options =
+                                crate::ui::modals::theme_select::ACTIVITY_HINT_STYLE_OPTIONS;
+                            if !options.is_empty()
+                                && *activity_hint_style_selected_index < options.len()
+                            {
+                                let chosen = &options[*activity_hint_style_selected_index];
+                                let chosen_id = chosen.id.to_string();
+                                let chosen_name = chosen.name.to_string();
+
+                                self.config.ui.activity_hint_style = chosen_id.clone();
+                                *ui_prefs = self.config.ui.clone();
+
+                                let _ = self.config.save(Some(&self.workspace_root));
+                                let _ = self.config.save(None);
+
+                                self.toasts.push(
+                                    crate::ui::ToastKind::Success,
+                                    "Timer & Hint Style Updated",
+                                    format!("Switched to \"{chosen_name}\"."),
+                                    Some(chosen_id),
+                                    Some("activity_hint_style_preview".to_string()),
+                                );
+                            }
+                        }
+                        crate::ui::modals::ThemeModalTab::Visibility => {
+                            let options =
+                                crate::ui::modals::theme_select::VISIBILITY_TOGGLE_OPTIONS;
+                            if let Some(opt) = options.get(*visibility_selected_index) {
+                                if let Some((label, now_shown)) =
+                                    crate::ui::modals::theme_select::toggle_visibility_option(
+                                        opt.id,
+                                        &mut self.config.ui,
+                                    )
+                                {
+                                    *ui_prefs = self.config.ui.clone();
+                                    let _ = self.config.save(Some(&self.workspace_root));
+                                    let _ = self.config.save(None);
+
+                                    let state_str = if now_shown { "shown" } else { "hidden" };
+                                    self.toasts.push(
+                                        crate::ui::ToastKind::Success,
+                                        format!("{label} {state_str}"),
+                                        format!("{label} is now {state_str} and saved to config."),
+                                        Some(state_str.to_string()),
+                                        Some(format!("visibility_{}", opt.id)),
+                                    );
+                                }
                             }
                         }
                     }

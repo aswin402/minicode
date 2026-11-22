@@ -158,6 +158,7 @@ fn test_paragraph_rendering_alignment() {
         workspace: std::path::Path::new("."),
         provider: "test",
         model: "test",
+        show_thought_tokens: false,
     };
 
     // Render with auto_scroll=true (which will scroll down)
@@ -561,6 +562,7 @@ fn test_wide_table_and_scroll_alignment_in_timeline_render() {
                     workspace: std::path::Path::new("/tmp"),
                     provider: "openrouter",
                     model: "qwen",
+                    show_thought_tokens: false,
                 };
                 view.render(frame, area, &ctx);
             })
@@ -612,6 +614,7 @@ fn test_clicking_bottom_line_does_not_show_back_to_bottom_pill() {
                 workspace: std::path::Path::new("/tmp"),
                 provider: "minimax",
                 model: "MiniMax-M3.1-Flash",
+                show_thought_tokens: false,
             };
             v.render(frame, area, &ctx);
         })
@@ -674,6 +677,7 @@ fn test_long_pasted_user_prompt_shows_full_lines_and_sticky_header_wraps_full_wo
                 workspace: std::path::Path::new("/tmp"),
                 provider: "openrouter",
                 model: "qwen",
+                show_thought_tokens: false,
             };
             view.render(frame, area, &ctx);
         })
@@ -706,6 +710,7 @@ fn test_long_pasted_user_prompt_shows_full_lines_and_sticky_header_wraps_full_wo
                 workspace: std::path::Path::new("/tmp"),
                 provider: "openrouter",
                 model: "qwen",
+                show_thought_tokens: false,
             };
             view.render(frame, area, &ctx);
         })
@@ -903,6 +908,7 @@ fn test_minitest65_git_commit_timeline_entry_and_toast_short_hash_rendering() {
                 workspace: &ws,
                 provider: "minimax",
                 model: "MiniMax-M3.1",
+                show_thought_tokens: false,
             };
             view.render(frame, frame.area(), &ctx);
         })
@@ -994,6 +1000,7 @@ fn test_thought_blocks_freeze_on_tool_and_stream_transitions_never_all_ticking()
                     workspace: &ws,
                     provider: "anthropic",
                     model: "claude-sonnet-4-6",
+                    show_thought_tokens: false,
                 };
                 view.render(frame, frame.area(), &ctx);
             })
@@ -1079,5 +1086,66 @@ fn test_thought_blocks_freeze_on_tool_and_stream_transitions_never_all_ticking()
     assert!(
         screen_done.contains("• Thought for 0.6s") || screen_done.contains("• Thought for 0.7s"),
         "ThoughtBlock #3 must freeze at its own ~0.6s duration:\n{screen_done}"
+    );
+}
+
+#[test]
+fn test_thought_block_inline_token_usage_toggle_and_cache_invalidation() {
+    use ratatui::{backend::TestBackend, Terminal};
+
+    let mut view = TimelineView::new();
+    // 448 characters -> ~112 estimated tokens
+    let thought_body = "Analyzing architecture invariants and UI layout spacing. ".repeat(8);
+    view.entries.push(TimelineEntry::ThoughtBlock {
+        text: thought_body,
+        started_at: None,
+        duration_secs: Some(0.9),
+    });
+
+    let theme = Theme::aura_dark();
+    let ws = std::path::PathBuf::from("/tmp/ws");
+    let backend = TestBackend::new(100, 12);
+    let mut terminal = Terminal::new(backend).unwrap();
+
+    let render = |term: &mut Terminal<TestBackend>, show_tokens: bool| -> String {
+        term.draw(|frame| {
+            let ctx = TimelineContext {
+                theme: &theme,
+                is_working: false,
+                working_millis: 0,
+                current_activity: None,
+                spinner_style: crate::ui::animation::SpinnerStyle::default(),
+                workspace: &ws,
+                provider: "minimax",
+                model: "MiniMax-M3.1",
+                show_thought_tokens: show_tokens,
+            };
+            view.render(frame, frame.area(), &ctx);
+        })
+        .unwrap();
+        let buf = term.backend().buffer();
+        let mut out = String::new();
+        for y in 0..buf.area.height {
+            for x in 0..buf.area.width {
+                out.push_str(buf[(x, y)].symbol());
+            }
+            out.push('\n');
+        }
+        out
+    };
+
+    // 1. Default OFF: renders clean `• Thought for 0.9s` with no token count
+    let screen_off = render(&mut terminal, false);
+    assert!(screen_off.contains("• Thought for 0.9s"));
+    assert!(
+        !screen_off.contains("tokens"),
+        "Thought tokens must stay hidden when disabled:\n{screen_off}"
+    );
+
+    // 2. Flipping ON immediately invalidates TimelineRenderCache and displays inline token usage
+    let screen_on = render(&mut terminal, true);
+    assert!(
+        screen_on.contains("• Thought for 0.9s · ") && screen_on.contains(" tokens"),
+        "Enabling show_thought_tokens must display inline token usage immediately:\n{screen_on}"
     );
 }

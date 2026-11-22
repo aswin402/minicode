@@ -283,6 +283,7 @@ pub struct InputDock<'a> {
     pub history: PromptHistory,
     pub intellisense: IntellisenseEngine,
     pub menu_style: MenuStyle,
+    pub box_style: crate::config::InputBoxStyle,
     pub workspace_root: Option<std::path::PathBuf>,
     pub slash_usage_counts: std::collections::HashMap<String, u32>,
 }
@@ -319,6 +320,7 @@ impl<'a> InputDock<'a> {
             history: PromptHistory::new(),
             intellisense: IntellisenseEngine::new(),
             menu_style: MenuStyle::default(),
+            box_style: crate::config::InputBoxStyle::default(),
             workspace_root: None,
             slash_usage_counts: std::collections::HashMap::new(),
         }
@@ -1487,17 +1489,132 @@ impl<'a> InputDock<'a> {
             None
         };
 
-        let mut block = Block::default()
-            .borders(Borders::ALL)
-            .border_type(ratatui::widgets::BorderType::Rounded)
-            .border_style(Style::default().fg(theme.border).bg(theme.bg_input))
-            .style(Style::default().bg(theme.bg_input));
-        if let Some(ribbon_line) = gboard_title {
-            block = block.title(ribbon_line);
-        }
-
-        let inner_area = block.inner(area);
-        frame.render_widget(block, area);
+        let inner_area = match self.box_style {
+            crate::config::InputBoxStyle::Rounded
+            | crate::config::InputBoxStyle::Square
+            | crate::config::InputBoxStyle::Double => {
+                let border_type = match self.box_style {
+                    crate::config::InputBoxStyle::Square => ratatui::widgets::BorderType::Plain,
+                    crate::config::InputBoxStyle::Double => ratatui::widgets::BorderType::Double,
+                    _ => ratatui::widgets::BorderType::Rounded,
+                };
+                let mut block = Block::default()
+                    .borders(Borders::ALL)
+                    .border_type(border_type)
+                    .border_style(Style::default().fg(theme.border).bg(theme.bg_input))
+                    .style(Style::default().bg(theme.bg_input));
+                if let Some(ribbon_line) = gboard_title {
+                    block = block.title(ribbon_line);
+                }
+                let inner = block.inner(area);
+                frame.render_widget(block, area);
+                inner
+            }
+            crate::config::InputBoxStyle::TopBottom => {
+                let mut block = Block::default()
+                    .borders(Borders::TOP | Borders::BOTTOM)
+                    .border_type(ratatui::widgets::BorderType::Plain)
+                    .border_style(Style::default().fg(theme.border).bg(theme.bg_input))
+                    .style(Style::default().bg(theme.bg_input));
+                if let Some(ribbon_line) = gboard_title {
+                    block = block.title(ribbon_line);
+                }
+                let inner = block.inner(area);
+                frame.render_widget(block, area);
+                Rect::new(
+                    inner.x.saturating_add(1),
+                    inner.y,
+                    inner.width.saturating_sub(2),
+                    inner.height,
+                )
+            }
+            crate::config::InputBoxStyle::LeftBar | crate::config::InputBoxStyle::SplitBar => {
+                let is_split = self.box_style == crate::config::InputBoxStyle::SplitBar;
+                frame.render_widget(
+                    Block::default().style(Style::default().bg(theme.bg_input)),
+                    area,
+                );
+                let left_rail_style = Style::default().fg(theme.brand_accent).bg(theme.bg_input);
+                let right_rail_style = Style::default().fg(theme.border).bg(theme.bg_input);
+                for row in 0..area.height {
+                    let y = area.y + row;
+                    frame.render_widget(
+                        Paragraph::new(Span::styled("┃", left_rail_style)),
+                        Rect::new(area.x, y, 1, 1),
+                    );
+                    if is_split && area.width >= 3 {
+                        frame.render_widget(
+                            Paragraph::new(Span::styled("┃", right_rail_style)),
+                            Rect::new(area.x + area.width - 1, y, 1, 1),
+                        );
+                    }
+                }
+                if let Some(ribbon_line) = gboard_title {
+                    if area.width > 3 && area.height >= 2 {
+                        let rx = area.x.saturating_add(2);
+                        let rw = area.width.saturating_sub(if is_split { 4 } else { 3 });
+                        frame.render_widget(
+                            Paragraph::new(ribbon_line).style(Style::default().bg(theme.bg_input)),
+                            Rect::new(rx, area.y, rw, 1),
+                        );
+                    }
+                }
+                let pad_right = if is_split { 2 } else { 1 };
+                let top_inset = u16::from(area.height >= 3);
+                let bot_inset = u16::from(area.height >= 3);
+                Rect::new(
+                    area.x.saturating_add(2),
+                    area.y.saturating_add(top_inset),
+                    area.width.saturating_sub(2 + pad_right),
+                    area.height.saturating_sub(top_inset + bot_inset).max(1),
+                )
+            }
+            crate::config::InputBoxStyle::Minimal => {
+                frame.render_widget(
+                    Block::default().style(Style::default().bg(theme.bg_input)),
+                    area,
+                );
+                if let Some(ribbon_line) = gboard_title {
+                    if area.width > 2 && area.height >= 2 {
+                        frame.render_widget(
+                            Paragraph::new(ribbon_line).style(Style::default().bg(theme.bg_input)),
+                            Rect::new(area.x + 1, area.y, area.width.saturating_sub(2), 1),
+                        );
+                    }
+                }
+                let inset_v = u16::from(area.height >= 3);
+                Rect::new(
+                    area.x.saturating_add(1),
+                    area.y.saturating_add(inset_v),
+                    area.width.saturating_sub(2),
+                    area.height.saturating_sub(inset_v * 2).max(1),
+                )
+            }
+            crate::config::InputBoxStyle::Underline => {
+                let block = Block::default()
+                    .borders(Borders::BOTTOM)
+                    .border_type(ratatui::widgets::BorderType::Plain)
+                    .border_style(Style::default().fg(theme.brand_accent).bg(theme.bg_input))
+                    .style(Style::default().bg(theme.bg_input));
+                let inner = block.inner(area);
+                frame.render_widget(block, area);
+                if let Some(ribbon_line) = gboard_title {
+                    if inner.width > 2 && inner.height >= 2 {
+                        frame.render_widget(
+                            Paragraph::new(ribbon_line).style(Style::default().bg(theme.bg_input)),
+                            Rect::new(inner.x + 1, inner.y, inner.width.saturating_sub(2), 1),
+                        );
+                    }
+                }
+                let top_pad = u16::from(inner.height >= 2);
+                Rect::new(
+                    inner.x.saturating_add(1),
+                    inner.y.saturating_add(top_pad),
+                    inner.width.saturating_sub(2),
+                    inner.height.saturating_sub(top_pad).max(1),
+                )
+            }
+        };
 
         // Subdivide inner area to render prefix ("› " / "- ") and text editor inline
         let input_chunks = Layout::default()
@@ -1590,6 +1707,157 @@ impl<'a> InputDock<'a> {
                         frame.render_widget(Paragraph::new(ghost_line), ghost_rect);
                     }
                 }
+            }
+        }
+    }
+
+    /// Renders a live theme-colored preview of an `InputBoxStyle` for the `/theme` selector modal.
+    pub fn render_box_preview(
+        style: crate::config::InputBoxStyle,
+        width: usize,
+        theme: &Theme,
+    ) -> Vec<Line<'static>> {
+        let w = width.clamp(38, 66);
+        let inner_w = w.saturating_sub(2);
+        let placeholder = "Ask MiniCode to do anything...";
+        let prompt_len = 2 + placeholder.len();
+        let bg = Style::default().bg(theme.bg_input);
+        let border_st = Style::default().fg(theme.border).bg(theme.bg_input);
+        let accent_rail = Style::default().fg(theme.brand_accent).bg(theme.bg_input);
+        let prompt_st = Style::default()
+            .fg(theme.brand_accent)
+            .bg(theme.bg_input)
+            .add_modifier(Modifier::BOLD);
+        let cursor_st = Style::default().fg(theme.bg_primary).bg(theme.brand_accent);
+        let text_st = Style::default().fg(theme.muted).bg(theme.bg_input);
+
+        let make_content_spans = |pad_left: usize, pad_right: usize| -> Vec<Span<'static>> {
+            let content_w = w.saturating_sub(pad_left + pad_right);
+            let trail = content_w.saturating_sub(prompt_len);
+            let mut chars = placeholder.chars();
+            let first = chars.next().map(|c| c.to_string()).unwrap_or_default();
+            let rest: String = chars.collect();
+            vec![
+                Span::styled("› ", prompt_st),
+                Span::styled(first, cursor_st),
+                Span::styled(rest, text_st),
+                Span::styled(" ".repeat(trail), bg),
+            ]
+        };
+
+        match style {
+            crate::config::InputBoxStyle::Rounded => {
+                let mut mid = vec![Span::styled("│", border_st)];
+                mid.extend(make_content_spans(1, 1));
+                mid.push(Span::styled("│", border_st));
+                vec![
+                    Line::from(Span::styled(
+                        format!("╭{}╮", "─".repeat(inner_w)),
+                        border_st,
+                    )),
+                    Line::from(mid),
+                    Line::from(Span::styled(
+                        format!("╰{}╯", "─".repeat(inner_w)),
+                        border_st,
+                    )),
+                ]
+            }
+            crate::config::InputBoxStyle::Square => {
+                let mut mid = vec![Span::styled("│", border_st)];
+                mid.extend(make_content_spans(1, 1));
+                mid.push(Span::styled("│", border_st));
+                vec![
+                    Line::from(Span::styled(
+                        format!("┌{}┐", "─".repeat(inner_w)),
+                        border_st,
+                    )),
+                    Line::from(mid),
+                    Line::from(Span::styled(
+                        format!("└{}┘", "─".repeat(inner_w)),
+                        border_st,
+                    )),
+                ]
+            }
+            crate::config::InputBoxStyle::Double => {
+                let mut mid = vec![Span::styled("║", border_st)];
+                mid.extend(make_content_spans(1, 1));
+                mid.push(Span::styled("║", border_st));
+                vec![
+                    Line::from(Span::styled(
+                        format!("╔{}╗", "═".repeat(inner_w)),
+                        border_st,
+                    )),
+                    Line::from(mid),
+                    Line::from(Span::styled(
+                        format!("╚{}╝", "═".repeat(inner_w)),
+                        border_st,
+                    )),
+                ]
+            }
+            crate::config::InputBoxStyle::TopBottom => {
+                let mut mid = vec![Span::styled(" ", bg)];
+                mid.extend(make_content_spans(1, 1));
+                mid.push(Span::styled(" ", bg));
+                vec![
+                    Line::from(Span::styled("─".repeat(w), border_st)),
+                    Line::from(mid),
+                    Line::from(Span::styled("─".repeat(w), border_st)),
+                ]
+            }
+            crate::config::InputBoxStyle::LeftBar => {
+                let mut mid = vec![Span::styled("┃", accent_rail), Span::styled(" ", bg)];
+                mid.extend(make_content_spans(2, 1));
+                mid.push(Span::styled(" ", bg));
+                vec![
+                    Line::from(vec![
+                        Span::styled("┃", accent_rail),
+                        Span::styled(" ".repeat(w.saturating_sub(1)), bg),
+                    ]),
+                    Line::from(mid),
+                    Line::from(vec![
+                        Span::styled("┃", accent_rail),
+                        Span::styled(" ".repeat(w.saturating_sub(1)), bg),
+                    ]),
+                ]
+            }
+            crate::config::InputBoxStyle::SplitBar => {
+                let mut mid = vec![Span::styled("┃", accent_rail), Span::styled(" ", bg)];
+                mid.extend(make_content_spans(2, 2));
+                mid.push(Span::styled(" ", bg));
+                mid.push(Span::styled("┃", border_st));
+                vec![
+                    Line::from(vec![
+                        Span::styled("┃", accent_rail),
+                        Span::styled(" ".repeat(inner_w), bg),
+                        Span::styled("┃", border_st),
+                    ]),
+                    Line::from(mid),
+                    Line::from(vec![
+                        Span::styled("┃", accent_rail),
+                        Span::styled(" ".repeat(inner_w), bg),
+                        Span::styled("┃", border_st),
+                    ]),
+                ]
+            }
+            crate::config::InputBoxStyle::Minimal => {
+                let mut mid = vec![Span::styled(" ", bg)];
+                mid.extend(make_content_spans(1, 1));
+                mid.push(Span::styled(" ", bg));
+                vec![
+                    Line::from(Span::styled(" ".repeat(w), bg)),
+                    Line::from(mid),
+                    Line::from(Span::styled(" ".repeat(w), bg)),
+                ]
+            }
+            crate::config::InputBoxStyle::Underline => {
+                let mut mid = vec![Span::styled(" ", bg)];
+                mid.extend(make_content_spans(1, 1));
+                mid.push(Span::styled(" ", bg));
+                vec![
+                    Line::from(Span::styled(" ".repeat(w), bg)),
+                    Line::from(mid),
+                    Line::from(Span::styled("─".repeat(w), accent_rail)),
+                ]
             }
         }
     }
@@ -2572,5 +2840,56 @@ fn calculate_hash(data: &[u8]) -> u64 {
         let second_insert = cands[1].insert_text.clone();
         dock2.handle_key(KeyEvent::new(KeyCode::Char('2'), KeyModifiers::ALT));
         assert!(dock2.get_text().contains(second_insert.trim()));
+    }
+
+    #[test]
+    fn test_all_input_box_styles_render_and_preview_cleanly() {
+        use crate::config::InputBoxStyle;
+        use ratatui::backend::TestBackend;
+        use ratatui::Terminal;
+
+        let theme = Theme::aura_dark();
+        let all_styles = [
+            InputBoxStyle::Rounded,
+            InputBoxStyle::LeftBar,
+            InputBoxStyle::SplitBar,
+            InputBoxStyle::TopBottom,
+            InputBoxStyle::Square,
+            InputBoxStyle::Double,
+            InputBoxStyle::Minimal,
+            InputBoxStyle::Underline,
+        ];
+
+        for style in all_styles {
+            let mut dock = InputDock::new();
+            dock.box_style = style;
+            assert_eq!(dock.required_height(), 3);
+
+            let backend = TestBackend::new(60, 3);
+            let mut terminal = Terminal::new(backend).unwrap();
+            terminal
+                .draw(|f| {
+                    dock.render(f, f.area(), &theme);
+                })
+                .unwrap();
+
+            let buf = terminal.backend().buffer();
+            let mut rendered = String::new();
+            for y in 0..buf.area.height {
+                for x in 0..buf.area.width {
+                    rendered.push_str(buf[(x, y)].symbol());
+                }
+                rendered.push('\n');
+            }
+            assert!(
+                rendered.contains("› "),
+                "Style {:?} must render prompt prefix:\n{}",
+                style,
+                rendered
+            );
+
+            let preview = InputDock::render_box_preview(style, 54, &theme);
+            assert_eq!(preview.len(), 3, "Preview for {:?} must be 3 rows", style);
+        }
     }
 }

@@ -26,8 +26,8 @@ pub mod welcome;
 
 #[allow(unused_imports)]
 pub use animation::{
-    render_live_activity_line, render_live_activity_line_with_style, sanitize_emoji_buffer_cells,
-    AgentActivity,
+    render_activity_hint_spans, render_live_activity_line, render_live_activity_line_full,
+    render_live_activity_line_with_style, sanitize_emoji_buffer_cells, AgentActivity,
 };
 #[allow(unused_imports)]
 pub use approval::{ApprovalModalState, ApprovalOption, ApprovalResponse};
@@ -55,7 +55,7 @@ pub use pty_drawer::PtyDrawer;
 pub use scheduler::{DirtyFlags, FrameScheduler};
 #[allow(unused_imports)]
 pub use setup::{InteractiveSelector, SelectorItem, SetupWizard, TerminalGuard};
-pub use status::{StatusContext, StatusWidgets};
+pub use status::{StatusContext, StatusDisplayOptions, StatusWidgets};
 #[allow(unused_imports)]
 pub use subagent_drawer::SubagentDrawer;
 pub use theme::Theme;

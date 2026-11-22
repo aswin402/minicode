@@ -409,6 +409,7 @@ pub struct TimelineContext<'a> {
     pub workspace: &'a std::path::Path,
     pub provider: &'a str,
     pub model: &'a str,
+    pub show_thought_tokens: bool,
 }
 
 impl Default for TimelineView {
@@ -1612,12 +1613,23 @@ impl TimelineView {
                         (None, _) => "• Thought".to_string(),
                     };
 
-                    lines.push(Line::from(vec![Span::styled(
+                    let mut header_spans = vec![Span::styled(
                         header,
                         Style::default()
                             .fg(theme.muted)
                             .add_modifier(Modifier::BOLD),
-                    )]));
+                    )];
+                    if ctx.show_thought_tokens {
+                        let est_tokens = trimmed.chars().count().div_ceil(4).max(1);
+                        let tok_str = crate::ui::status::StatusWidgets::format_tokens(est_tokens);
+                        let suffix = if duration_secs.is_none() && ctx.is_working {
+                            format!(" · ~{} tokens", tok_str)
+                        } else {
+                            format!(" · {} tokens", tok_str)
+                        };
+                        header_spans.push(Span::styled(suffix, Style::default().fg(theme.info)));
+                    }
+                    lines.push(Line::from(header_spans));
                     let max_t_width = (area_width.saturating_sub(4) as usize).max(20);
                     for t_line in trimmed.lines() {
                         let chunks = Self::split_line_into_chunks(t_line, max_t_width);
@@ -2047,7 +2059,7 @@ impl TimelineView {
 
         let theme_key = Self::theme_fingerprint(theme);
         let mut layout_hasher = std::collections::hash_map::DefaultHasher::new();
-        (area.width, theme_key).hash(&mut layout_hasher);
+        (area.width, theme_key, ctx.show_thought_tokens).hash(&mut layout_hasher);
         let layout_key = layout_hasher.finish();
 
         let spinner_tick = ctx.working_millis / crate::constants::SPINNER_FRAME_MS;

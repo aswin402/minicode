@@ -102,8 +102,25 @@ pub struct RawUiConfig {
     pub toast_symbols: Option<String>,
     pub activity_style: Option<String>,
     pub menu_style: Option<String>,
+    pub input_box_style: Option<String>,
+    pub status_bar_style: Option<String>,
+    pub context_meter_style: Option<String>,
+    pub mode_bar_style: Option<String>,
+    pub activity_hint_style: Option<String>,
     pub max_width: Option<usize>,
     pub show_cost: Option<bool>,
+    pub show_ponytail_badge: Option<bool>,
+    pub show_caveman_badge: Option<bool>,
+    pub show_streaming_badge: Option<bool>,
+    pub show_kv_cache: Option<bool>,
+    pub show_context_meter: Option<bool>,
+    pub show_status_model: Option<bool>,
+    pub show_status_effort: Option<bool>,
+    pub show_status_path: Option<bool>,
+    pub show_status_git: Option<bool>,
+    pub show_status_badges: Option<bool>,
+    pub show_interrupt_hint: Option<bool>,
+    pub show_thought_tokens: Option<bool>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -889,11 +906,62 @@ impl Config {
         if let Some(menu_style) = other.ui.menu_style {
             self.ui.menu_style = menu_style;
         }
+        if let Some(input_box_style) = other.ui.input_box_style {
+            self.ui.input_box_style = input_box_style;
+        }
+        if let Some(status_bar_style) = other.ui.status_bar_style {
+            self.ui.status_bar_style = status_bar_style;
+        }
+        if let Some(context_meter_style) = other.ui.context_meter_style {
+            self.ui.context_meter_style = context_meter_style;
+        }
+        if let Some(mode_bar_style) = other.ui.mode_bar_style {
+            self.ui.mode_bar_style = mode_bar_style;
+        }
+        if let Some(activity_hint_style) = other.ui.activity_hint_style {
+            self.ui.activity_hint_style = activity_hint_style;
+        }
         if let Some(max_width) = other.ui.max_width {
             self.ui.max_width = max_width;
         }
         if let Some(show_cost) = other.ui.show_cost {
             self.ui.show_cost = show_cost;
+        }
+        if let Some(v) = other.ui.show_ponytail_badge {
+            self.ui.show_ponytail_badge = v;
+        }
+        if let Some(v) = other.ui.show_caveman_badge {
+            self.ui.show_caveman_badge = v;
+        }
+        if let Some(v) = other.ui.show_streaming_badge {
+            self.ui.show_streaming_badge = v;
+        }
+        if let Some(v) = other.ui.show_kv_cache {
+            self.ui.show_kv_cache = v;
+        }
+        if let Some(v) = other.ui.show_context_meter {
+            self.ui.show_context_meter = v;
+        }
+        if let Some(v) = other.ui.show_status_model {
+            self.ui.show_status_model = v;
+        }
+        if let Some(v) = other.ui.show_status_effort {
+            self.ui.show_status_effort = v;
+        }
+        if let Some(v) = other.ui.show_status_path {
+            self.ui.show_status_path = v;
+        }
+        if let Some(v) = other.ui.show_status_git {
+            self.ui.show_status_git = v;
+        }
+        if let Some(v) = other.ui.show_status_badges {
+            self.ui.show_status_badges = v;
+        }
+        if let Some(v) = other.ui.show_interrupt_hint {
+            self.ui.show_interrupt_hint = v;
+        }
+        if let Some(v) = other.ui.show_thought_tokens {
+            self.ui.show_thought_tokens = v;
         }
         if let Some(level) = other.logging.level {
             self.logging.level = level;
@@ -1087,8 +1155,59 @@ impl Config {
         if let Some(ref menu_style) = global.ui.menu_style {
             self.ui.menu_style = menu_style.clone();
         }
+        if let Some(ref input_box_style) = global.ui.input_box_style {
+            self.ui.input_box_style = input_box_style.clone();
+        }
+        if let Some(ref status_bar_style) = global.ui.status_bar_style {
+            self.ui.status_bar_style = status_bar_style.clone();
+        }
+        if let Some(ref context_meter_style) = global.ui.context_meter_style {
+            self.ui.context_meter_style = context_meter_style.clone();
+        }
+        if let Some(ref mode_bar_style) = global.ui.mode_bar_style {
+            self.ui.mode_bar_style = mode_bar_style.clone();
+        }
+        if let Some(ref activity_hint_style) = global.ui.activity_hint_style {
+            self.ui.activity_hint_style = activity_hint_style.clone();
+        }
         if let Some(show_cost) = global.ui.show_cost {
             self.ui.show_cost = show_cost;
+        }
+        if let Some(v) = global.ui.show_ponytail_badge {
+            self.ui.show_ponytail_badge = v;
+        }
+        if let Some(v) = global.ui.show_caveman_badge {
+            self.ui.show_caveman_badge = v;
+        }
+        if let Some(v) = global.ui.show_streaming_badge {
+            self.ui.show_streaming_badge = v;
+        }
+        if let Some(v) = global.ui.show_kv_cache {
+            self.ui.show_kv_cache = v;
+        }
+        if let Some(v) = global.ui.show_context_meter {
+            self.ui.show_context_meter = v;
+        }
+        if let Some(v) = global.ui.show_status_model {
+            self.ui.show_status_model = v;
+        }
+        if let Some(v) = global.ui.show_status_effort {
+            self.ui.show_status_effort = v;
+        }
+        if let Some(v) = global.ui.show_status_path {
+            self.ui.show_status_path = v;
+        }
+        if let Some(v) = global.ui.show_status_git {
+            self.ui.show_status_git = v;
+        }
+        if let Some(v) = global.ui.show_status_badges {
+            self.ui.show_status_badges = v;
+        }
+        if let Some(v) = global.ui.show_interrupt_hint {
+            self.ui.show_interrupt_hint = v;
+        }
+        if let Some(v) = global.ui.show_thought_tokens {
+            self.ui.show_thought_tokens = v;
         }
         if let Some(caveman_mode) = global.agent.caveman_mode {
             self.agent.caveman_mode = caveman_mode;

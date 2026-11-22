@@ -49,6 +49,398 @@ pub type ToastStyleOption = StylePreviewOption;
 pub type ToastSymbolOption = StylePreviewOption;
 pub type ActivityStyleOption = StylePreviewOption;
 pub type MenuStyleOption = StylePreviewOption;
+pub type InputBoxStyleOption = StylePreviewOption;
+pub type StatusBarStyleOption = StylePreviewOption;
+pub type ContextMeterStyleOption = StylePreviewOption;
+pub type ModeBarStyleOption = StylePreviewOption;
+pub type ActivityHintStyleOption = StylePreviewOption;
+
+#[derive(Debug, Clone, Copy)]
+pub struct VisibilityToggleOption {
+    pub id: &'static str,
+    pub group: &'static str,
+    pub name: &'static str,
+    pub description: &'static str,
+}
+
+pub static INPUT_BOX_STYLE_OPTIONS: &[InputBoxStyleOption] = &[
+    InputBoxStyleOption {
+        id: "rounded",
+        name: "Rounded Card (Default)",
+        description: "Clean rounded border frame ╭──╮ / │ › … │ / ╰──╯",
+        preview: &[],
+    },
+    InputBoxStyleOption {
+        id: "left_bar",
+        name: "Left Accent Rail",
+        description: "Sleek thick left accent spine ┃ on elevated surface, open top/right/bottom",
+        preview: &[],
+    },
+    InputBoxStyleOption {
+        id: "split_bar",
+        name: "Split Vertical Bars",
+        description: "OpenCode-style vertical accent rails ┃ … ┃ with zero horizontal borders",
+        preview: &[],
+    },
+    InputBoxStyleOption {
+        id: "top_bottom",
+        name: "Top & Bottom Rules",
+        description: "Minimalist horizontal hairlines ─── above and below with open sides",
+        preview: &[],
+    },
+    InputBoxStyleOption {
+        id: "square",
+        name: "Square Architectural Box",
+        description: "Crisp 90-degree sharp square frame ┌──┐ / │ › … │ / └──┘",
+        preview: &[],
+    },
+    InputBoxStyleOption {
+        id: "double",
+        name: "Double-Line Frame",
+        description: "Bold classic double-ruled box ╔══╗ / ║ › … ║ / ╚══╝",
+        preview: &[],
+    },
+    InputBoxStyleOption {
+        id: "minimal",
+        name: "Borderless Elevated",
+        description: "Ultra-clean borderless surface with quiet vertical breathing room",
+        preview: &[],
+    },
+    InputBoxStyleOption {
+        id: "underline",
+        name: "Accent Underline",
+        description: "Open elevated input anchored by a single bottom accent hairline",
+        preview: &[],
+    },
+];
+
+pub static STATUS_BAR_STYLE_OPTIONS: &[StatusBarStyleOption] = &[
+    StatusBarStyleOption {
+        id: "classic",
+        name: "Classic Dot & Pipe (Default)",
+        description: "provider/model · effort | path · git:branch · badges",
+        preview: &[],
+    },
+    StatusBarStyleOption {
+        id: "pills",
+        name: "Elevated Pill Chips",
+        description: "Subtle surface pill badges per status segment",
+        preview: &[],
+    },
+    StatusBarStyleOption {
+        id: "powerline",
+        name: "Powerline Chevrons",
+        description: "Directional flow with ▸ and › chevron dividers",
+        preview: &[],
+    },
+    StatusBarStyleOption {
+        id: "compact",
+        name: "Compact Terse",
+        description: "Short model name, abbreviated effort (lo/med/hi), and repo basename",
+        preview: &[],
+    },
+    StatusBarStyleOption {
+        id: "minimal",
+        name: "Minimalist Airy",
+        description: "Quiet whitespace separation with zero divider punctuation",
+        preview: &[],
+    },
+    StatusBarStyleOption {
+        id: "brackets",
+        name: "Bracketed CLI Tags",
+        description: "Structured [provider/model] [effort] [path] [git:branch] badges",
+        preview: &[],
+    },
+    StatusBarStyleOption {
+        id: "icons",
+        name: "Geometric Operator Icons",
+        description: "Crisp operator glyphs (◈ model · ⚡effort │ ⌂ path · ⎇ branch)",
+        preview: &[],
+    },
+];
+
+pub static CONTEXT_METER_STYLE_OPTIONS: &[ContextMeterStyleOption] = &[
+    ContextMeterStyleOption {
+        id: "compact",
+        name: "Compact Readout (Default)",
+        description: "Clean numeric readout: kv (99%) • 212.7k / 1M",
+        preview: &[],
+    },
+    ContextMeterStyleOption {
+        id: "circle",
+        name: "Pie Circle Ring (○◔◑◕●)",
+        description: "Progressive circular pie gauge for KV cache and context fill %",
+        preview: &[],
+    },
+    ContextMeterStyleOption {
+        id: "bar",
+        name: "Block Progress Bar ([██░░░░░░])",
+        description: "10-cell crisp bracketed progress bar with token counters",
+        preview: &[],
+    },
+    ContextMeterStyleOption {
+        id: "blocks",
+        name: "Shaded Density Blocks (█▓▒░)",
+        description: "Smooth sub-cell shaded block fill meter with percentage & tokens",
+        preview: &[],
+    },
+    ContextMeterStyleOption {
+        id: "braille",
+        name: "Braille Micro-Meter (⣿⣦⣀⣀)",
+        description: "High-resolution 24-step braille fill gauge with token totals",
+        preview: &[],
+    },
+    ContextMeterStyleOption {
+        id: "percent",
+        name: "Percentage First (21% · 212k/1M)",
+        description: "Bold occupancy percentage paired with compact token fraction",
+        preview: &[],
+    },
+    ContextMeterStyleOption {
+        id: "pills",
+        name: "Elevated Pill Badges",
+        description: "Distinct elevated pill chips for KV cache and context circle readout",
+        preview: &[],
+    },
+    ContextMeterStyleOption {
+        id: "minimal",
+        name: "Ultra-Minimal",
+        description: "Tightest possible numeric footprint: 99% kv · 212.7k/1M",
+        preview: &[],
+    },
+    ContextMeterStyleOption {
+        id: "gauge",
+        name: "Thin Line Gauge (━━────────)",
+        description: "Sleek horizontal rule meter with bold percentage label",
+        preview: &[],
+    },
+];
+
+pub static MODE_BAR_STYLE_OPTIONS: &[ModeBarStyleOption] = &[
+    ModeBarStyleOption {
+        id: "classic",
+        name: "Classic Piped Strip (Default)",
+        description: "· ponytail:full | caveman:full | streaming",
+        preview: &[],
+    },
+    ModeBarStyleOption {
+        id: "pills",
+        name: "Elevated Pill Chips",
+        description: "Soft pill chips highlighting active autonomy and streaming modes",
+        preview: &[],
+    },
+    ModeBarStyleOption {
+        id: "dots",
+        name: "Status LED Dots (● / ○)",
+        description: "Filled active dots ● and hollow inactive dots ○ per mode",
+        preview: &[],
+    },
+    ModeBarStyleOption {
+        id: "compact",
+        name: "Compact Short Tags",
+        description: "Ultra-terse abbreviations: pt:full · cm:full · strm",
+        preview: &[],
+    },
+    ModeBarStyleOption {
+        id: "minimal",
+        name: "Minimal Spaced",
+        description: "Clean open typography without pipes or leading dots",
+        preview: &[],
+    },
+    ModeBarStyleOption {
+        id: "brackets",
+        name: "Bracketed Tags",
+        description: "Structured [ponytail:full] [caveman:full] [streaming] badges",
+        preview: &[],
+    },
+    ModeBarStyleOption {
+        id: "icons",
+        name: "Operator Glyphs (✦ ◈ ⚡)",
+        description: "Crisp prefix glyphs for ponytail, caveman, and streaming state",
+        preview: &[],
+    },
+    ModeBarStyleOption {
+        id: "hidden",
+        name: "Hidden (Hide Entire Strip)",
+        description: "Completely hides the ponytail / caveman / streaming mode strip",
+        preview: &[],
+    },
+];
+
+pub static ACTIVITY_HINT_STYLE_OPTIONS: &[ActivityHintStyleOption] = &[
+    ActivityHintStyleOption {
+        id: "classic",
+        name: "Classic Hint (Default)",
+        description: "(6.3s · esc to cancel) or (6.3s • esc to interrupt)",
+        preview: &[],
+    },
+    ActivityHintStyleOption {
+        id: "timer_only",
+        name: "Timer Only (Hide 'esc' Text)",
+        description: "Clean elapsed seconds (6.3s) without the interrupt hint text",
+        preview: &[],
+    },
+    ActivityHintStyleOption {
+        id: "minimal",
+        name: "Minimal Inline (6.3s · esc)",
+        description: "Compact unparenthesized timer with subtle esc indicator",
+        preview: &[],
+    },
+    ActivityHintStyleOption {
+        id: "pill",
+        name: "Bracket Pill ([6.3s | esc])",
+        description: "Crisp bracketed telemetry badge with bold elapsed seconds",
+        preview: &[],
+    },
+    ActivityHintStyleOption {
+        id: "bracket",
+        name: "Angle Badge (⟨6.3s · ⎋ interrupt⟩)",
+        description: "Architectural angle-bracket indicator with escape glyph ⎋",
+        preview: &[],
+    },
+    ActivityHintStyleOption {
+        id: "dot",
+        name: "Dot Trail (· 6.3s · esc to stop)",
+        description: "Accent dot separator with quiet stop reminder",
+        preview: &[],
+    },
+    ActivityHintStyleOption {
+        id: "compact",
+        name: "Bare Seconds (6.3s)",
+        description: "Ultra-minimal elapsed timer with zero brackets or hint text",
+        preview: &[],
+    },
+    ActivityHintStyleOption {
+        id: "hidden",
+        name: "Hidden (No Timer or Hint)",
+        description: "Completely hides both elapsed timer and esc interrupt hint",
+        preview: &[],
+    },
+];
+
+pub static VISIBILITY_TOGGLE_OPTIONS: &[VisibilityToggleOption] = &[
+    VisibilityToggleOption {
+        id: "thought_tokens",
+        group: "Inline",
+        name: "Thought Token Usage",
+        description: "Show estimated tokens inline on '• Thought for 0.9s · 342 tokens'",
+    },
+    VisibilityToggleOption {
+        id: "kv_cache",
+        group: "Context",
+        name: "KV Cache Hit Rate",
+        description: "Show prompt KV cache badge ('kv (99%)') in bottom-right status bar",
+    },
+    VisibilityToggleOption {
+        id: "context_meter",
+        group: "Context",
+        name: "Context Occupancy Meter",
+        description: "Show active context token meter ('212.7k / 1M') in bottom-right bar",
+    },
+    VisibilityToggleOption {
+        id: "show_cost",
+        group: "Context",
+        name: "Session Cost ($ USD)",
+        description: "Show estimated cumulative session spend beside the context meter",
+    },
+    VisibilityToggleOption {
+        id: "ponytail_badge",
+        group: "Modes",
+        name: "Ponytail Mode Badge",
+        description: "Show 'ponytail:full / off' indicator in the mode strip above input",
+    },
+    VisibilityToggleOption {
+        id: "caveman_badge",
+        group: "Modes",
+        name: "Caveman Mode Badge",
+        description: "Show 'caveman:full / off' indicator in the mode strip above input",
+    },
+    VisibilityToggleOption {
+        id: "streaming_badge",
+        group: "Modes",
+        name: "Streaming Mode Badge",
+        description: "Show 'streaming' indicator in the mode strip above input",
+    },
+    VisibilityToggleOption {
+        id: "status_model",
+        group: "Status",
+        name: "Provider & Model Name",
+        description: "Show 'provider/model' label in the bottom-left status bar",
+    },
+    VisibilityToggleOption {
+        id: "status_effort",
+        group: "Status",
+        name: "Effort / Reasoning Level",
+        description: "Show 'low / medium / high' effort level in the bottom-left bar",
+    },
+    VisibilityToggleOption {
+        id: "status_path",
+        group: "Status",
+        name: "Workspace Directory Path",
+        description: "Show current project path ('~/.../repo') in the bottom-left bar",
+    },
+    VisibilityToggleOption {
+        id: "status_git",
+        group: "Status",
+        name: "Git Branch Badge",
+        description: "Show 'git:main' branch indicator in the bottom-left status bar",
+    },
+    VisibilityToggleOption {
+        id: "status_badges",
+        group: "Status",
+        name: "MCP / Swarm / Tasks Badges",
+        description: "Show active MCP servers, MiniPub swarm, and background task telemetry",
+    },
+    VisibilityToggleOption {
+        id: "interrupt_hint",
+        group: "Activity",
+        name: "Timer & Interrupt Hint",
+        description: "Show '(6.3s • esc to interrupt)' next to the live activity spinner",
+    },
+];
+
+pub fn visibility_toggle_is_enabled(id: &str, ui: &crate::config::UiConfig) -> bool {
+    match id {
+        "thought_tokens" => ui.show_thought_tokens,
+        "kv_cache" => ui.show_kv_cache,
+        "context_meter" => ui.show_context_meter,
+        "show_cost" => ui.show_cost,
+        "ponytail_badge" => ui.show_ponytail_badge,
+        "caveman_badge" => ui.show_caveman_badge,
+        "streaming_badge" => ui.show_streaming_badge,
+        "status_model" => ui.show_status_model,
+        "status_effort" => ui.show_status_effort,
+        "status_path" => ui.show_status_path,
+        "status_git" => ui.show_status_git,
+        "status_badges" => ui.show_status_badges,
+        "interrupt_hint" => ui.show_interrupt_hint,
+        _ => true,
+    }
+}
+
+pub fn toggle_visibility_option(
+    id: &str,
+    ui: &mut crate::config::UiConfig,
+) -> Option<(&'static str, bool)> {
+    let field = match id {
+        "thought_tokens" => (&mut ui.show_thought_tokens, "Thought Token Usage"),
+        "kv_cache" => (&mut ui.show_kv_cache, "KV Cache Indicator"),
+        "context_meter" => (&mut ui.show_context_meter, "Context Occupancy Meter"),
+        "show_cost" => (&mut ui.show_cost, "Session Cost Readout"),
+        "ponytail_badge" => (&mut ui.show_ponytail_badge, "Ponytail Mode Badge"),
+        "caveman_badge" => (&mut ui.show_caveman_badge, "Caveman Mode Badge"),
+        "streaming_badge" => (&mut ui.show_streaming_badge, "Streaming Mode Badge"),
+        "status_model" => (&mut ui.show_status_model, "Provider & Model Name"),
+        "status_effort" => (&mut ui.show_status_effort, "Effort / Reasoning Level"),
+        "status_path" => (&mut ui.show_status_path, "Workspace Directory Path"),
+        "status_git" => (&mut ui.show_status_git, "Git Branch Badge"),
+        "status_badges" => (&mut ui.show_status_badges, "MCP / Swarm / Tasks Badges"),
+        "interrupt_hint" => (&mut ui.show_interrupt_hint, "Timer & Interrupt Hint"),
+        _ => return None,
+    };
+    *field.0 = !*field.0;
+    Some((field.1, *field.0))
+}
 
 pub static TODO_STYLE_OPTIONS: &[TodoStyleOption] = &[
     TodoStyleOption {
@@ -547,6 +939,11 @@ pub struct ThemeSelectContext<'a> {
     pub toast_symbols: &'a [ToastSymbolOption],
     pub activity_styles: &'a [ActivityStyleOption],
     pub menu_styles: &'a [MenuStyleOption],
+    pub input_box_styles: &'a [InputBoxStyleOption],
+    pub status_bar_styles: &'a [StatusBarStyleOption],
+    pub context_meter_styles: &'a [ContextMeterStyleOption],
+    pub mode_bar_styles: &'a [ModeBarStyleOption],
+    pub activity_hint_styles: &'a [ActivityHintStyleOption],
     pub active_tab: crate::ui::modals::ThemeModalTab,
     pub theme_selected_index: usize,
     pub animation_selected_index: usize,
@@ -556,6 +953,12 @@ pub struct ThemeSelectContext<'a> {
     pub toast_symbol_selected_index: usize,
     pub activity_style_selected_index: usize,
     pub menu_style_selected_index: usize,
+    pub input_box_style_selected_index: usize,
+    pub status_bar_style_selected_index: usize,
+    pub context_meter_style_selected_index: usize,
+    pub mode_bar_style_selected_index: usize,
+    pub activity_hint_style_selected_index: usize,
+    pub visibility_selected_index: usize,
     pub active_theme_id: &'a str,
     pub active_animation_id: &'a str,
     pub active_todo_style: &'a str,
@@ -564,6 +967,7 @@ pub struct ThemeSelectContext<'a> {
     pub active_toast_symbols: &'a str,
     pub active_activity_style: &'a str,
     pub active_menu_style: &'a str,
+    pub ui_prefs: &'a crate::config::UiConfig,
     pub parent_label: Option<&'a str>,
 }
 
@@ -585,6 +989,11 @@ pub fn render_theme_select(
         toast_symbols,
         activity_styles,
         menu_styles,
+        input_box_styles,
+        status_bar_styles,
+        context_meter_styles,
+        mode_bar_styles,
+        activity_hint_styles,
         active_tab,
         theme_selected_index,
         animation_selected_index,
@@ -594,6 +1003,12 @@ pub fn render_theme_select(
         toast_symbol_selected_index,
         activity_style_selected_index,
         menu_style_selected_index,
+        input_box_style_selected_index,
+        status_bar_style_selected_index,
+        context_meter_style_selected_index,
+        mode_bar_style_selected_index,
+        activity_hint_style_selected_index,
+        visibility_selected_index,
         active_theme_id,
         active_animation_id,
         active_todo_style,
@@ -602,6 +1017,7 @@ pub fn render_theme_select(
         active_toast_symbols,
         active_activity_style,
         active_menu_style,
+        ui_prefs,
         parent_label,
     } = *ctx;
 
@@ -676,7 +1092,13 @@ pub fn render_theme_select(
     sidebar_lines.push(Line::from(""));
 
     let sb_inner_w = (sidebar_area.width as usize).saturating_sub(2).max(8);
-    for tab in crate::ui::modals::ThemeModalTab::all() {
+    let all_tabs = crate::ui::modals::ThemeModalTab::all();
+    let active_tab_idx = all_tabs.iter().position(|t| *t == active_tab).unwrap_or(0);
+    let tab_avail = (body_area.height as usize).saturating_sub(3).max(1);
+    let tab_visible_count = all_tabs.len().min(tab_avail);
+    let tab_scroll = compute_scroll_offset(active_tab_idx, tab_visible_count);
+
+    for tab in all_tabs.iter().skip(tab_scroll).take(tab_visible_count) {
         let is_active = *tab == active_tab;
         let raw_label = tab.sidebar_label();
         let prefix = if is_active { "  › " } else { "    " };
@@ -689,13 +1111,15 @@ pub fn render_theme_select(
         };
         sidebar_lines.push(Line::from(vec![
             Span::styled(prefix, style),
-            Span::styled(raw_label, style),
+            Span::styled(truncate_str(raw_label, sb_inner_w.saturating_sub(2)), style),
         ]));
     }
 
-    // Add minimal Active Profile summary card in Left Sidebar if height permits
-    if body_area.height >= 20 && sidebar_area.width >= 18 {
+    // Add minimal Active Profile summary card in Left Sidebar if vertical space remains below the tabs
+    let rem_rows = tab_avail.saturating_sub(tab_visible_count);
+    if rem_rows >= 6 && sidebar_area.width >= 18 {
         let val_max_w = (sidebar_area.width as usize).saturating_sub(10).max(6);
+        let max_profile_rows = rem_rows.saturating_sub(3);
         sidebar_lines.push(Line::from(""));
         sidebar_lines.push(Line::from(vec![Span::styled(
             format!("  {}", "─".repeat(sb_inner_w.saturating_sub(2))),
@@ -710,13 +1134,18 @@ pub fn render_theme_select(
         for (lbl, val) in [
             ("  theme ", active_theme_id),
             ("  anim  ", active_animation_id),
+            ("  input ", ui_prefs.input_box_style.as_str()),
+            ("  ctx   ", ui_prefs.context_meter_style.as_str()),
+            ("  stat  ", ui_prefs.status_bar_style.as_str()),
+            ("  modes ", ui_prefs.mode_bar_style.as_str()),
+            ("  hint  ", ui_prefs.activity_hint_style.as_str()),
             ("  todo  ", active_todo_style),
-            ("  swarm ", active_swarm_style),
             ("  toast ", active_toast_style),
-            ("  sym   ", active_toast_symbols),
-            ("  act   ", active_activity_style),
             ("  menu  ", active_menu_style),
-        ] {
+        ]
+        .into_iter()
+        .take(max_profile_rows)
+        {
             sidebar_lines.push(Line::from(vec![
                 Span::styled(lbl, Style::default().fg(theme.muted)),
                 Span::styled(
@@ -758,6 +1187,26 @@ pub fn render_theme_select(
         }
         crate::ui::modals::ThemeModalTab::MenuStyles => {
             (menu_styles.len(), menu_style_selected_index)
+        }
+        crate::ui::modals::ThemeModalTab::InputBoxStyles => {
+            (input_box_styles.len(), input_box_style_selected_index)
+        }
+        crate::ui::modals::ThemeModalTab::StatusBarStyles => {
+            (status_bar_styles.len(), status_bar_style_selected_index)
+        }
+        crate::ui::modals::ThemeModalTab::ContextMeterStyles => (
+            context_meter_styles.len(),
+            context_meter_style_selected_index,
+        ),
+        crate::ui::modals::ThemeModalTab::ModeBarStyles => {
+            (mode_bar_styles.len(), mode_bar_style_selected_index)
+        }
+        crate::ui::modals::ThemeModalTab::ActivityHintStyles => (
+            activity_hint_styles.len(),
+            activity_hint_style_selected_index,
+        ),
+        crate::ui::modals::ThemeModalTab::Visibility => {
+            (VISIBILITY_TOGGLE_OPTIONS.len(), visibility_selected_index)
         }
     };
 
@@ -1009,10 +1458,12 @@ pub fn render_theme_select(
                         19.5,
                     ),
                 ] {
-                    let line = crate::ui::animation::render_live_activity_line_with_style(
+                    let line = crate::ui::animation::render_live_activity_line_full(
                         &act,
                         sel_anim.style,
                         act_style,
+                        ui_prefs.activity_hint_style_enum(),
+                        ui_prefs.show_interrupt_hint,
                         millis,
                         elapsed,
                         theme,
@@ -1215,10 +1666,12 @@ pub fn render_theme_select(
                 demo_activities
                     .iter()
                     .map(|(act, elapsed)| {
-                        crate::ui::animation::render_live_activity_line_with_style(
+                        crate::ui::animation::render_live_activity_line_full(
                             act,
                             active_spinner,
                             style_enum,
+                            ui_prefs.activity_hint_style_enum(),
+                            ui_prefs.show_interrupt_hint,
                             millis,
                             *elapsed,
                             theme,
@@ -1254,6 +1707,429 @@ pub fn render_theme_select(
                 theme,
                 None,
             );
+        }
+        crate::ui::modals::ThemeModalTab::InputBoxStyles => {
+            let box_preview_w = right_w.saturating_sub(8).clamp(38, 66);
+            let live_box_preview = |style_id: &str| -> Vec<Line<'static>> {
+                let st = crate::config::InputBoxStyle::from_str_loose(style_id);
+                crate::ui::input::InputDock::render_box_preview(st, box_preview_w, theme)
+            };
+            render_style_preview_list(
+                &mut content_lines,
+                &mut preview_title,
+                &mut preview_lines,
+                input_box_styles,
+                input_box_style_selected_index,
+                ui_prefs.input_box_style_enum().as_str(),
+                26,
+                list_max_visible,
+                right_w,
+                theme,
+                Some(&live_box_preview),
+            );
+        }
+        crate::ui::modals::ThemeModalTab::StatusBarStyles => {
+            let status_budget = right_w.saturating_sub(8).max(40);
+            let live_status_preview = |style_id: &str| -> Vec<Line<'static>> {
+                let mut opts = crate::ui::status::StatusDisplayOptions::from_ui_config(ui_prefs);
+                opts.status_bar_style = crate::config::StatusBarStyle::from_str_loose(style_id);
+                let line1 = crate::ui::status::StatusWidgets::render_status_left_spans(
+                    theme,
+                    "minimax",
+                    "MiniMax-M3.1-Flash",
+                    "medium",
+                    "~/programming/minitest82",
+                    Some("main"),
+                    0,
+                    0,
+                    (0, 0.0, 0.0),
+                    None,
+                    status_budget,
+                    &opts,
+                );
+                let line2 = crate::ui::status::StatusWidgets::render_status_left_spans(
+                    theme,
+                    "anthropic",
+                    "claude-sonnet-4-6",
+                    "high",
+                    "~/projects/minicode",
+                    Some("feat/ui"),
+                    2,
+                    1,
+                    (3, 142.0, 12.0),
+                    None,
+                    status_budget,
+                    &opts,
+                );
+                let mut out = Vec::new();
+                if line1.is_empty() && line2.is_empty() {
+                    out.push(Line::from(Span::styled(
+                        "(all status bar segments hidden — enable in 14. Show / Hide)",
+                        Style::default().fg(theme.muted),
+                    )));
+                } else {
+                    out.push(Line::from(line1));
+                    out.push(Line::from(line2));
+                }
+                out
+            };
+            render_style_preview_list(
+                &mut content_lines,
+                &mut preview_title,
+                &mut preview_lines,
+                status_bar_styles,
+                status_bar_style_selected_index,
+                ui_prefs.status_bar_style_enum().as_str(),
+                28,
+                list_max_visible,
+                right_w,
+                theme,
+                Some(&live_status_preview),
+            );
+        }
+        crate::ui::modals::ThemeModalTab::ContextMeterStyles => {
+            let live_ctx_preview = |style_id: &str| -> Vec<Line<'static>> {
+                let st = crate::config::ContextMeterStyle::from_str_loose(style_id);
+                let mut out = Vec::new();
+                for (label, used, max, cached) in [
+                    (
+                        "Healthy (21%)  : ",
+                        212_700usize,
+                        1_000_000usize,
+                        210_500usize,
+                    ),
+                    (
+                        "Warning (72%)  : ",
+                        720_000usize,
+                        1_000_000usize,
+                        604_800usize,
+                    ),
+                    (
+                        "Critical (92%) : ",
+                        920_000usize,
+                        1_000_000usize,
+                        598_000usize,
+                    ),
+                ] {
+                    let mut spans = vec![Span::styled(label, Style::default().fg(theme.muted))];
+                    let meter = crate::ui::status::StatusWidgets::render_context_meter_spans(
+                        theme,
+                        used,
+                        max,
+                        cached,
+                        ui_prefs.show_cost,
+                        0.042,
+                        ui_prefs.show_kv_cache,
+                        ui_prefs.show_context_meter,
+                        st,
+                    );
+                    if meter.is_empty() {
+                        spans.push(Span::styled(
+                            "(hidden — enable in 14. Show / Hide)",
+                            Style::default().fg(theme.muted),
+                        ));
+                    } else {
+                        spans.extend(meter);
+                    }
+                    out.push(Line::from(spans));
+                }
+                out
+            };
+            render_style_preview_list(
+                &mut content_lines,
+                &mut preview_title,
+                &mut preview_lines,
+                context_meter_styles,
+                context_meter_style_selected_index,
+                ui_prefs.context_meter_style_enum().as_str(),
+                32,
+                list_max_visible,
+                right_w,
+                theme,
+                Some(&live_ctx_preview),
+            );
+        }
+        crate::ui::modals::ThemeModalTab::ModeBarStyles => {
+            let live_mode_preview = |style_id: &str| -> Vec<Line<'static>> {
+                let st = crate::config::ModeBarStyle::from_str_loose(style_id);
+                let active_spans = crate::ui::status::StatusWidgets::render_mode_bar_spans(
+                    theme,
+                    true,
+                    "full",
+                    true,
+                    "full",
+                    true,
+                    st,
+                    ui_prefs.show_ponytail_badge,
+                    ui_prefs.show_caveman_badge,
+                    ui_prefs.show_streaming_badge,
+                );
+                let mixed_spans = crate::ui::status::StatusWidgets::render_mode_bar_spans(
+                    theme,
+                    false,
+                    "full",
+                    true,
+                    "lite",
+                    true,
+                    st,
+                    ui_prefs.show_ponytail_badge,
+                    ui_prefs.show_caveman_badge,
+                    ui_prefs.show_streaming_badge,
+                );
+                if active_spans.is_empty() {
+                    vec![Line::from(Span::styled(
+                        "(mode badge strip hidden)",
+                        Style::default().fg(theme.muted),
+                    ))]
+                } else {
+                    let mut l1 = vec![Span::styled("All ON : ", Style::default().fg(theme.muted))];
+                    l1.extend(active_spans);
+                    let mut l2 = vec![Span::styled("Mixed  : ", Style::default().fg(theme.muted))];
+                    l2.extend(mixed_spans);
+                    vec![Line::from(l1), Line::from(l2)]
+                }
+            };
+            render_style_preview_list(
+                &mut content_lines,
+                &mut preview_title,
+                &mut preview_lines,
+                mode_bar_styles,
+                mode_bar_style_selected_index,
+                ui_prefs.mode_bar_style_enum().as_str(),
+                30,
+                list_max_visible,
+                right_w,
+                theme,
+                Some(&live_mode_preview),
+            );
+        }
+        crate::ui::modals::ThemeModalTab::ActivityHintStyles => {
+            let millis = preview_clock_millis();
+            let active_spinner = crate::ui::animation::SpinnerStyle::from_id(active_animation_id);
+            let act_style = crate::config::ActivityBarStyle::from_str_loose(active_activity_style);
+            let demo_activities = [
+                (crate::ui::animation::AgentActivity::Thinking, 6.3),
+                (
+                    crate::ui::animation::AgentActivity::WritingFile {
+                        tool: "write_file".to_string(),
+                        path: "src/ui/status.rs".to_string(),
+                    },
+                    14.8,
+                ),
+                (
+                    crate::ui::animation::AgentActivity::Debugging {
+                        step: "cargo test -j 1".to_string(),
+                    },
+                    22.4,
+                ),
+            ];
+            let live_hint_preview = |style_id: &str| -> Vec<Line<'static>> {
+                let hint_enum = crate::config::ActivityHintStyle::from_str_loose(style_id);
+                demo_activities
+                    .iter()
+                    .map(|(act, elapsed)| {
+                        crate::ui::animation::render_live_activity_line_full(
+                            act,
+                            active_spinner,
+                            act_style,
+                            hint_enum,
+                            true,
+                            millis,
+                            *elapsed,
+                            theme,
+                        )
+                    })
+                    .collect()
+            };
+            render_style_preview_list(
+                &mut content_lines,
+                &mut preview_title,
+                &mut preview_lines,
+                activity_hint_styles,
+                activity_hint_style_selected_index,
+                ui_prefs.activity_hint_style_enum().as_str(),
+                34,
+                list_max_visible,
+                right_w,
+                theme,
+                Some(&live_hint_preview),
+            );
+        }
+        crate::ui::modals::ThemeModalTab::Visibility => {
+            let scroll_offset = compute_scroll_offset(visibility_selected_index, list_max_visible);
+            let name_w = 26usize;
+            let desc_max_w = right_w.saturating_sub(name_w + 32).max(16);
+
+            for (idx_rel, opt) in VISIBILITY_TOGGLE_OPTIONS
+                .iter()
+                .skip(scroll_offset)
+                .take(list_max_visible)
+                .enumerate()
+            {
+                let idx = scroll_offset + idx_rel;
+                let is_selected = idx == visibility_selected_index;
+                let is_on = visibility_toggle_is_enabled(opt.id, ui_prefs);
+
+                let cursor = if is_selected { "  › " } else { "    " };
+                let title_style = if is_selected {
+                    Style::default()
+                        .fg(theme.brand_accent)
+                        .add_modifier(Modifier::BOLD)
+                } else {
+                    Style::default().fg(theme.text_primary)
+                };
+                let badge = if is_on { "[shown]  " } else { "[hidden] " };
+                let badge_style = if is_on {
+                    Style::default()
+                        .fg(theme.success)
+                        .add_modifier(Modifier::BOLD)
+                } else {
+                    Style::default().fg(theme.warning)
+                };
+
+                content_lines.push(Line::from(vec![
+                    Span::styled(
+                        cursor,
+                        Style::default()
+                            .fg(theme.brand_accent)
+                            .add_modifier(Modifier::BOLD),
+                    ),
+                    Span::styled(
+                        format!("[{:>2}] ", idx + 1),
+                        Style::default().fg(theme.muted),
+                    ),
+                    Span::styled(
+                        format!("{:<8} ", format!("[{}]", opt.group)),
+                        Style::default().fg(theme.info),
+                    ),
+                    Span::styled(
+                        format!("{:<width$}", truncate_str(opt.name, name_w), width = name_w),
+                        title_style,
+                    ),
+                    Span::raw(" "),
+                    Span::styled(badge, badge_style),
+                    Span::styled(
+                        truncate_str(opt.description, desc_max_w),
+                        if is_selected {
+                            Style::default().fg(theme.text_primary)
+                        } else {
+                            Style::default().fg(theme.muted)
+                        },
+                    ),
+                ]));
+            }
+
+            if let Some(sel) = VISIBILITY_TOGGLE_OPTIONS.get(visibility_selected_index) {
+                let state_lbl = if visibility_toggle_is_enabled(sel.id, ui_prefs) {
+                    "shown"
+                } else {
+                    "hidden"
+                };
+                preview_title = format!("{} ({})", sel.name, state_lbl);
+            } else {
+                preview_title = "Live TUI Composite".to_string();
+            }
+
+            // 4-line live composite preview reflecting ALL current visibility toggles & styles
+            let mut thought_spans = vec![
+                Span::styled("    Inline  : ", Style::default().fg(theme.muted)),
+                Span::styled(
+                    "• Thought for 0.9s",
+                    Style::default()
+                        .fg(theme.muted)
+                        .add_modifier(Modifier::BOLD),
+                ),
+            ];
+            if ui_prefs.show_thought_tokens {
+                thought_spans.push(Span::styled(
+                    " · 342 tokens",
+                    Style::default().fg(theme.info),
+                ));
+            }
+            preview_lines.push(Line::from(thought_spans));
+
+            let millis = preview_clock_millis();
+            let active_spinner = crate::ui::animation::SpinnerStyle::from_id(active_animation_id);
+            let act_line = crate::ui::animation::render_live_activity_line_full(
+                &crate::ui::animation::AgentActivity::Thinking,
+                active_spinner,
+                ui_prefs.activity_style_enum(),
+                ui_prefs.activity_hint_style_enum(),
+                ui_prefs.show_interrupt_hint,
+                millis,
+                6.3,
+                theme,
+            );
+            let mode_spans = crate::ui::status::StatusWidgets::render_mode_bar_spans(
+                theme,
+                true,
+                "full",
+                true,
+                "full",
+                true,
+                ui_prefs.mode_bar_style_enum(),
+                ui_prefs.show_ponytail_badge,
+                ui_prefs.show_caveman_badge,
+                ui_prefs.show_streaming_badge,
+            );
+            let mut act_row = vec![Span::styled(
+                "    Bar     : ",
+                Style::default().fg(theme.muted),
+            )];
+            act_row.extend(act_line.spans);
+            if !mode_spans.is_empty() {
+                act_row.push(Span::raw("   "));
+                act_row.extend(mode_spans);
+            }
+            preview_lines.push(Line::from(act_row));
+
+            let status_opts = crate::ui::status::StatusDisplayOptions::from_ui_config(ui_prefs);
+            let left_spans = crate::ui::status::StatusWidgets::render_status_left_spans(
+                theme,
+                "minimax",
+                "MiniMax-M3.1-Flash",
+                "medium",
+                "~/minitest82",
+                Some("main"),
+                1,
+                0,
+                (0, 0.0, 0.0),
+                None,
+                right_w.saturating_sub(18).max(32),
+                &status_opts,
+            );
+            let mut status_row = vec![Span::styled(
+                "    Status  : ",
+                Style::default().fg(theme.muted),
+            )];
+            if left_spans.is_empty() {
+                status_row.push(Span::styled("(hidden)", Style::default().fg(theme.muted)));
+            } else {
+                status_row.extend(left_spans);
+            }
+            preview_lines.push(Line::from(status_row));
+
+            let ctx_spans = crate::ui::status::StatusWidgets::render_context_meter_spans(
+                theme,
+                212_700,
+                1_000_000,
+                210_500,
+                ui_prefs.show_cost,
+                0.042,
+                ui_prefs.show_kv_cache,
+                ui_prefs.show_context_meter,
+                ui_prefs.context_meter_style_enum(),
+            );
+            let mut ctx_row = vec![Span::styled(
+                "    Context : ",
+                Style::default().fg(theme.muted),
+            )];
+            if ctx_spans.is_empty() {
+                ctx_row.push(Span::styled("(hidden)", Style::default().fg(theme.muted)));
+            } else {
+                ctx_row.extend(ctx_spans);
+            }
+            preview_lines.push(Line::from(ctx_row));
         }
     }
 
@@ -1291,12 +2167,12 @@ pub fn render_theme_select(
         None => "← back".to_string(),
     };
     let footer_line = Line::from(vec![
-        Span::styled("  tab/←→/1-8 ", Style::default().fg(theme.brand_accent)),
+        Span::styled("  tab/←→/1-9 ", Style::default().fg(theme.brand_accent)),
         Span::styled("section   ", Style::default().fg(theme.muted)),
         Span::styled("↑/↓/j/k ", Style::default().fg(theme.brand_accent)),
         Span::styled("navigate   ", Style::default().fg(theme.muted)),
         Span::styled("enter/space ", Style::default().fg(theme.brand_accent)),
-        Span::styled("apply (stay)   ", Style::default().fg(theme.muted)),
+        Span::styled("apply/toggle (stay)   ", Style::default().fg(theme.muted)),
         Span::styled("esc/bksp ", Style::default().fg(theme.brand_accent)),
         Span::styled(back_hint, Style::default().fg(theme.muted)),
     ]);
@@ -1462,6 +2338,7 @@ mod tests {
         let theme = Theme::default();
         let themes = Theme::list_themes();
         let animations = crate::ui::animation::ANIMATION_OPTIONS.to_vec();
+        let ui_prefs = crate::config::UiConfig::default();
 
         for &tab in crate::ui::modals::ThemeModalTab::all() {
             let ctx = ThemeSelectContext {
@@ -1473,6 +2350,11 @@ mod tests {
                 toast_symbols: TOAST_SYMBOL_OPTIONS,
                 activity_styles: ACTIVITY_STYLE_OPTIONS,
                 menu_styles: MENU_STYLE_OPTIONS,
+                input_box_styles: INPUT_BOX_STYLE_OPTIONS,
+                status_bar_styles: STATUS_BAR_STYLE_OPTIONS,
+                context_meter_styles: CONTEXT_METER_STYLE_OPTIONS,
+                mode_bar_styles: MODE_BAR_STYLE_OPTIONS,
+                activity_hint_styles: ACTIVITY_HINT_STYLE_OPTIONS,
                 active_tab: tab,
                 theme_selected_index: 0,
                 animation_selected_index: 0,
@@ -1482,6 +2364,12 @@ mod tests {
                 toast_symbol_selected_index: 0,
                 activity_style_selected_index: 0,
                 menu_style_selected_index: 0,
+                input_box_style_selected_index: 0,
+                status_bar_style_selected_index: 0,
+                context_meter_style_selected_index: 0,
+                mode_bar_style_selected_index: 0,
+                activity_hint_style_selected_index: 0,
+                visibility_selected_index: 0,
                 active_theme_id: "auto",
                 active_animation_id: "dual_pillars",
                 active_todo_style: "tree",
@@ -1490,6 +2378,7 @@ mod tests {
                 active_toast_symbols: "ascii",
                 active_activity_style: "action_detail",
                 active_menu_style: "minimal",
+                ui_prefs: &ui_prefs,
                 parent_label: Some("Commands"),
             };
 
@@ -1511,6 +2400,7 @@ mod tests {
             assert!(rendered.contains("1. Themes"));
             assert!(rendered.contains("7. Activity Bar"));
             assert!(rendered.contains("8. Menu Styles"));
+            assert!(rendered.contains("14. Show / Hide"));
             assert!(rendered.contains("Live Preview:"));
         }
     }
