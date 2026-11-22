@@ -58,6 +58,16 @@ pub const ACTIVITY_EMOJI_PREVIEW_FRAMES: &[&str] = &["💭", "📝", "🔧", "�
 /// Cyber geometric hexagon crystal pulse spinner (strictly 1-cell EAW=N)
 pub const HEX_PULSE_FRAMES: &[&str] = &["⎔", "⏣", "◈", "◆", "◈", "⏣"];
 
+/// Context-aware Nerd Font FontAwesome preview cycle (Thinking , Writing , Editing , Searching , Running , Skill )
+pub const ACTIVITY_NF_PREVIEW_FRAMES: &[&str] = &[
+    "\u{f0eb}", "\u{f044}", "\u{f0ad}", "\u{f002}", "\u{f120}", "\u{f0e7}",
+];
+
+/// Animated Nerd Font telemetry icon wave ( ->  ->  ->  ->  -> )
+pub const NF_PULSE_FRAMES: &[&str] = &[
+    "\u{f013}", "\u{f085}", "\u{f0e7}", "\u{f135}", "\u{f0eb}", "\u{f120}",
+];
+
 /// Supported loading animation styles selectable by the user in /theme
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum SpinnerStyle {
@@ -75,6 +85,9 @@ pub enum SpinnerStyle {
     KaomojiAction,
     KaomojiDance,
     HexPulse,
+    NerdActivity,
+    NerdOrbit,
+    NerdPulse,
 }
 
 impl SpinnerStyle {
@@ -94,6 +107,9 @@ impl SpinnerStyle {
             "kaomoji_action" => SpinnerStyle::KaomojiAction,
             "kaomoji_dance" => SpinnerStyle::KaomojiDance,
             "hex_pulse" | "hex" => SpinnerStyle::HexPulse,
+            "nf_activity" | "nerdfont" | "nerd_activity" => SpinnerStyle::NerdActivity,
+            "nf_orbit" | "nerd_orbit" => SpinnerStyle::NerdOrbit,
+            "nf_pulse" | "nerd_pulse" => SpinnerStyle::NerdPulse,
             _ => SpinnerStyle::DualPillars,
         }
     }
@@ -114,6 +130,9 @@ impl SpinnerStyle {
             SpinnerStyle::KaomojiAction => "kaomoji_action",
             SpinnerStyle::KaomojiDance => "kaomoji_dance",
             SpinnerStyle::HexPulse => "hex_pulse",
+            SpinnerStyle::NerdActivity => "nf_activity",
+            SpinnerStyle::NerdOrbit => "nf_orbit",
+            SpinnerStyle::NerdPulse => "nf_pulse",
         }
     }
 }
@@ -205,6 +224,24 @@ pub const ANIMATION_OPTIONS: &[AnimationOption] = &[
         name: "Quantum Satellite",
         description: "Dual revolving particle dot satellites",
         style: SpinnerStyle::ParticleOrbit,
+    },
+    AnimationOption {
+        id: "nf_orbit",
+        name: "Nerd Font Orbit + Icon",
+        description: "Live rotating Braille spinner + themed FontAwesome action icon (Nerd Font)",
+        style: SpinnerStyle::NerdOrbit,
+    },
+    AnimationOption {
+        id: "nf_activity",
+        name: "Nerd Font Action Pulse",
+        description: "Context-aware FontAwesome icon per action ( Think,  Write,  Run) with RGB shimmer",
+        style: SpinnerStyle::NerdActivity,
+    },
+    AnimationOption {
+        id: "nf_pulse",
+        name: "Nerd Font Telemetry Wave",
+        description: "Animated cycling FontAwesome developer icons ( ->  ->  -> ) with shimmer",
+        style: SpinnerStyle::NerdPulse,
     },
 ];
 
@@ -636,6 +673,31 @@ pub fn render_spinner_spans_with_activity(
     activity_emoji: Option<&str>,
     activity_kaomoji: Option<&str>,
 ) -> Vec<Span<'static>> {
+    render_spinner_spans_with_icons(
+        style,
+        millis,
+        c1,
+        c2,
+        theme,
+        activity_emoji,
+        activity_kaomoji,
+        None,
+    )
+}
+
+/// Renders the spinner glyph spans with optional context-aware activity Emoji, Kaomoji,
+/// and Nerd Font FontAwesome/Codicon vector icon.
+#[allow(clippy::too_many_arguments)]
+pub fn render_spinner_spans_with_icons(
+    style: SpinnerStyle,
+    millis: u64,
+    c1: Color,
+    c2: Color,
+    theme: &Theme,
+    activity_emoji: Option<&str>,
+    activity_kaomoji: Option<&str>,
+    activity_nf: Option<&str>,
+) -> Vec<Span<'static>> {
     match style {
         SpinnerStyle::DualPillars => {
             let spinner_idx = ((millis / 120) as usize) % BRAND_SPINNER_FRAMES.len();
@@ -674,6 +736,55 @@ pub fn render_spinner_spans_with_activity(
             vec![Span::styled(
                 format!("{}  ", emoji),
                 Style::default().fg(grad_color).add_modifier(Modifier::BOLD),
+            )]
+        }
+        SpinnerStyle::NerdActivity => {
+            let icon = activity_nf.unwrap_or_else(|| {
+                let idx = ((millis / 500) as usize) % ACTIVITY_NF_PREVIEW_FRAMES.len();
+                ACTIVITY_NF_PREVIEW_FRAMES[idx]
+            });
+            let phase = phase_rad(millis, 160.0);
+            let factor = (phase.sin() * 0.5 + 0.5).clamp(0.0, 1.0);
+            let grad_color = lerp_color(c1, c2, factor);
+            vec![Span::styled(
+                format!("{}  ", icon),
+                Style::default().fg(grad_color).add_modifier(Modifier::BOLD),
+            )]
+        }
+        SpinnerStyle::NerdOrbit => {
+            let spin_idx = ((millis / crate::constants::SPINNER_FRAME_MS) as usize)
+                % BRAILLE_SPINNER_FRAMES.len();
+            let icon = activity_nf.unwrap_or_else(|| {
+                let idx = ((millis / 600) as usize) % ACTIVITY_NF_PREVIEW_FRAMES.len();
+                ACTIVITY_NF_PREVIEW_FRAMES[idx]
+            });
+            let phase = phase_rad(millis, 160.0);
+            let f1 = (phase.sin() * 0.5 + 0.5).clamp(0.0, 1.0);
+            let f2 = ((phase + 1.2).sin() * 0.5 + 0.5).clamp(0.0, 1.0);
+            vec![
+                Span::styled(
+                    format!("{} ", BRAILLE_SPINNER_FRAMES[spin_idx]),
+                    Style::default()
+                        .fg(lerp_color(c1, c2, f1))
+                        .add_modifier(Modifier::BOLD),
+                ),
+                Span::styled(
+                    format!("{}  ", icon),
+                    Style::default()
+                        .fg(lerp_color(c2, c1, f2))
+                        .add_modifier(Modifier::BOLD),
+                ),
+            ]
+        }
+        SpinnerStyle::NerdPulse => {
+            let idx = ((millis / 260) as usize) % NF_PULSE_FRAMES.len();
+            let phase = phase_rad(millis, 160.0);
+            let factor = (phase.sin() * 0.5 + 0.5).clamp(0.0, 1.0);
+            vec![Span::styled(
+                format!("{}  ", NF_PULSE_FRAMES[idx]),
+                Style::default()
+                    .fg(lerp_color(c1, c2, factor))
+                    .add_modifier(Modifier::BOLD),
             )]
         }
         SpinnerStyle::KaomojiAction => {
@@ -871,163 +982,188 @@ pub fn render_live_activity_line_full(
     let think_k_idx = ((millis / 800) as usize) % thinking_kaomojis.len();
 
     // Extract structured descriptors for the active state/action:
-    // (verb_label, trail_gerund, Option<(tool_name, target)>, emoji_glyph, kaomoji_face, c1, c2)
+    // (verb_label, trail_gerund, Option<(tool_name, target)>, emoji_glyph, kaomoji_face, nf_icon, c1, c2)
     type ActivityDescriptor<'a> = (
         &'a str,
         &'a str,
         Option<(&'a str, &'a str)>,
         &'a str,
         &'a str,
+        &'a str,
         Color,
         Color,
     );
-    let (verb_label, trail_gerund, action_info, emoji_glyph, kaomoji_face, c1, c2): ActivityDescriptor<'_> =
-        match activity {
-            AgentActivity::Thinking => (
-                "Thinking...",
-                "",
-                None,
-                "💭",
-                thinking_kaomojis[think_k_idx],
-                theme.brand_accent,
-                theme.highlight,
-            ),
-            AgentActivity::ThinkingAfter { last_tool, .. } => (
-                "Thinking...",
-                "after",
-                Some((last_tool.as_str(), "")),
-                "💭",
-                thinking_kaomojis[think_k_idx],
-                theme.brand_accent,
-                theme.highlight,
-            ),
-            AgentActivity::Working => (
-                "Working...",
-                "processing",
-                None,
-                "🌟",
-                "( •_•)",
-                theme.brand_accent,
-                theme.info,
-            ),
-            AgentActivity::Responding => (
-                "Generating...",
-                "",
-                None,
-                "💬",
-                "( ^_-)",
-                theme.info,
-                theme.brand_accent,
-            ),
-            AgentActivity::Planning { tool, target } => (
-                "Planning...",
-                "creating plan",
-                Some((tool.as_str(), target.as_str())),
-                "🧭",
-                "( °_°)◈",
-                theme.brand_accent,
-                theme.highlight,
-            ),
-            AgentActivity::WritingFile { tool, path } => (
-                "Writing...",
-                "writing",
-                Some((tool.as_str(), path.as_str())),
-                "📝",
-                "( ▸_▸)◈",
-                theme.info,
-                theme.brand_accent,
-            ),
-            AgentActivity::EditingFile { path } => (
-                "Editing...",
-                "editing",
-                Some(("patch_file", path.as_str())),
-                "🔧",
-                "(⌐▪_▪)",
-                theme.info,
-                theme.brand_accent,
-            ),
-            AgentActivity::ReadingFile { tool, path } => (
-                "Reading...",
-                "reading",
-                Some((tool.as_str(), path.as_str())),
-                "📖",
-                "( ◉_◉)",
-                theme.info,
-                theme.brand_accent,
-            ),
-            AgentActivity::RepoResearch { target } => (
-                "Searching...",
-                "searching",
-                Some(("grep_search", target.as_str())),
-                "🔭",
-                "( ◉_◉)",
-                theme.info,
-                theme.brand_accent,
-            ),
-            AgentActivity::InternetResearch { query } => (
-                "Browsing...",
-                "browsing",
-                Some(("search_web", query.as_str())),
-                "📡",
-                "( °o°)",
-                theme.info,
-                theme.success,
-            ),
-            AgentActivity::Debugging { step } => (
-                "Verifying...",
-                "verifying",
-                Some(("exec_cmd", step.as_str())),
-                "🚀",
-                "(ง°_°)ง",
-                theme.info,
-                theme.brand_accent,
-            ),
-            AgentActivity::ExecutingCommand { command } => (
-                "Running...",
-                "running",
-                Some(("exec_cmd", command.as_str())),
-                "🚀",
-                "(ง°_°)ง",
-                theme.info,
-                theme.brand_accent,
-            ),
-            AgentActivity::SubagentWorking { role } => (
-                "Subagent...",
-                "subagent",
-                Some(("spawn_subagent", role.as_str())),
-                "🐝",
-                "( ◉_◉)⊃",
-                theme.highlight,
-                theme.brand_accent,
-            ),
-            AgentActivity::UsingSkill { tool, skill } => (
-                "Using skill...",
-                "skill",
-                Some((tool.as_str(), skill.as_str())),
-                "🧠",
-                "( ✧_✧)",
-                theme.brand_accent,
-                theme.highlight,
-            ),
-            AgentActivity::CustomTool { verb, tool, target } => (
-                verb.as_str(),
-                "executing",
-                Some((tool.as_str(), target.as_str())),
-                "🌟",
-                "( •_•)",
-                theme.info,
-                theme.brand_accent,
-            ),
-            AgentActivity::CompactingContext => (
-                "Compacting...",
-                "compacting",
-                Some(("context_memory", "")),
-                "💾",
-                "( ~_~)",
-                theme.muted,
-                theme.text_primary,
-            ),
-        };
+    let (
+        verb_label,
+        trail_gerund,
+        action_info,
+        emoji_glyph,
+        kaomoji_face,
+        nf_icon,
+        c1,
+        c2,
+    ): ActivityDescriptor<'_> = match activity {
+        AgentActivity::Thinking => (
+            "Thinking...",
+            "",
+            None,
+            "💭",
+            thinking_kaomojis[think_k_idx],
+            "\u{f0eb}", //  fa-lightbulb
+            theme.brand_accent,
+            theme.highlight,
+        ),
+        AgentActivity::ThinkingAfter { last_tool, .. } => (
+            "Thinking...",
+            "after",
+            Some((last_tool.as_str(), "")),
+            "💭",
+            thinking_kaomojis[think_k_idx],
+            "\u{f0eb}", //  fa-lightbulb
+            theme.brand_accent,
+            theme.highlight,
+        ),
+        AgentActivity::Working => (
+            "Working...",
+            "processing",
+            None,
+            "🌟",
+            "( •_•)",
+            "\u{f013}", //  fa-cog
+            theme.brand_accent,
+            theme.info,
+        ),
+        AgentActivity::Responding => (
+            "Generating...",
+            "",
+            None,
+            "💬",
+            "( ^_-)",
+            "\u{f075}", //  fa-comment
+            theme.info,
+            theme.brand_accent,
+        ),
+        AgentActivity::Planning { tool, target } => (
+            "Planning...",
+            "creating plan",
+            Some((tool.as_str(), target.as_str())),
+            "🧭",
+            "( °_°)◈",
+            "\u{f0ae}", //  fa-tasks
+            theme.brand_accent,
+            theme.highlight,
+        ),
+        AgentActivity::WritingFile { tool, path } => (
+            "Writing...",
+            "writing",
+            Some((tool.as_str(), path.as_str())),
+            "📝",
+            "( ▸_▸)◈",
+            "\u{f044}", //  fa-edit
+            theme.info,
+            theme.brand_accent,
+        ),
+        AgentActivity::EditingFile { path } => (
+            "Editing...",
+            "editing",
+            Some(("patch_file", path.as_str())),
+            "🔧",
+            "(⌐▪_▪)",
+            "\u{f0ad}", //  fa-wrench
+            theme.info,
+            theme.brand_accent,
+        ),
+        AgentActivity::ReadingFile { tool, path } => (
+            "Reading...",
+            "reading",
+            Some((tool.as_str(), path.as_str())),
+            "📖",
+            "( ◉_◉)",
+            "\u{f02d}", //  fa-book
+            theme.info,
+            theme.brand_accent,
+        ),
+        AgentActivity::RepoResearch { target } => (
+            "Searching...",
+            "searching",
+            Some(("grep_search", target.as_str())),
+            "🔭",
+            "( ◉_◉)",
+            "\u{f002}", //  fa-search
+            theme.info,
+            theme.brand_accent,
+        ),
+        AgentActivity::InternetResearch { query } => (
+            "Browsing...",
+            "browsing",
+            Some(("search_web", query.as_str())),
+            "📡",
+            "( °o°)",
+            "\u{f0ac}", //  fa-globe
+            theme.info,
+            theme.success,
+        ),
+        AgentActivity::Debugging { step } => (
+            "Verifying...",
+            "verifying",
+            Some(("exec_cmd", step.as_str())),
+            "🚀",
+            "(ง°_°)ง",
+            "\u{f188}", //  fa-bug
+            theme.info,
+            theme.brand_accent,
+        ),
+        AgentActivity::ExecutingCommand { command } => (
+            "Running...",
+            "running",
+            Some(("exec_cmd", command.as_str())),
+            "🚀",
+            "(ง°_°)ง",
+            "\u{f120}", //  fa-terminal
+            theme.info,
+            theme.brand_accent,
+        ),
+        AgentActivity::SubagentWorking { role } => (
+            "Subagent...",
+            "subagent",
+            Some(("spawn_subagent", role.as_str())),
+            "🐝",
+            "( ◉_◉)⊃",
+            "\u{f085}", //  fa-cogs
+            theme.highlight,
+            theme.brand_accent,
+        ),
+        AgentActivity::UsingSkill { tool, skill } => (
+            "Using skill...",
+            "skill",
+            Some((tool.as_str(), skill.as_str())),
+            "🧠",
+            "( ✧_✧)",
+            "\u{f0e7}", //  fa-bolt
+            theme.brand_accent,
+            theme.highlight,
+        ),
+        AgentActivity::CustomTool { verb, tool, target } => (
+            verb.as_str(),
+            "executing",
+            Some((tool.as_str(), target.as_str())),
+            "🌟",
+            "( •_•)",
+            "\u{f013}", //  fa-cog
+            theme.info,
+            theme.brand_accent,
+        ),
+        AgentActivity::CompactingContext => (
+            "Compacting...",
+            "compacting",
+            Some(("context_memory", "")),
+            "💾",
+            "( ~_~)",
+            "\u{f1c0}", //  fa-database
+            theme.muted,
+            theme.text_primary,
+        ),
+    };
 
     // 1. Classic mode preserves the original single-label rendering
     if activity_style == ActivityBarStyle::Classic {
@@ -1061,7 +1197,7 @@ pub fn render_live_activity_line_full(
             AgentActivity::CompactingContext => Cow::Borrowed("Compacting memory..."),
         };
 
-        let mut spans = render_spinner_spans_with_activity(
+        let mut spans = render_spinner_spans_with_icons(
             spinner_style,
             millis,
             c1,
@@ -1069,6 +1205,7 @@ pub fn render_live_activity_line_full(
             theme,
             Some(emoji_glyph),
             Some(kaomoji_face),
+            Some(nf_icon),
         );
         spans.extend(render_shimmer_spans(&label, c1, c2, millis, 160.0, 0.32));
         spans.extend(render_activity_hint_spans(
@@ -1086,6 +1223,7 @@ pub fn render_live_activity_line_full(
         None,
         Emoji,
         Kaomoji,
+        NerdFont,
     }
 
     #[derive(Clone, Copy, PartialEq, Eq)]
@@ -1104,6 +1242,9 @@ pub fn render_live_activity_line_full(
         ActivityBarStyle::KaomojiDetail
         | ActivityBarStyle::KaomojiTool
         | ActivityBarStyle::KaomojiTrail => PostPipeBadgeKind::Kaomoji,
+        ActivityBarStyle::NfDetail | ActivityBarStyle::NfTool | ActivityBarStyle::NfTrail => {
+            PostPipeBadgeKind::NerdFont
+        }
         ActivityBarStyle::ActionDetail
         | ActivityBarStyle::ActionTool
         | ActivityBarStyle::HermesTrail
@@ -1115,19 +1256,22 @@ pub fn render_live_activity_line_full(
     let pipe_format = match activity_style {
         ActivityBarStyle::ActionTool
         | ActivityBarStyle::EmojiTool
-        | ActivityBarStyle::KaomojiTool => PipeFormatKind::ToolOnly,
+        | ActivityBarStyle::KaomojiTool
+        | ActivityBarStyle::NfTool => PipeFormatKind::ToolOnly,
         ActivityBarStyle::HermesTrail
         | ActivityBarStyle::EmojiTrail
-        | ActivityBarStyle::KaomojiTrail => PipeFormatKind::Trail,
+        | ActivityBarStyle::KaomojiTrail
+        | ActivityBarStyle::NfTrail => PipeFormatKind::Trail,
         ActivityBarStyle::CompactBadge => PipeFormatKind::CompactBadge,
         ActivityBarStyle::CyberArrow => PipeFormatKind::CyberArrow,
         ActivityBarStyle::ActionDetail
         | ActivityBarStyle::EmojiDetail
         | ActivityBarStyle::KaomojiDetail
+        | ActivityBarStyle::NfDetail
         | ActivityBarStyle::Classic => PipeFormatKind::Detail,
     };
 
-    let mut spans = render_spinner_spans_with_activity(
+    let mut spans = render_spinner_spans_with_icons(
         spinner_style,
         millis,
         c1,
@@ -1135,9 +1279,10 @@ pub fn render_live_activity_line_full(
         theme,
         Some(emoji_glyph),
         Some(kaomoji_face),
+        Some(nf_icon),
     );
 
-    // Helper closure: renders the Emoji or Kaomoji badge ONLY after the `|` pipe
+    // Helper closure: renders the Emoji, Kaomoji, or Nerd Font badge ONLY after the `|` pipe
     // with the current theme's dynamic sine-wave gradient animation!
     let push_post_pipe_badge = |spans: &mut Vec<Span<'static>>| match badge_kind {
         PostPipeBadgeKind::None => {}
@@ -1160,6 +1305,15 @@ pub fn render_live_activity_line_full(
                 millis,
                 160.0,
                 0.32,
+            ));
+        }
+        PostPipeBadgeKind::NerdFont => {
+            let nf_phase = phase_rad(millis, 160.0);
+            let nf_factor = (nf_phase.sin() * 0.5 + 0.5).clamp(0.0, 1.0);
+            let nf_color = lerp_color(c1, c2, nf_factor);
+            spans.push(Span::styled(
+                format!("{} ", nf_icon),
+                Style::default().fg(nf_color).add_modifier(Modifier::BOLD),
             ));
         }
     };
@@ -1787,5 +1941,63 @@ mod tests {
         assert!(!hidden_by_style.contains("6.3s") && !hidden_by_style.contains("esc"));
         let hidden_by_toggle = line_text(ActivityHintStyle::Classic, false, true);
         assert!(!hidden_by_toggle.contains("6.3s") && !hidden_by_toggle.contains("esc"));
+    }
+
+    #[test]
+    fn test_nerd_font_spinners_and_activity_bar_styles() {
+        use crate::config::{ActivityBarStyle, ActivityHintStyle};
+
+        let theme = Theme::default();
+        let write_act = AgentActivity::WritingFile {
+            tool: "write_file".to_string(),
+            path: "src/App.tsx".to_string(),
+        };
+
+        for (style, expected_icon) in [
+            (SpinnerStyle::NerdActivity, "\u{f044}"),
+            (SpinnerStyle::NerdOrbit, "\u{f044}"),
+        ] {
+            let line = render_live_activity_line_full(
+                &write_act,
+                style,
+                ActivityBarStyle::NfDetail,
+                ActivityHintStyle::Classic,
+                true,
+                320,
+                4.5,
+                &theme,
+            );
+            let txt: String = line
+                .spans
+                .into_iter()
+                .map(|s| s.content.into_owned())
+                .collect();
+            assert!(
+                txt.contains(expected_icon)
+                    && txt.contains("write_file")
+                    && txt.contains("src/App.tsx"),
+                "Expected Nerd Font icon {:?} in activity line, got: {txt}",
+                expected_icon
+            );
+        }
+
+        // NfTool omits path while retaining themed Nerd Font icon
+        let nf_tool = render_live_activity_line_with_style(
+            &write_act,
+            SpinnerStyle::DualPillars,
+            ActivityBarStyle::NfTool,
+            320,
+            2.0,
+            &theme,
+        );
+        let nf_tool_txt: String = nf_tool
+            .spans
+            .into_iter()
+            .map(|s| s.content.into_owned())
+            .collect();
+        assert!(
+            nf_tool_txt.contains("\u{f044} write_file") && !nf_tool_txt.contains("src/App.tsx"),
+            "NfTool unexpected output: {nf_tool_txt}"
+        );
     }
 }

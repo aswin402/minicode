@@ -988,6 +988,8 @@ pub enum ToastSymbolTheme {
     Cyber,
     /// Compact bracketed status tags (`[OK]`, `[i]`, `[!]`, `[ERR]`, `[BOT]`, `[TSK]`, `[SKL]`)
     Bracket,
+    /// Nerd Font FontAwesome vector icons (``, ``, ``, ``, ``, ``, ``)
+    NerdFont,
 }
 
 const TOAST_SYMBOL_THEME_TABLE: &[(ToastSymbolTheme, &str, &[&str])] = &[
@@ -1014,12 +1016,17 @@ const TOAST_SYMBOL_THEME_TABLE: &[(ToastSymbolTheme, &str, &[&str])] = &[
     (
         ToastSymbolTheme::Cyber,
         "cyber",
-        &["cyber", "nerd", "tech", "operator"],
+        &["cyber", "tech", "operator"],
     ),
     (
         ToastSymbolTheme::Bracket,
         "bracket",
         &["bracket", "brackets", "tags", "badge"],
+    ),
+    (
+        ToastSymbolTheme::NerdFont,
+        "nerdfont",
+        &["nerdfont", "nerd", "nf", "fontawesome", "fa"],
     ),
 ];
 
@@ -1077,6 +1084,12 @@ pub enum ActivityBarStyle {
     CompactBadge,
     /// Cyber Telemetry Arrow: `Action... | ▸ tool_name ──▸ target`
     CyberArrow,
+    /// Nerd Font + Style 1: `Action... | <nf-icon> tool_name · target` (themed vector icon after `|`)
+    NfDetail,
+    /// Nerd Font + Style 2: `Action... | <nf-icon> tool_name` (themed vector icon after `|`)
+    NfTool,
+    /// Nerd Font + Style 3: `Working... | <nf-icon> <action target>` (Hermes trail with Nerd Font icon)
+    NfTrail,
 }
 
 #[allow(dead_code)]
@@ -1096,6 +1109,9 @@ impl ActivityBarStyle {
             Self::KaomojiTrail => "kaomoji_trail",
             Self::CompactBadge => "compact_badge",
             Self::CyberArrow => "cyber_arrow",
+            Self::NfDetail => "nf_detail",
+            Self::NfTool => "nf_tool",
+            Self::NfTrail => "nf_trail",
         }
     }
 
@@ -1114,6 +1130,9 @@ impl ActivityBarStyle {
             "kaomoji_trail" | "kaomoji_hermes" | "kaomoji3" => Self::KaomojiTrail,
             "compact_badge" | "badge" | "pill" => Self::CompactBadge,
             "cyber_arrow" | "arrow" | "cyber" => Self::CyberArrow,
+            "nf_detail" | "nerdfont" | "nerd_detail" | "nf1" => Self::NfDetail,
+            "nf_tool" | "nerd_tool" | "nf2" => Self::NfTool,
+            "nf_trail" | "nerd_trail" | "nf3" => Self::NfTrail,
             _ => Self::ActionDetail,
         }
     }
@@ -1204,6 +1223,12 @@ pub enum StatusBarStyle {
     Brackets,
     /// Crisp geometric operator indicators (`◈ model · ⚡effort · ⌂ path · ⎇ branch`)
     Icons,
+    /// Nerd Font clean icon bar (` model ·  effort │  path ·  branch`)
+    NerdIcons,
+    /// Oh My Posh rounded capsules with Nerd Font icons (` model  effort  path  branch`)
+    NerdBubbles,
+    /// Oh My Posh seamless Powerline ribbon with Nerd Font icons (`  model   effort   path   branch `)
+    NerdPowerline,
 }
 
 #[allow(dead_code)]
@@ -1224,6 +1249,9 @@ impl StatusBarStyle {
             Self::Minimal => "minimal",
             Self::Brackets => "brackets",
             Self::Icons => "icons",
+            Self::NerdIcons => "nerd_icons",
+            Self::NerdBubbles => "nerd_bubbles",
+            Self::NerdPowerline => "nerd_powerline",
         }
     }
 
@@ -1241,7 +1269,10 @@ impl StatusBarStyle {
             "compact" | "dense" | "short" => Self::Compact,
             "minimal" | "clean" | "plain" => Self::Minimal,
             "brackets" | "bracket" | "tags" => Self::Brackets,
-            "icons" | "icon" | "glyphs" | "nerd" => Self::Icons,
+            "icons" | "icon" | "glyphs" => Self::Icons,
+            "nerd_icons" | "nerdfont" | "nerd" | "nf" => Self::NerdIcons,
+            "nerd_bubbles" | "nf_bubbles" => Self::NerdBubbles,
+            "nerd_powerline" | "nf_powerline" => Self::NerdPowerline,
             _ => Self::Classic,
         }
     }
@@ -1270,6 +1301,10 @@ pub enum ContextMeterStyle {
     Minimal,
     /// Sleek thin horizontal line gauge `━━──────── 21%`
     Gauge,
+    /// Nerd Font icons + pie gauge (` 98% •  ◔ 21%`)
+    NerdIcons,
+    /// Nerd Font icons + sleek block progress bar (` 98% •  [██░░░░░░░░] 21%`)
+    NerdBar,
 }
 
 #[allow(dead_code)]
@@ -1286,6 +1321,8 @@ impl ContextMeterStyle {
             Self::Pills => "pills",
             Self::Minimal => "minimal",
             Self::Gauge => "gauge",
+            Self::NerdIcons => "nerd_icons",
+            Self::NerdBar => "nerd_bar",
         }
     }
 
@@ -1300,6 +1337,8 @@ impl ContextMeterStyle {
             "pills" | "pill" | "chips" => Self::Pills,
             "minimal" | "clean" => Self::Minimal,
             "gauge" | "line" | "thin" => Self::Gauge,
+            "nerd_icons" | "nerd" | "nerdfont" | "nf" => Self::NerdIcons,
+            "nerd_bar" | "nf_bar" => Self::NerdBar,
             _ => Self::Compact,
         }
     }
@@ -1336,6 +1375,10 @@ pub enum ModeBarStyle {
     Brackets,
     /// Operator glyph indicators (`✦ ponytail:full · ◈ caveman:full · ⚡stream`)
     Icons,
+    /// Nerd Font clean icons (` ponytail·full ·  caveman·full ·  stream`)
+    NerdIcons,
+    /// Oh My Posh rounded capsules with Nerd Font icons (` ponytail·full  caveman·full  stream`)
+    NerdBubbles,
     /// Hide the entire mode strip
     Hidden,
 }
@@ -1358,6 +1401,8 @@ impl ModeBarStyle {
             Self::Minimal => "minimal",
             Self::Brackets => "brackets",
             Self::Icons => "icons",
+            Self::NerdIcons => "nerd_icons",
+            Self::NerdBubbles => "nerd_bubbles",
             Self::Hidden => "hidden",
         }
     }
@@ -1377,6 +1422,8 @@ impl ModeBarStyle {
             "minimal" | "clean" | "plain" => Self::Minimal,
             "brackets" | "bracket" | "tags" => Self::Brackets,
             "icons" | "icon" | "glyphs" => Self::Icons,
+            "nerd_icons" | "nerd" | "nerdfont" | "nf" => Self::NerdIcons,
+            "nerd_bubbles" | "nf_bubbles" => Self::NerdBubbles,
             "hidden" | "hide" | "off" | "none" => Self::Hidden,
             _ => Self::Classic,
         }
@@ -1468,6 +1515,21 @@ pub struct UiConfig {
 
     #[serde(default = "default_status_bar_style")]
     pub status_bar_style: String,
+
+    #[serde(default = "default_inherit_style")]
+    pub status_model_style: String,
+
+    #[serde(default = "default_inherit_style")]
+    pub status_effort_style: String,
+
+    #[serde(default = "default_inherit_style")]
+    pub status_path_style: String,
+
+    #[serde(default = "default_inherit_style")]
+    pub status_git_style: String,
+
+    #[serde(default = "default_inherit_style")]
+    pub status_badges_style: String,
 
     #[serde(default = "default_context_meter_style")]
     pub context_meter_style: String,
@@ -1572,6 +1634,44 @@ impl UiConfig {
     }
 
     #[must_use]
+    pub fn resolve_status_component_style(raw: &str) -> Option<StatusBarStyle> {
+        let trimmed = raw.trim();
+        if trimmed.is_empty()
+            || trimmed.eq_ignore_ascii_case("inherit")
+            || trimmed.eq_ignore_ascii_case("default")
+        {
+            None
+        } else {
+            Some(StatusBarStyle::from_str_loose(trimmed))
+        }
+    }
+
+    #[must_use]
+    pub fn status_model_style_override(&self) -> Option<StatusBarStyle> {
+        Self::resolve_status_component_style(&self.status_model_style)
+    }
+
+    #[must_use]
+    pub fn status_effort_style_override(&self) -> Option<StatusBarStyle> {
+        Self::resolve_status_component_style(&self.status_effort_style)
+    }
+
+    #[must_use]
+    pub fn status_path_style_override(&self) -> Option<StatusBarStyle> {
+        Self::resolve_status_component_style(&self.status_path_style)
+    }
+
+    #[must_use]
+    pub fn status_git_style_override(&self) -> Option<StatusBarStyle> {
+        Self::resolve_status_component_style(&self.status_git_style)
+    }
+
+    #[must_use]
+    pub fn status_badges_style_override(&self) -> Option<StatusBarStyle> {
+        Self::resolve_status_component_style(&self.status_badges_style)
+    }
+
+    #[must_use]
     pub fn context_meter_style_enum(&self) -> ContextMeterStyle {
         ContextMeterStyle::from_str_loose(&self.context_meter_style)
     }
@@ -1600,6 +1700,11 @@ impl Default for UiConfig {
             menu_style: default_menu_style(),
             input_box_style: default_input_box_style(),
             status_bar_style: default_status_bar_style(),
+            status_model_style: default_inherit_style(),
+            status_effort_style: default_inherit_style(),
+            status_path_style: default_inherit_style(),
+            status_git_style: default_inherit_style(),
+            status_badges_style: default_inherit_style(),
             context_meter_style: default_context_meter_style(),
             mode_bar_style: default_mode_bar_style(),
             activity_hint_style: default_activity_hint_style(),
@@ -1660,6 +1765,10 @@ fn default_input_box_style() -> String {
 
 fn default_status_bar_style() -> String {
     "classic".to_string()
+}
+
+fn default_inherit_style() -> String {
+    "inherit".to_string()
 }
 
 fn default_context_meter_style() -> String {

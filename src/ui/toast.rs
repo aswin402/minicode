@@ -70,6 +70,18 @@ pub const TOAST_SYMBOL_PALETTES: &[ToastSymbolPalette] = &[
         theme: crate::config::ToastSymbolTheme::Bracket,
         glyphs: ["[OK]", "[i]", "[!]", "[ERR]", "[BOT]", "[TSK]", "[SKL]"],
     },
+    ToastSymbolPalette {
+        theme: crate::config::ToastSymbolTheme::NerdFont,
+        glyphs: [
+            "\u{f00c}", //  fa-check (Success)
+            "\u{f05a}", //  fa-info-circle (Info)
+            "\u{f071}", //  fa-exclamation-triangle (Warning)
+            "\u{f00d}", //  fa-times (Error)
+            "\u{f085}", //  fa-cogs (Subagent)
+            "\u{f0ae}", //  fa-tasks (Task)
+            "\u{f0e7}", //  fa-bolt (Skill)
+        ],
+    },
 ];
 
 impl ToastKind {

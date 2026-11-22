@@ -40,6 +40,53 @@ use crate::ui::theme::Theme;
 use ratatui::layout::Rect;
 use ratatui::Frame;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum StatusBarTarget {
+    #[default]
+    All,
+    Model,
+    Effort,
+    Path,
+    Git,
+    Badges,
+}
+
+impl StatusBarTarget {
+    pub const fn all() -> &'static [StatusBarTarget] {
+        &[
+            StatusBarTarget::All,
+            StatusBarTarget::Model,
+            StatusBarTarget::Effort,
+            StatusBarTarget::Path,
+            StatusBarTarget::Git,
+            StatusBarTarget::Badges,
+        ]
+    }
+
+    pub const fn label(self) -> &'static str {
+        match self {
+            StatusBarTarget::All => "All (Global)",
+            StatusBarTarget::Model => "Model",
+            StatusBarTarget::Effort => "Effort",
+            StatusBarTarget::Path => "Path",
+            StatusBarTarget::Git => "Git",
+            StatusBarTarget::Badges => "Badges",
+        }
+    }
+
+    pub fn next(self) -> Self {
+        let all = Self::all();
+        let idx = all.iter().position(|t| *t == self).unwrap_or(0);
+        all[(idx + 1) % all.len()]
+    }
+
+    pub fn prev(self) -> Self {
+        let all = Self::all();
+        let idx = all.iter().position(|t| *t == self).unwrap_or(0);
+        all[(idx + all.len() - 1) % all.len()]
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ThemeModalTab {
     Themes,
@@ -216,6 +263,7 @@ pub enum ModalState {
         menu_style_selected_index: usize,
         input_box_style_selected_index: usize,
         status_bar_style_selected_index: usize,
+        status_bar_target: StatusBarTarget,
         context_meter_style_selected_index: usize,
         mode_bar_style_selected_index: usize,
         activity_hint_style_selected_index: usize,
@@ -750,6 +798,7 @@ impl ModalState {
             menu_style_selected_index: 0,
             input_box_style_selected_index: 0,
             status_bar_style_selected_index: 0,
+            status_bar_target: StatusBarTarget::All,
             context_meter_style_selected_index: 0,
             mode_bar_style_selected_index: 0,
             activity_hint_style_selected_index: 0,
@@ -1324,6 +1373,7 @@ impl ModalState {
                 menu_style_selected_index,
                 input_box_style_selected_index,
                 status_bar_style_selected_index,
+                status_bar_target,
                 context_meter_style_selected_index,
                 mode_bar_style_selected_index,
                 activity_hint_style_selected_index,
@@ -1363,6 +1413,7 @@ impl ModalState {
                     menu_style_selected_index: *menu_style_selected_index,
                     input_box_style_selected_index: *input_box_style_selected_index,
                     status_bar_style_selected_index: *status_bar_style_selected_index,
+                    status_bar_target: *status_bar_target,
                     context_meter_style_selected_index: *context_meter_style_selected_index,
                     mode_bar_style_selected_index: *mode_bar_style_selected_index,
                     activity_hint_style_selected_index: *activity_hint_style_selected_index,

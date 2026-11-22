@@ -104,6 +104,11 @@ pub struct RawUiConfig {
     pub menu_style: Option<String>,
     pub input_box_style: Option<String>,
     pub status_bar_style: Option<String>,
+    pub status_model_style: Option<String>,
+    pub status_effort_style: Option<String>,
+    pub status_path_style: Option<String>,
+    pub status_git_style: Option<String>,
+    pub status_badges_style: Option<String>,
     pub context_meter_style: Option<String>,
     pub mode_bar_style: Option<String>,
     pub activity_hint_style: Option<String>,
@@ -912,6 +917,21 @@ impl Config {
         if let Some(status_bar_style) = other.ui.status_bar_style {
             self.ui.status_bar_style = status_bar_style;
         }
+        if let Some(v) = other.ui.status_model_style {
+            self.ui.status_model_style = v;
+        }
+        if let Some(v) = other.ui.status_effort_style {
+            self.ui.status_effort_style = v;
+        }
+        if let Some(v) = other.ui.status_path_style {
+            self.ui.status_path_style = v;
+        }
+        if let Some(v) = other.ui.status_git_style {
+            self.ui.status_git_style = v;
+        }
+        if let Some(v) = other.ui.status_badges_style {
+            self.ui.status_badges_style = v;
+        }
         if let Some(context_meter_style) = other.ui.context_meter_style {
             self.ui.context_meter_style = context_meter_style;
         }
@@ -1160,6 +1180,21 @@ impl Config {
         }
         if let Some(ref status_bar_style) = global.ui.status_bar_style {
             self.ui.status_bar_style = status_bar_style.clone();
+        }
+        if let Some(ref v) = global.ui.status_model_style {
+            self.ui.status_model_style = v.clone();
+        }
+        if let Some(ref v) = global.ui.status_effort_style {
+            self.ui.status_effort_style = v.clone();
+        }
+        if let Some(ref v) = global.ui.status_path_style {
+            self.ui.status_path_style = v.clone();
+        }
+        if let Some(ref v) = global.ui.status_git_style {
+            self.ui.status_git_style = v.clone();
+        }
+        if let Some(ref v) = global.ui.status_badges_style {
+            self.ui.status_badges_style = v.clone();
         }
         if let Some(ref context_meter_style) = global.ui.context_meter_style {
             self.ui.context_meter_style = context_meter_style.clone();

@@ -16,6 +16,11 @@ static HOME_DIR: OnceLock<Option<PathBuf>> = OnceLock::new();
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StatusDisplayOptions {
     pub status_bar_style: crate::config::StatusBarStyle,
+    pub status_model_style: Option<crate::config::StatusBarStyle>,
+    pub status_effort_style: Option<crate::config::StatusBarStyle>,
+    pub status_path_style: Option<crate::config::StatusBarStyle>,
+    pub status_git_style: Option<crate::config::StatusBarStyle>,
+    pub status_badges_style: Option<crate::config::StatusBarStyle>,
     pub context_meter_style: crate::config::ContextMeterStyle,
     pub show_kv_cache: bool,
     pub show_context_meter: bool,
@@ -30,6 +35,11 @@ impl Default for StatusDisplayOptions {
     fn default() -> Self {
         Self {
             status_bar_style: crate::config::StatusBarStyle::Classic,
+            status_model_style: None,
+            status_effort_style: None,
+            status_path_style: None,
+            status_git_style: None,
+            status_badges_style: None,
             context_meter_style: crate::config::ContextMeterStyle::Compact,
             show_kv_cache: true,
             show_context_meter: true,
@@ -47,6 +57,11 @@ impl StatusDisplayOptions {
     pub fn from_ui_config(ui: &crate::config::UiConfig) -> Self {
         Self {
             status_bar_style: ui.status_bar_style_enum(),
+            status_model_style: ui.status_model_style_override(),
+            status_effort_style: ui.status_effort_style_override(),
+            status_path_style: ui.status_path_style_override(),
+            status_git_style: ui.status_git_style_override(),
+            status_badges_style: ui.status_badges_style_override(),
             context_meter_style: ui.context_meter_style_enum(),
             show_kv_cache: ui.show_kv_cache,
             show_context_meter: ui.show_context_meter,
@@ -346,6 +361,17 @@ impl StatusWidgets {
                         Style::default().fg(theme.muted),
                     ));
                 }
+                ContextMeterStyle::NerdIcons | ContextMeterStyle::NerdBar => {
+                    push_sep(&mut spans, &mut has_prev, " • ");
+                    spans.push(Span::styled(
+                        "\u{f1c0} ",
+                        Style::default().fg(kv_color(hit_pct)),
+                    ));
+                    spans.push(Span::styled(
+                        format!("{}%", hit_pct),
+                        Style::default().fg(kv_color(hit_pct)),
+                    ));
+                }
             }
         }
 
@@ -502,6 +528,43 @@ impl StatusWidgets {
                         Style::default().fg(used_color).add_modifier(Modifier::BOLD),
                     ));
                 }
+                ContextMeterStyle::NerdIcons => {
+                    push_sep(&mut spans, &mut has_prev, " • ");
+                    spans.push(Span::styled("\u{f2db} ", Style::default().fg(used_color)));
+                    spans.push(Span::styled(
+                        format!("{} ", pie_glyph(ratio)),
+                        Style::default().fg(used_color).add_modifier(Modifier::BOLD),
+                    ));
+                    spans.push(Span::styled(
+                        format!("{}%", pct),
+                        Style::default().fg(used_color).add_modifier(Modifier::BOLD),
+                    ));
+                }
+                ContextMeterStyle::NerdBar => {
+                    push_sep(&mut spans, &mut has_prev, " • ");
+                    let width = 8usize;
+                    let filled = ((ratio * width as f64).round() as usize).min(width);
+                    let empty = width.saturating_sub(filled);
+                    spans.push(Span::styled("\u{f2db} ", Style::default().fg(used_color)));
+                    spans.push(Span::styled("[", Style::default().fg(theme.border)));
+                    if filled > 0 {
+                        spans.push(Span::styled(
+                            "█".repeat(filled),
+                            Style::default().fg(used_color),
+                        ));
+                    }
+                    if empty > 0 {
+                        spans.push(Span::styled(
+                            "░".repeat(empty),
+                            Style::default().fg(theme.border),
+                        ));
+                    }
+                    spans.push(Span::styled("] ", Style::default().fg(theme.border)));
+                    spans.push(Span::styled(
+                        format!("{}%", pct),
+                        Style::default().fg(used_color).add_modifier(Modifier::BOLD),
+                    ));
+                }
             }
         }
 
@@ -598,6 +661,7 @@ impl StatusWidgets {
             posh: String,
             short: String,
             icon: &'static str,
+            nf_icon: &'static str,
             active: bool,
             color: ratatui::style::Color,
         }
@@ -621,6 +685,7 @@ impl StatusWidgets {
                     "pt:off".to_string()
                 },
                 icon: "✦",
+                nf_icon: "\u{f135}", //  fa-rocket
                 active: ponytail_active,
                 color: theme.brand_accent,
             });
@@ -643,6 +708,7 @@ impl StatusWidgets {
                     "cm:off".to_string()
                 },
                 icon: "◈",
+                nf_icon: "\u{f06d}", //  fa-fire
                 active: caveman_active,
                 color: theme.warning,
             });
@@ -653,6 +719,7 @@ impl StatusWidgets {
                 posh: "stream".to_string(),
                 short: "strm".to_string(),
                 icon: "⚡",
+                nf_icon: "\u{f0e7}", //  fa-bolt
                 active: streaming_active,
                 color: theme.success,
             });
@@ -804,6 +871,26 @@ impl StatusWidgets {
                     spans.push(Span::styled(format!("{} ", item.icon), fg_style));
                     spans.push(Span::styled(item.full.clone(), fg_style));
                 }
+                ModeBarStyle::NerdIcons => {
+                    if idx > 0 {
+                        spans.push(Span::styled(" · ", Style::default().fg(theme.muted)));
+                    }
+                    spans.push(Span::styled(format!("{} ", item.nf_icon), fg_style));
+                    spans.push(Span::styled(item.posh.clone(), fg_style));
+                }
+                ModeBarStyle::NerdBubbles => {
+                    if idx > 0 {
+                        spans.push(Span::styled(" ", Style::default().bg(bar_bg)));
+                    }
+                    let seg_bg = item_bg(item);
+                    let cap_style = Style::default().fg(seg_bg).bg(bar_bg);
+                    spans.push(Span::styled("\u{e0b6}", cap_style));
+                    spans.push(Span::styled(
+                        format!("{} {}", item.nf_icon, item.posh),
+                        fg_style.bg(seg_bg),
+                    ));
+                    spans.push(Span::styled("\u{e0b4}", cap_style));
+                }
                 ModeBarStyle::Hidden => {}
             }
         }
@@ -868,19 +955,42 @@ impl StatusWidgets {
     ) -> Vec<Span<'static>> {
         use crate::config::StatusBarStyle;
 
-        let style = display.status_bar_style;
-        let is_posh_ribbon = matches!(style, StatusBarStyle::Powerline | StatusBarStyle::PoshSlant);
-        let is_posh_clean = matches!(
-            style,
-            StatusBarStyle::PoshPure
-                | StatusBarStyle::PoshSlash
-                | StatusBarStyle::PoshVelvet
-                | StatusBarStyle::Pills
-                | StatusBarStyle::PoshBubbles
-                | StatusBarStyle::Powerline
-                | StatusBarStyle::PoshSlant
-                | StatusBarStyle::PoshDiamond
-        );
+        let global_style = display.status_bar_style;
+        let model_style = display.status_model_style.unwrap_or(global_style);
+        let effort_style = display.status_effort_style.unwrap_or(global_style);
+        let path_style = display.status_path_style.unwrap_or(global_style);
+        let git_style = display.status_git_style.unwrap_or(global_style);
+        let badges_style = display.status_badges_style.unwrap_or(global_style);
+
+        let is_ribbon_style = |st: StatusBarStyle| {
+            matches!(
+                st,
+                StatusBarStyle::Powerline
+                    | StatusBarStyle::NerdPowerline
+                    | StatusBarStyle::PoshSlant
+            )
+        };
+        let ribbon_glyph = |st: StatusBarStyle| -> &'static str {
+            if st == StatusBarStyle::PoshSlant {
+                "\u{e0b8}" // 
+            } else {
+                "\u{e0b0}" // 
+            }
+        };
+        let has_fancy_styles = [
+            model_style,
+            effort_style,
+            path_style,
+            git_style,
+            badges_style,
+        ]
+        .iter()
+        .any(|s| {
+            !matches!(
+                s,
+                StatusBarStyle::Classic | StatusBarStyle::Compact | StatusBarStyle::Minimal
+            )
+        });
 
         let provider_prefix = format!("{}/", provider);
         let full_provider_model = if model.starts_with(&provider_prefix) {
@@ -888,7 +998,7 @@ impl StatusWidgets {
         } else {
             format!("{}/{}", provider, model)
         };
-        let model_display = if style == StatusBarStyle::Compact {
+        let model_display = if model_style == StatusBarStyle::Compact {
             model.rsplit('/').next().unwrap_or(model).to_string()
         } else {
             full_provider_model
@@ -899,7 +1009,7 @@ impl StatusWidgets {
         } else {
             effort_level.trim()
         };
-        let level_label = if style == StatusBarStyle::Compact {
+        let level_label = if effort_style == StatusBarStyle::Compact {
             match raw_level {
                 "medium" => "med",
                 "high" => "hi",
@@ -931,7 +1041,7 @@ impl StatusWidgets {
         let active_tasks = display.show_status_badges && task_count > 0;
         let active_web = display.show_status_badges.then_some(web_badge).flatten();
 
-        let pad_per_seg = if is_posh_clean { 4 } else { 3 };
+        let pad_per_seg = if has_fancy_styles { 4 } else { 3 };
         let base_model_w = usize::from(display.show_status_model)
             * (pad_per_seg + unicode_width::UnicodeWidthStr::width(model_display.as_str()))
             + usize::from(display.show_status_effort)
@@ -953,7 +1063,7 @@ impl StatusWidgets {
             0
         };
         let badges_full_w = git_w + mcp_full_w + swarm_full_w + tasks_full_w;
-        let path_source = if style == StatusBarStyle::Compact {
+        let path_source = if path_style == StatusBarStyle::Compact {
             display_path
                 .rsplit('/')
                 .find(|s| !s.is_empty())
@@ -997,7 +1107,9 @@ impl StatusWidgets {
 
         struct StatusSeg {
             group: SegmentGroup,
+            style: StatusBarStyle,
             icon: Option<&'static str>,
+            nf_icon: Option<&'static str>,
             pure_prefix: Option<&'static str>,
             text: String,
             accent: ratatui::style::Color,
@@ -1010,7 +1122,9 @@ impl StatusWidgets {
         if display.show_status_model {
             planned.push(StatusSeg {
                 group: SegmentGroup::Primary,
+                style: model_style,
                 icon: Some("◈"),
+                nf_icon: Some("\u{f2db}"), //  fa-microchip
                 pure_prefix: None,
                 text: model_display,
                 accent: theme.warning,
@@ -1021,7 +1135,9 @@ impl StatusWidgets {
         if display.show_status_effort {
             planned.push(StatusSeg {
                 group: SegmentGroup::Primary,
+                style: effort_style,
                 icon: Some("⚡"),
+                nf_icon: Some("\u{f0e7}"), //  fa-bolt
                 pure_prefix: None,
                 text: level_label.to_string(),
                 accent: level_color,
@@ -1032,7 +1148,9 @@ impl StatusWidgets {
         if display.show_status_path {
             planned.push(StatusSeg {
                 group: SegmentGroup::Secondary,
+                style: path_style,
                 icon: Some("⌂"),
+                nf_icon: Some("\u{f07b}"), //  fa-folder
                 pure_prefix: None,
                 text: fitted_path,
                 accent: theme.info,
@@ -1041,10 +1159,13 @@ impl StatusWidgets {
             });
         }
         if let Some(branch) = git_branch_opt {
-            let seg = match style {
-                StatusBarStyle::Compact | StatusBarStyle::Minimal | StatusBarStyle::Icons => {
-                    branch.to_string()
-                }
+            let seg = match git_style {
+                StatusBarStyle::Compact
+                | StatusBarStyle::Minimal
+                | StatusBarStyle::Icons
+                | StatusBarStyle::NerdIcons
+                | StatusBarStyle::NerdBubbles
+                | StatusBarStyle::NerdPowerline => branch.to_string(),
                 StatusBarStyle::PoshPure
                 | StatusBarStyle::PoshSlash
                 | StatusBarStyle::PoshVelvet
@@ -1057,7 +1178,9 @@ impl StatusWidgets {
             };
             planned.push(StatusSeg {
                 group: SegmentGroup::Secondary,
+                style: git_style,
                 icon: Some("⎇"),
+                nf_icon: Some("\u{e725}"), //  dev-git_branch
                 pure_prefix: Some("on "),
                 text: seg,
                 accent: theme.success,
@@ -1066,12 +1189,14 @@ impl StatusWidgets {
             });
         }
         if let Some(mut seg) = mcp_short {
-            if !compact_badges && style == StatusBarStyle::Classic {
+            if !compact_badges && badges_style == StatusBarStyle::Classic {
                 seg.push_str(" active");
             }
             planned.push(StatusSeg {
                 group: SegmentGroup::Secondary,
+                style: badges_style,
                 icon: Some("⊕"),
+                nf_icon: Some("\u{f233}"), //  fa-server
                 pure_prefix: None,
                 text: seg,
                 accent: theme.brand_accent,
@@ -1080,12 +1205,14 @@ impl StatusWidgets {
             });
         }
         if let Some(mut seg) = swarm_short {
-            if !compact_badges && style == StatusBarStyle::Classic {
+            if !compact_badges && badges_style == StatusBarStyle::Classic {
                 seg.push_str(" active");
             }
             planned.push(StatusSeg {
                 group: SegmentGroup::Secondary,
+                style: badges_style,
                 icon: Some("❖"),
+                nf_icon: Some("\u{f085}"), //  fa-cogs
                 pure_prefix: None,
                 text: seg,
                 accent: theme.info,
@@ -1108,7 +1235,9 @@ impl StatusWidgets {
             };
             planned.push(StatusSeg {
                 group: SegmentGroup::Secondary,
+                style: badges_style,
                 icon: Some("⚙"),
+                nf_icon: Some("\u{f0ae}"), //  fa-tasks
                 pure_prefix: None,
                 text: badge_text,
                 accent: task_color,
@@ -1119,7 +1248,9 @@ impl StatusWidgets {
         if let Some(web) = active_web {
             planned.push(StatusSeg {
                 group: SegmentGroup::Secondary,
+                style: badges_style,
                 icon: Some("◎"),
+                nf_icon: Some("\u{f0ac}"), //  fa-globe
                 pure_prefix: None,
                 text: web.to_string(),
                 accent: theme.brand_accent,
@@ -1132,53 +1263,6 @@ impl StatusWidgets {
             return Vec::new();
         }
 
-        // Seamless Oh My Posh contiguous ribbon styles (Powerline `` & Slant ``)
-        if is_posh_ribbon {
-            let sep_glyph = if style == StatusBarStyle::PoshSlant {
-                "\u{e0b8}" // 
-            } else {
-                "\u{e0b0}" // 
-            };
-            let mut accepted: Vec<&StatusSeg> = Vec::with_capacity(planned.len());
-            let mut used_w = 1usize; // leading space
-            for seg in &planned {
-                let seg_w = unicode_width::UnicodeWidthStr::width(seg.text.as_str()) + 3; // " text " + cap
-                if !seg.optional || used_w + seg_w <= left_budget {
-                    used_w += seg_w;
-                    accepted.push(seg);
-                }
-            }
-            if accepted.is_empty() {
-                return Vec::new();
-            }
-
-            let mut spans: Vec<Span<'static>> =
-                vec![Span::styled(" ", Style::default().bg(bar_bg))];
-            let mut prev_bg: Option<ratatui::style::Color> = None;
-            for seg in &accepted {
-                let seg_bg = Self::tint_bg(seg.accent, bar_bg, theme.bg_elevated, 0.22);
-                if let Some(p_bg) = prev_bg {
-                    spans.push(Span::styled(
-                        sep_glyph,
-                        Style::default().fg(p_bg).bg(seg_bg),
-                    ));
-                }
-                let mut text_st = Style::default().fg(seg.accent).bg(seg_bg);
-                if seg.bold {
-                    text_st = text_st.add_modifier(Modifier::BOLD);
-                }
-                spans.push(Span::styled(format!(" {} ", seg.text), text_st));
-                prev_bg = Some(seg_bg);
-            }
-            if let Some(last_bg) = prev_bg {
-                spans.push(Span::styled(
-                    sep_glyph,
-                    Style::default().fg(last_bg).bg(bar_bg),
-                ));
-            }
-            return spans;
-        }
-
         let current_left_width = |spans: &[Span]| -> usize {
             spans
                 .iter()
@@ -1186,56 +1270,101 @@ impl StatusWidgets {
                 .sum()
         };
 
+        // Unified per-segment compositor: seamlessly links adjacent ribbon segments of the same
+        // ribbon family (`Powerline`/`NerdPowerline`/`PoshSlant`), cleanly closes any ribbon cap
+        // when transitioning into a non-ribbon segment, and supports arbitrary mixed component styles!
         let mut left_spans: Vec<Span<'static>> = Vec::new();
         let mut last_group: Option<SegmentGroup> = None;
+        let mut open_ribbon: Option<(StatusBarStyle, ratatui::style::Color)> = None;
 
         for seg in planned {
+            let st = seg.style;
             let mut text_style = Style::default().fg(seg.accent);
             if seg.bold {
                 text_style = text_style.add_modifier(Modifier::BOLD);
             }
-            let seg_bg = Self::tint_bg(seg.accent, bar_bg, theme.bg_elevated, 0.20);
+            let seg_bg = Self::tint_bg(
+                seg.accent,
+                bar_bg,
+                theme.bg_elevated,
+                if is_ribbon_style(st) { 0.22 } else { 0.20 },
+            );
             let is_first = last_group.is_none();
             let switched_group =
                 last_group == Some(SegmentGroup::Primary) && seg.group == SegmentGroup::Secondary;
 
+            let display_text = match st {
+                StatusBarStyle::NerdIcons
+                | StatusBarStyle::NerdBubbles
+                | StatusBarStyle::NerdPowerline => {
+                    if let Some(nf) = seg.nf_icon {
+                        format!("{} {}", nf, seg.text)
+                    } else {
+                        seg.text
+                    }
+                }
+                _ => seg.text,
+            };
+
             let mut candidate: Vec<Span<'static>> = Vec::new();
+            let continues_same_ribbon = open_ribbon
+                .map(|(prev_st, _)| {
+                    is_ribbon_style(st) && ribbon_glyph(prev_st) == ribbon_glyph(st)
+                })
+                .unwrap_or(false);
+
             if is_first {
                 candidate.push(Span::styled(" ", Style::default().bg(bar_bg)));
+            } else if continues_same_ribbon {
+                if let Some((prev_st, prev_bg)) = open_ribbon {
+                    candidate.push(Span::styled(
+                        ribbon_glyph(prev_st),
+                        Style::default().fg(prev_bg).bg(seg_bg),
+                    ));
+                }
             } else {
-                match style {
-                    StatusBarStyle::Classic => {
-                        let sep = if switched_group { " | " } else { " · " };
-                        candidate.push(Span::styled(sep, Style::default().fg(theme.muted)));
+                // Close any previously open ribbon cleanly before moving to a different style
+                if let Some((prev_st, prev_bg)) = open_ribbon {
+                    candidate.push(Span::styled(
+                        ribbon_glyph(prev_st),
+                        Style::default().fg(prev_bg).bg(bar_bg),
+                    ));
+                    candidate.push(Span::styled(" ", Style::default().bg(bar_bg)));
+                } else {
+                    match st {
+                        StatusBarStyle::Classic => {
+                            let sep = if switched_group { " | " } else { " · " };
+                            candidate.push(Span::styled(sep, Style::default().fg(theme.muted)));
+                        }
+                        StatusBarStyle::PoshPure | StatusBarStyle::Minimal => {
+                            candidate.push(Span::styled("  ", Style::default().bg(bar_bg)));
+                        }
+                        StatusBarStyle::PoshSlash => {
+                            candidate.push(Span::styled(" / ", Style::default().fg(theme.border)));
+                        }
+                        StatusBarStyle::PoshVelvet
+                        | StatusBarStyle::Pills
+                        | StatusBarStyle::PoshBubbles
+                        | StatusBarStyle::NerdBubbles
+                        | StatusBarStyle::PoshDiamond
+                        | StatusBarStyle::Brackets
+                        | StatusBarStyle::Powerline
+                        | StatusBarStyle::NerdPowerline
+                        | StatusBarStyle::PoshSlant => {
+                            candidate.push(Span::styled(" ", Style::default().bg(bar_bg)));
+                        }
+                        StatusBarStyle::Compact => {
+                            candidate.push(Span::styled(" · ", Style::default().fg(theme.muted)));
+                        }
+                        StatusBarStyle::Icons | StatusBarStyle::NerdIcons => {
+                            let sep = if switched_group { " │ " } else { " · " };
+                            candidate.push(Span::styled(sep, Style::default().fg(theme.border)));
+                        }
                     }
-                    StatusBarStyle::PoshPure => {
-                        candidate.push(Span::raw("  "));
-                    }
-                    StatusBarStyle::PoshSlash => {
-                        candidate.push(Span::styled(" / ", Style::default().fg(theme.border)));
-                    }
-                    StatusBarStyle::PoshVelvet
-                    | StatusBarStyle::Pills
-                    | StatusBarStyle::PoshBubbles
-                    | StatusBarStyle::PoshDiamond
-                    | StatusBarStyle::Brackets => {
-                        candidate.push(Span::styled(" ", Style::default().bg(bar_bg)));
-                    }
-                    StatusBarStyle::Compact => {
-                        candidate.push(Span::styled(" · ", Style::default().fg(theme.muted)));
-                    }
-                    StatusBarStyle::Minimal => {
-                        candidate.push(Span::raw("  "));
-                    }
-                    StatusBarStyle::Icons => {
-                        let sep = if switched_group { " │ " } else { " · " };
-                        candidate.push(Span::styled(sep, Style::default().fg(theme.border)));
-                    }
-                    StatusBarStyle::Powerline | StatusBarStyle::PoshSlant => {}
                 }
             }
 
-            match style {
+            match st {
                 StatusBarStyle::PoshPure => {
                     if let Some(pfx) = seg.pure_prefix {
                         candidate.push(Span::styled(
@@ -1245,7 +1374,7 @@ impl StatusWidgets {
                                 .add_modifier(Modifier::ITALIC),
                         ));
                     }
-                    candidate.push(Span::styled(seg.text, text_style));
+                    candidate.push(Span::styled(display_text, text_style));
                 }
                 StatusBarStyle::PoshVelvet => {
                     candidate.push(Span::styled(
@@ -1253,57 +1382,77 @@ impl StatusWidgets {
                         Style::default().fg(seg.accent).bg(seg_bg),
                     ));
                     candidate.push(Span::styled(
-                        format!(" {} ", seg.text),
+                        format!(" {} ", display_text),
                         text_style.bg(seg_bg),
                     ));
                 }
                 StatusBarStyle::Pills => {
                     candidate.push(Span::styled(
-                        format!(" {} ", seg.text),
+                        format!(" {} ", display_text),
                         text_style.bg(seg_bg),
                     ));
                 }
-                StatusBarStyle::PoshBubbles => {
+                StatusBarStyle::PoshBubbles | StatusBarStyle::NerdBubbles => {
                     let cap_style = Style::default().fg(seg_bg).bg(bar_bg);
                     candidate.push(Span::styled("\u{e0b6}", cap_style));
-                    candidate.push(Span::styled(seg.text, text_style.bg(seg_bg)));
+                    candidate.push(Span::styled(display_text, text_style.bg(seg_bg)));
                     candidate.push(Span::styled("\u{e0b4}", cap_style));
                 }
                 StatusBarStyle::PoshDiamond => {
                     let cap_style = Style::default().fg(seg_bg).bg(bar_bg);
                     candidate.push(Span::styled("\u{e0b2}", cap_style));
                     candidate.push(Span::styled(
-                        format!(" {} ", seg.text),
+                        format!(" {} ", display_text),
                         text_style.bg(seg_bg),
                     ));
                     candidate.push(Span::styled("\u{e0b0}", cap_style));
                 }
+                StatusBarStyle::Powerline
+                | StatusBarStyle::NerdPowerline
+                | StatusBarStyle::PoshSlant => {
+                    candidate.push(Span::styled(
+                        format!(" {} ", display_text),
+                        text_style.bg(seg_bg),
+                    ));
+                }
                 StatusBarStyle::Brackets => {
                     candidate.push(Span::styled("[", Style::default().fg(theme.border)));
-                    candidate.push(Span::styled(seg.text, text_style));
+                    candidate.push(Span::styled(display_text, text_style));
                     candidate.push(Span::styled("]", Style::default().fg(theme.border)));
                 }
                 StatusBarStyle::Icons => {
                     if let Some(ic) = seg.icon {
                         candidate.push(Span::styled(format!("{} ", ic), text_style));
                     }
-                    candidate.push(Span::styled(seg.text, text_style));
+                    candidate.push(Span::styled(display_text, text_style));
                 }
                 StatusBarStyle::Classic
                 | StatusBarStyle::PoshSlash
                 | StatusBarStyle::Compact
                 | StatusBarStyle::Minimal
-                | StatusBarStyle::Powerline
-                | StatusBarStyle::PoshSlant => {
-                    candidate.push(Span::styled(seg.text, text_style));
+                | StatusBarStyle::NerdIcons => {
+                    candidate.push(Span::styled(display_text, text_style));
                 }
             }
 
+            // Account for 1 trailing ribbon cap cell when checking budget
+            let trailing_cap_reserve = usize::from(is_ribbon_style(st));
             let add_w = current_left_width(&candidate);
-            if !seg.optional || current_left_width(&left_spans) + add_w <= left_budget {
+            if !seg.optional
+                || current_left_width(&left_spans) + add_w + trailing_cap_reserve <= left_budget
+            {
                 left_spans.extend(candidate);
                 last_group = Some(seg.group);
+                open_ribbon = is_ribbon_style(st).then_some((st, seg_bg));
             }
+        }
+
+        // Always close the final ribbon cap cleanly into `bar_bg`
+        if let Some((last_st, last_bg)) = open_ribbon {
+            left_spans.push(Span::styled(
+                ribbon_glyph(last_st),
+                Style::default().fg(last_bg).bg(bar_bg),
+            ));
         }
 
         left_spans
@@ -1781,5 +1930,90 @@ mod tests {
                 style
             );
         }
+    }
+
+    #[test]
+    fn test_per_component_mixed_status_bar_styles_and_nerd_font_variants() {
+        use crate::config::{ContextMeterStyle, ModeBarStyle, StatusBarStyle};
+
+        let theme = Theme::aura_dark();
+        let join_spans = |spans: Vec<Span<'static>>| -> String {
+            spans.into_iter().map(|s| s.content.into_owned()).collect()
+        };
+
+        // Mix NerdPowerline (Model) + PoshPure (Path) + NerdBubbles (Git) on a single bar!
+        let mixed_opts = StatusDisplayOptions {
+            status_bar_style: StatusBarStyle::Classic,
+            status_model_style: Some(StatusBarStyle::NerdPowerline),
+            status_effort_style: Some(StatusBarStyle::Pills),
+            status_path_style: Some(StatusBarStyle::PoshPure),
+            status_git_style: Some(StatusBarStyle::NerdBubbles),
+            status_badges_style: Some(StatusBarStyle::NerdIcons),
+            ..Default::default()
+        };
+        let spans = StatusWidgets::render_status_left_spans_with_bg(
+            &theme,
+            theme.bg_primary,
+            "minimax",
+            "MiniMax-M3.1-Flash",
+            "medium",
+            "~/programming/minitest82",
+            Some("main"),
+            2,
+            0,
+            (0, 0.0, 0.0),
+            None,
+            150,
+            &mixed_opts,
+        );
+        let txt = join_spans(spans);
+        assert!(
+            txt.contains("\u{f2db} minimax/MiniMax-M3.1-Flash") && txt.contains("\u{e0b0}"),
+            "Model must use NerdPowerline + closing cap: {txt}"
+        );
+        assert!(
+            txt.contains("\u{e0b6}\u{e725} main\u{e0b4}"),
+            "Git branch must use NerdBubbles: {txt}"
+        );
+        assert!(
+            txt.contains("\u{f233} mcp:2"),
+            "Badges must use NerdIcons: {txt}"
+        );
+
+        // Nerd Font context meters omit raw token counts and include Nerd Font icons
+        for ctx_style in [ContextMeterStyle::NerdIcons, ContextMeterStyle::NerdBar] {
+            let ctx_txt = join_spans(StatusWidgets::render_context_meter_spans(
+                &theme, 212_700, 1_000_000, 210_500, false, 0.0, true, true, ctx_style,
+            ));
+            assert!(
+                ctx_txt.contains("\u{f1c0}")
+                    && ctx_txt.contains("\u{f2db}")
+                    && ctx_txt.contains("21%")
+                    && !ctx_txt.contains("212.7k"),
+                "Nerd context meter {:?} unexpected: {ctx_txt}",
+                ctx_style
+            );
+        }
+
+        // Nerd Font mode badges
+        let nf_modes = join_spans(StatusWidgets::render_mode_bar_spans_with_bg(
+            &theme,
+            theme.bg_primary,
+            true,
+            "full",
+            true,
+            "full",
+            true,
+            ModeBarStyle::NerdBubbles,
+            true,
+            true,
+            true,
+        ));
+        assert!(
+            nf_modes.contains("\u{e0b6}\u{f135} ponytail·full\u{e0b4}")
+                && nf_modes.contains("\u{f06d} caveman·full")
+                && nf_modes.contains("\u{f0e7} stream"),
+            "NerdBubbles mode strip unexpected: {nf_modes}"
+        );
     }
 }

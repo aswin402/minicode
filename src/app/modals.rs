@@ -638,6 +638,7 @@ impl<'a> App<'a> {
                 ref mut menu_style_selected_index,
                 ref mut input_box_style_selected_index,
                 ref mut status_bar_style_selected_index,
+                ref mut status_bar_target,
                 ref mut context_meter_style_selected_index,
                 ref mut mode_bar_style_selected_index,
                 ref mut activity_hint_style_selected_index,
@@ -690,6 +691,34 @@ impl<'a> App<'a> {
                 }
                 KeyCode::Char('0') => {
                     *active_tab = crate::ui::modals::ThemeModalTab::StatusBarStyles;
+                }
+                KeyCode::Char('c') | KeyCode::Char('C') | KeyCode::Char(']')
+                    if *active_tab == crate::ui::modals::ThemeModalTab::StatusBarStyles =>
+                {
+                    *status_bar_target = status_bar_target.next();
+                    let opts = crate::ui::modals::theme_select::status_bar_options_for_target(
+                        *status_bar_target,
+                    );
+                    let active_id = crate::ui::modals::theme_select::active_status_style_for_target(
+                        *status_bar_target,
+                        &self.config.ui,
+                    );
+                    *status_bar_style_selected_index =
+                        opts.iter().position(|o| o.id == active_id).unwrap_or(0);
+                }
+                KeyCode::Char('[')
+                    if *active_tab == crate::ui::modals::ThemeModalTab::StatusBarStyles =>
+                {
+                    *status_bar_target = status_bar_target.prev();
+                    let opts = crate::ui::modals::theme_select::status_bar_options_for_target(
+                        *status_bar_target,
+                    );
+                    let active_id = crate::ui::modals::theme_select::active_status_style_for_target(
+                        *status_bar_target,
+                        &self.config.ui,
+                    );
+                    *status_bar_style_selected_index =
+                        opts.iter().position(|o| o.id == active_id).unwrap_or(0);
                 }
                 KeyCode::Up | KeyCode::Char('k') => match *active_tab {
                     crate::ui::modals::ThemeModalTab::Themes => {
@@ -796,7 +825,10 @@ impl<'a> App<'a> {
                         }
                     }
                     crate::ui::modals::ThemeModalTab::StatusBarStyles => {
-                        let total = crate::ui::modals::theme_select::STATUS_BAR_STYLE_OPTIONS.len();
+                        let total = crate::ui::modals::theme_select::status_bar_options_for_target(
+                            *status_bar_target,
+                        )
+                        .len();
                         if *status_bar_style_selected_index + 1 < total {
                             *status_bar_style_selected_index += 1;
                         }
@@ -1118,7 +1150,10 @@ impl<'a> App<'a> {
                             }
                         }
                         crate::ui::modals::ThemeModalTab::StatusBarStyles => {
-                            let options = crate::ui::modals::theme_select::STATUS_BAR_STYLE_OPTIONS;
+                            let options =
+                                crate::ui::modals::theme_select::status_bar_options_for_target(
+                                    *status_bar_target,
+                                );
                             if !options.is_empty()
                                 && *status_bar_style_selected_index < options.len()
                             {
@@ -1126,16 +1161,21 @@ impl<'a> App<'a> {
                                 let chosen_id = chosen.id.to_string();
                                 let chosen_name = chosen.name.to_string();
 
-                                self.config.ui.status_bar_style = chosen_id.clone();
+                                crate::ui::modals::theme_select::set_status_style_for_target(
+                                    *status_bar_target,
+                                    &chosen_id,
+                                    &mut self.config.ui,
+                                );
                                 *ui_prefs = self.config.ui.clone();
 
                                 let _ = self.config.save(Some(&self.workspace_root));
                                 let _ = self.config.save(None);
 
+                                let target_lbl = status_bar_target.label();
                                 self.toasts.push(
                                     crate::ui::ToastKind::Success,
-                                    "Status Bar Style Updated",
-                                    format!("Switched to \"{chosen_name}\"."),
+                                    format!("Status Bar ({target_lbl}) Updated"),
+                                    format!("Switched {target_lbl} to \"{chosen_name}\"."),
                                     Some(chosen_id),
                                     Some("status_bar_style_preview".to_string()),
                                 );

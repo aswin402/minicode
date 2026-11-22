@@ -2856,5 +2856,35 @@ mod tests {
         assert_eq!(reloaded.ui.context_meter_style, "circle");
         assert!(reloaded.ui.show_thought_tokens);
         assert!(!reloaded.ui.show_kv_cache);
+
+        // 5. Status Bar per-component override via 'c' key inside 10. Status Bar
+        app.open_theme_modal(Some(crate::ui::modals::ThemeModalTab::StatusBarStyles));
+        // Cycle target All -> Model ('c'), move down from Inherit(0) to Classic(1) -> PoshPure(2), press Enter
+        app.handle_modal_key(
+            KeyEvent::new(KeyCode::Char('c'), KeyModifiers::NONE),
+            &control_tx,
+        )
+        .await;
+        app.handle_modal_key(
+            KeyEvent::new(KeyCode::Down, KeyModifiers::NONE),
+            &control_tx,
+        )
+        .await;
+        app.handle_modal_key(
+            KeyEvent::new(KeyCode::Down, KeyModifiers::NONE),
+            &control_tx,
+        )
+        .await;
+        app.handle_modal_key(
+            KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+            &control_tx,
+        )
+        .await;
+        assert_eq!(app.config.ui.status_model_style, "posh_pure");
+        assert_eq!(app.config.ui.status_git_style, "inherit");
+
+        let reloaded2 = Config::load(Some(temp_dir.path()), None).expect("reload config 2");
+        assert_eq!(reloaded2.ui.status_model_style, "posh_pure");
+        assert_eq!(reloaded2.ui.status_git_style, "inherit");
     }
 }

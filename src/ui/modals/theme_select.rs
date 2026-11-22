@@ -193,7 +193,96 @@ pub static STATUS_BAR_STYLE_OPTIONS: &[StatusBarStyleOption] = &[
         description: "Crisp operator glyphs (◈ model · ⚡effort │ ⌂ path · ⎇ branch)",
         preview: &[],
     },
+    StatusBarStyleOption {
+        id: "nerd_icons",
+        name: "Nerd Font: Clean Icons",
+        description: "FontAwesome/Devicon glyphs:  model ·  effort │  path ·  main (Nerd Font)",
+        preview: &[],
+    },
+    StatusBarStyleOption {
+        id: "nerd_bubbles",
+        name: "Nerd Font: Bubbles + Icons",
+        description: "Oh My Posh … capsules with crisp Nerd Font icons inside (Nerd Font)",
+        preview: &[],
+    },
+    StatusBarStyleOption {
+        id: "nerd_powerline",
+        name: "Nerd Font: Powerline + Icons",
+        description: "Oh My Posh  ribbon with Nerd Font icons per segment (Nerd Font)",
+        preview: &[],
+    },
 ];
+
+pub static STATUS_BAR_INHERIT_OPTION: StatusBarStyleOption = StatusBarStyleOption {
+    id: "inherit",
+    name: "Inherit (Follow Global Style)",
+    description: "Use the global 'All' Status Bar style without a custom override",
+    preview: &[],
+};
+
+pub fn status_bar_options_for_target(
+    target: crate::ui::modals::StatusBarTarget,
+) -> Vec<StatusBarStyleOption> {
+    if target == crate::ui::modals::StatusBarTarget::All {
+        STATUS_BAR_STYLE_OPTIONS.to_vec()
+    } else {
+        let mut out = Vec::with_capacity(STATUS_BAR_STYLE_OPTIONS.len() + 1);
+        out.push(STATUS_BAR_INHERIT_OPTION.clone());
+        out.extend_from_slice(STATUS_BAR_STYLE_OPTIONS);
+        out
+    }
+}
+
+pub fn active_status_style_for_target(
+    target: crate::ui::modals::StatusBarTarget,
+    ui: &crate::config::UiConfig,
+) -> String {
+    use crate::ui::modals::StatusBarTarget;
+    match target {
+        StatusBarTarget::All => ui.status_bar_style_enum().as_str().to_string(),
+        StatusBarTarget::Model => ui
+            .status_model_style_override()
+            .map(|s| s.as_str())
+            .unwrap_or("inherit")
+            .to_string(),
+        StatusBarTarget::Effort => ui
+            .status_effort_style_override()
+            .map(|s| s.as_str())
+            .unwrap_or("inherit")
+            .to_string(),
+        StatusBarTarget::Path => ui
+            .status_path_style_override()
+            .map(|s| s.as_str())
+            .unwrap_or("inherit")
+            .to_string(),
+        StatusBarTarget::Git => ui
+            .status_git_style_override()
+            .map(|s| s.as_str())
+            .unwrap_or("inherit")
+            .to_string(),
+        StatusBarTarget::Badges => ui
+            .status_badges_style_override()
+            .map(|s| s.as_str())
+            .unwrap_or("inherit")
+            .to_string(),
+    }
+}
+
+pub fn set_status_style_for_target(
+    target: crate::ui::modals::StatusBarTarget,
+    style_id: &str,
+    ui: &mut crate::config::UiConfig,
+) {
+    use crate::ui::modals::StatusBarTarget;
+    match target {
+        StatusBarTarget::All => ui.status_bar_style = style_id.to_string(),
+        StatusBarTarget::Model => ui.status_model_style = style_id.to_string(),
+        StatusBarTarget::Effort => ui.status_effort_style = style_id.to_string(),
+        StatusBarTarget::Path => ui.status_path_style = style_id.to_string(),
+        StatusBarTarget::Git => ui.status_git_style = style_id.to_string(),
+        StatusBarTarget::Badges => ui.status_badges_style = style_id.to_string(),
+    }
+}
 
 pub static CONTEXT_METER_STYLE_OPTIONS: &[ContextMeterStyleOption] = &[
     ContextMeterStyleOption {
@@ -248,6 +337,19 @@ pub static CONTEXT_METER_STYLE_OPTIONS: &[ContextMeterStyleOption] = &[
         id: "gauge",
         name: "Thin Line Gauge (━━────────)",
         description: "Sleek horizontal rule meter with bold percentage label",
+        preview: &[],
+    },
+    ContextMeterStyleOption {
+        id: "nerd_icons",
+        name: "Nerd Font: Icons + Pie Ring",
+        description: "FontAwesome cache & chip icons with pie ring:  98% •  ◔ 21% (Nerd Font)",
+        preview: &[],
+    },
+    ContextMeterStyleOption {
+        id: "nerd_bar",
+        name: "Nerd Font: Icons + Bar",
+        description:
+            "FontAwesome cache & chip icons with block bar:  98% •  [██░░░░░░] 21% (Nerd Font)",
         preview: &[],
     },
 ];
@@ -317,6 +419,18 @@ pub static MODE_BAR_STYLE_OPTIONS: &[ModeBarStyleOption] = &[
         id: "minimal",
         name: "Minimal Spaced",
         description: "Clean open typography without pipes or leading dots",
+        preview: &[],
+    },
+    ModeBarStyleOption {
+        id: "nerd_icons",
+        name: "Nerd Font: Clean Icons",
+        description: "FontAwesome glyphs:  ponytail·full ·  caveman·full ·  stream (Nerd Font)",
+        preview: &[],
+    },
+    ModeBarStyleOption {
+        id: "nerd_bubbles",
+        name: "Nerd Font: Bubbles + Icons",
+        description: "Oh My Posh … capsules with FontAwesome mode icons (Nerd Font)",
         preview: &[],
     },
     ModeBarStyleOption {
@@ -879,6 +993,25 @@ pub static ACTIVITY_STYLE_OPTIONS: &[ActivityStyleOption] = &[
             "▰▱ Running... | ▸ exec_cmd ──▸ cargo check -j 1 (24.0s · esc to cancel)",
         ],
     },
+    ActivityStyleOption {
+        id: "nf_detail",
+        name: "Nerd Font + Style 1 (Action | Icon Tool · Target)",
+        description:
+            "Themed FontAwesome icon after pipe: Action... |  write_file · target (Nerd Font)",
+        preview: &[],
+    },
+    ActivityStyleOption {
+        id: "nf_tool",
+        name: "Nerd Font + Style 2 (Action | Icon Tool Name)",
+        description: "Minimal themed FontAwesome icon + tool name after pipe (Nerd Font)",
+        preview: &[],
+    },
+    ActivityStyleOption {
+        id: "nf_trail",
+        name: "Nerd Font + Style 3 (Hermes Trail + Icon)",
+        description: "Hermes trail with themed FontAwesome action icon after pipe (Nerd Font)",
+        preview: &[],
+    },
 ];
 
 pub static TOAST_SYMBOL_OPTIONS: &[ToastSymbolOption] = &[
@@ -949,6 +1082,12 @@ pub static TOAST_SYMBOL_OPTIONS: &[ToastSymbolOption] = &[
             "[OK]  Turn Completed     · Finished in 4.2s (3 tools)     4.2s",
         ],
     },
+    ToastSymbolOption {
+        id: "nerdfont",
+        name: "7. Nerd Font Icons (`` `` `` ``)",
+        description: "Crisp theme-colored FontAwesome vector icons (requires Nerd Font)",
+        preview: &[],
+    },
 ];
 
 pub static MENU_STYLE_OPTIONS: &[MenuStyleOption] = &[
@@ -1015,6 +1154,7 @@ pub struct ThemeSelectContext<'a> {
     pub menu_style_selected_index: usize,
     pub input_box_style_selected_index: usize,
     pub status_bar_style_selected_index: usize,
+    pub status_bar_target: crate::ui::modals::StatusBarTarget,
     pub context_meter_style_selected_index: usize,
     pub mode_bar_style_selected_index: usize,
     pub activity_hint_style_selected_index: usize,
@@ -1065,6 +1205,7 @@ pub fn render_theme_select(
         menu_style_selected_index,
         input_box_style_selected_index,
         status_bar_style_selected_index,
+        status_bar_target,
         context_meter_style_selected_index,
         mode_bar_style_selected_index,
         activity_hint_style_selected_index,
@@ -1251,9 +1392,14 @@ pub fn render_theme_select(
         crate::ui::modals::ThemeModalTab::InputBoxStyles => {
             (input_box_styles.len(), input_box_style_selected_index)
         }
-        crate::ui::modals::ThemeModalTab::StatusBarStyles => {
-            (status_bar_styles.len(), status_bar_style_selected_index)
-        }
+        crate::ui::modals::ThemeModalTab::StatusBarStyles => (
+            if status_bar_target == crate::ui::modals::StatusBarTarget::All {
+                status_bar_styles.len()
+            } else {
+                status_bar_styles.len() + 1
+            },
+            status_bar_style_selected_index,
+        ),
         crate::ui::modals::ThemeModalTab::ContextMeterStyles => (
             context_meter_styles.len(),
             context_meter_style_selected_index,
@@ -1789,10 +1935,56 @@ pub fn render_theme_select(
             );
         }
         crate::ui::modals::ThemeModalTab::StatusBarStyles => {
+            use crate::ui::modals::StatusBarTarget;
+
+            // Inline component selector strip: press `c` (or `[`/`]`) to style All or any single segment
+            let mut target_spans = vec![Span::styled(
+                "  Target [c]: ",
+                Style::default().fg(theme.muted),
+            )];
+            for &tgt in StatusBarTarget::all() {
+                let is_sel = tgt == status_bar_target;
+                let has_override = match tgt {
+                    StatusBarTarget::All => false,
+                    StatusBarTarget::Model => ui_prefs.status_model_style_override().is_some(),
+                    StatusBarTarget::Effort => ui_prefs.status_effort_style_override().is_some(),
+                    StatusBarTarget::Path => ui_prefs.status_path_style_override().is_some(),
+                    StatusBarTarget::Git => ui_prefs.status_git_style_override().is_some(),
+                    StatusBarTarget::Badges => ui_prefs.status_badges_style_override().is_some(),
+                };
+                let lbl = if has_override {
+                    format!("{}*", tgt.label())
+                } else {
+                    tgt.label().to_string()
+                };
+                if is_sel {
+                    target_spans.push(Span::styled(
+                        format!(" [{}] ", lbl),
+                        Style::default()
+                            .fg(theme.bg_primary)
+                            .bg(theme.brand_accent)
+                            .add_modifier(Modifier::BOLD),
+                    ));
+                } else {
+                    target_spans.push(Span::styled(
+                        format!(" {} ", lbl),
+                        Style::default().fg(if has_override {
+                            theme.info
+                        } else {
+                            theme.muted
+                        }),
+                    ));
+                }
+            }
+            content_lines.push(Line::from(target_spans));
+
+            let target_options = status_bar_options_for_target(status_bar_target);
+            let active_for_target = active_status_style_for_target(status_bar_target, ui_prefs);
             let status_budget = right_w.saturating_sub(8).max(40);
             let live_status_preview = |style_id: &str| -> Vec<Line<'static>> {
-                let mut opts = crate::ui::status::StatusDisplayOptions::from_ui_config(ui_prefs);
-                opts.status_bar_style = crate::config::StatusBarStyle::from_str_loose(style_id);
+                let mut preview_ui = ui_prefs.clone();
+                set_status_style_for_target(status_bar_target, style_id, &mut preview_ui);
+                let opts = crate::ui::status::StatusDisplayOptions::from_ui_config(&preview_ui);
                 let line1 = crate::ui::status::StatusWidgets::render_status_left_spans_with_bg(
                     theme,
                     theme.bg_elevated,
@@ -1840,15 +2032,18 @@ pub fn render_theme_select(
                 &mut content_lines,
                 &mut preview_title,
                 &mut preview_lines,
-                status_bar_styles,
+                &target_options,
                 status_bar_style_selected_index,
-                ui_prefs.status_bar_style_enum().as_str(),
+                &active_for_target,
                 30,
-                list_max_visible,
+                list_max_visible.saturating_sub(1).max(4),
                 right_w,
                 theme,
                 Some(&live_status_preview),
             );
+            if status_bar_target != StatusBarTarget::All {
+                preview_title = format!("[{}] {}", status_bar_target.label(), preview_title);
+            }
         }
         crate::ui::modals::ThemeModalTab::ContextMeterStyles => {
             let live_ctx_preview = |style_id: &str| -> Vec<Line<'static>> {
@@ -2233,16 +2428,29 @@ pub fn render_theme_select(
         Some(parent) => format!("← back to {}", parent),
         None => "← back".to_string(),
     };
-    let footer_line = Line::from(vec![
+    let mut footer_spans = vec![
         Span::styled("  tab/←→/1-9 ", Style::default().fg(theme.brand_accent)),
         Span::styled("section   ", Style::default().fg(theme.muted)),
         Span::styled("↑/↓/j/k ", Style::default().fg(theme.brand_accent)),
         Span::styled("navigate   ", Style::default().fg(theme.muted)),
+    ];
+    if active_tab == crate::ui::modals::ThemeModalTab::StatusBarStyles {
+        footer_spans.push(Span::styled(
+            "c/[ ] ",
+            Style::default().fg(theme.brand_accent),
+        ));
+        footer_spans.push(Span::styled(
+            "component   ",
+            Style::default().fg(theme.muted),
+        ));
+    }
+    footer_spans.extend(vec![
         Span::styled("enter/space ", Style::default().fg(theme.brand_accent)),
         Span::styled("apply/toggle (stay)   ", Style::default().fg(theme.muted)),
         Span::styled("esc/bksp ", Style::default().fg(theme.brand_accent)),
         Span::styled(back_hint, Style::default().fg(theme.muted)),
     ]);
+    let footer_line = Line::from(footer_spans);
     frame.render_widget(Paragraph::new(footer_line), outer_chunks[2]);
 }
 
@@ -2388,7 +2596,7 @@ mod tests {
 
     #[test]
     fn test_toast_symbol_options_completeness() {
-        assert_eq!(TOAST_SYMBOL_OPTIONS.len(), 6);
+        assert_eq!(TOAST_SYMBOL_OPTIONS.len(), 7);
         let ids: Vec<&str> = TOAST_SYMBOL_OPTIONS.iter().map(|s| s.id).collect();
         assert!(ids.contains(&"ascii"));
         assert!(ids.contains(&"geometric"));
@@ -2396,6 +2604,7 @@ mod tests {
         assert!(ids.contains(&"kaomoji"));
         assert!(ids.contains(&"cyber"));
         assert!(ids.contains(&"bracket"));
+        assert!(ids.contains(&"nerdfont"));
     }
 
     #[test]
@@ -2433,6 +2642,7 @@ mod tests {
                 menu_style_selected_index: 0,
                 input_box_style_selected_index: 0,
                 status_bar_style_selected_index: 0,
+                status_bar_target: crate::ui::modals::StatusBarTarget::All,
                 context_meter_style_selected_index: 0,
                 mode_bar_style_selected_index: 0,
                 activity_hint_style_selected_index: 0,
