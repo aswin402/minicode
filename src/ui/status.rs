@@ -370,10 +370,6 @@ impl StatusWidgets {
                         format!("{}%", pct),
                         Style::default().fg(used_color).add_modifier(Modifier::BOLD),
                     ));
-                    spans.push(Span::styled(
-                        format!(" ({}/{})", used_str, max_str),
-                        Style::default().fg(theme.muted),
-                    ));
                 }
                 ContextMeterStyle::Bar => {
                     push_sep(&mut spans, &mut has_prev, " • ");
@@ -395,12 +391,8 @@ impl StatusWidgets {
                     }
                     spans.push(Span::styled("] ", Style::default().fg(theme.border)));
                     spans.push(Span::styled(
-                        used_str,
+                        format!("{}%", pct),
                         Style::default().fg(used_color).add_modifier(Modifier::BOLD),
-                    ));
-                    spans.push(Span::styled(
-                        format!("/{}", max_str),
-                        Style::default().fg(theme.muted),
                     ));
                 }
                 ContextMeterStyle::Blocks => {
@@ -429,10 +421,6 @@ impl StatusWidgets {
                         format!(" {}%", pct),
                         Style::default().fg(used_color).add_modifier(Modifier::BOLD),
                     ));
-                    spans.push(Span::styled(
-                        format!(" · {}/{}", used_str, max_str),
-                        Style::default().fg(theme.muted),
-                    ));
                 }
                 ContextMeterStyle::Braille => {
                     push_sep(&mut spans, &mut has_prev, " • ");
@@ -457,23 +445,16 @@ impl StatusWidgets {
                         spans.push(Span::styled(empty_part, Style::default().fg(theme.border)));
                     }
                     spans.push(Span::styled(
-                        format!(" {}", used_str),
+                        format!(" {}%", pct),
                         Style::default().fg(used_color).add_modifier(Modifier::BOLD),
-                    ));
-                    spans.push(Span::styled(
-                        format!("/{}", max_str),
-                        Style::default().fg(theme.muted),
                     ));
                 }
                 ContextMeterStyle::Percent => {
                     push_sep(&mut spans, &mut has_prev, " • ");
+                    spans.push(Span::styled("ctx ", Style::default().fg(theme.muted)));
                     spans.push(Span::styled(
                         format!("{}%", pct),
                         Style::default().fg(used_color).add_modifier(Modifier::BOLD),
-                    ));
-                    spans.push(Span::styled(
-                        format!(" · {}/{}", used_str, max_str),
-                        Style::default().fg(theme.muted),
                     ));
                 }
                 ContextMeterStyle::Pills => {
@@ -481,7 +462,7 @@ impl StatusWidgets {
                         spans.push(Span::raw(" "));
                     }
                     spans.push(Span::styled(
-                        format!(" {} {} / {} ", pie_glyph(ratio), used_str, max_str),
+                        format!(" {} {}% ", pie_glyph(ratio), pct),
                         Style::default()
                             .fg(used_color)
                             .bg(theme.bg_elevated)
@@ -1220,7 +1201,31 @@ mod tests {
         ));
         assert!(all_hidden.is_empty());
 
-        // 3. Circle, Bar, Blocks, Braille, Gauge styles emit their distinctive visuals
+        // 3. Visual & percentage styles omit redundant raw token fractions (212.7k/1M)
+        for style in [
+            ContextMeterStyle::Circle,
+            ContextMeterStyle::Bar,
+            ContextMeterStyle::Blocks,
+            ContextMeterStyle::Braille,
+            ContextMeterStyle::Percent,
+            ContextMeterStyle::Pills,
+            ContextMeterStyle::Gauge,
+        ] {
+            let rendered = join_spans(StatusWidgets::render_context_meter_spans(
+                &theme, 212_700, 1_000_000, 210_000, false, 0.0, true, true, style,
+            ));
+            assert!(
+                rendered.contains("21%"),
+                "Style {:?} should display percentage, got: {rendered}",
+                style
+            );
+            assert!(
+                !rendered.contains("212.7k") && !rendered.contains("/1M"),
+                "Visual/percentage style {:?} must not repeat raw token counts, got: {rendered}",
+                style
+            );
+        }
+
         let circle = join_spans(StatusWidgets::render_context_meter_spans(
             &theme,
             212_700,
@@ -1232,7 +1237,7 @@ mod tests {
             true,
             ContextMeterStyle::Circle,
         ));
-        assert!(circle.contains("◔") && circle.contains("21%"));
+        assert!(circle.contains("◔ 21%"));
 
         let bar = join_spans(StatusWidgets::render_context_meter_spans(
             &theme,
@@ -1245,7 +1250,7 @@ mod tests {
             true,
             ContextMeterStyle::Bar,
         ));
-        assert!(bar.contains("[██░░░░░░░░]"));
+        assert!(bar.contains("[██░░░░░░░░] 21%"));
 
         let braille = join_spans(StatusWidgets::render_context_meter_spans(
             &theme,
@@ -1258,7 +1263,7 @@ mod tests {
             true,
             ContextMeterStyle::Braille,
         ));
-        assert!(braille.contains("⣿"));
+        assert!(braille.contains("⣿") && braille.contains("50%"));
 
         let gauge = join_spans(StatusWidgets::render_context_meter_spans(
             &theme,

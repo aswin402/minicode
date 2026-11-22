@@ -1230,17 +1230,17 @@ pub enum ContextMeterStyle {
     /// Compact numeric readout `kv (99%) • 212.7k / 1M` (Default)
     #[default]
     Compact,
-    /// Progressive pie circle ring `○◔◑◕●` + percentage & tokens
+    /// Progressive pie circle ring `○◔◑◕●` + percentage (`● kv 98% · ◔ 21%`)
     Circle,
-    /// Crisp horizontal block progress bar `[██░░░░░░░░] 212.7k/1M`
+    /// Crisp horizontal block progress bar (`kv 98% • [██░░░░░░░░] 21%`)
     Bar,
-    /// Shaded density blocks `▓▓▒▒░░░░░░ 21%`
+    /// Shaded density blocks (`kv 98% • █▒░░░░░░ 21%`)
     Blocks,
-    /// High-resolution braille fill meter `⣿⣦⣀⣀⣀ 212.7k/1M`
+    /// High-resolution braille fill meter (`kv 98% • ⣿⣦⣀⣀⣀⣀ 21%`)
     Braille,
-    /// Percentage-first readout `21% · 212.7k/1M`
+    /// Clean percentage-only readout (`kv 98% • ctx 21%`)
     Percent,
-    /// Elevated pill chips ` kv 99% ` ` ◔ 212.7k / 1M `
+    /// Elevated pill chips (` kv 98% ` ` ◔ 21% `)
     Pills,
     /// Ultra-minimal compact readout `99% kv · 212.7k/1M`
     Minimal,
