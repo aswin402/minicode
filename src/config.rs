@@ -1180,10 +1180,22 @@ pub enum StatusBarStyle {
     /// Classic dot/pipe layout `provider/model · effort | path · git:branch` (Default)
     #[default]
     Classic,
-    /// Elevated pill chips with subtle background contrast per segment
+    /// Oh My Posh Pure minimal typography (`model  effort  path on ⎇ branch`)
+    PoshPure,
+    /// Oh My Posh clean slash rhythm (`model / effort / path / ⎇ branch`)
+    PoshSlash,
+    /// Oh My Posh flat velvet tinted chips with thin left accent rail (`▎ model `)
+    PoshVelvet,
+    /// Oh My Posh soft theme-tinted pill chips per status segment
     Pills,
-    /// Directional chevron stream `▸ provider/model › effort ▸ path › git:branch`
+    /// Oh My Posh rounded capsule bubbles (`model effort path branch`)
+    PoshBubbles,
+    /// Oh My Posh seamless Powerline ribbon with color-blended `` transitions
     Powerline,
+    /// Oh My Posh seamless diagonal slant ribbon with color-blended `` transitions
+    PoshSlant,
+    /// Oh My Posh pointed diamond badges (` model   effort `)
+    PoshDiamond,
     /// Ultra-compact terse readout (short model name, short effort, repo basename)
     Compact,
     /// Airy minimalist spacing without separator glyphs
@@ -1200,8 +1212,14 @@ impl StatusBarStyle {
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::Classic => "classic",
+            Self::PoshPure => "posh_pure",
+            Self::PoshSlash => "posh_slash",
+            Self::PoshVelvet => "posh_velvet",
             Self::Pills => "pills",
+            Self::PoshBubbles => "posh_bubbles",
             Self::Powerline => "powerline",
+            Self::PoshSlant => "posh_slant",
+            Self::PoshDiamond => "posh_diamond",
             Self::Compact => "compact",
             Self::Minimal => "minimal",
             Self::Brackets => "brackets",
@@ -1212,8 +1230,14 @@ impl StatusBarStyle {
     #[must_use]
     pub fn from_str_loose(s: &str) -> Self {
         match s.trim().to_lowercase().as_str() {
-            "pills" | "pill" | "chips" => Self::Pills,
-            "powerline" | "chevron" | "arrows" => Self::Powerline,
+            "posh_pure" | "pure" | "starship" => Self::PoshPure,
+            "posh_slash" | "slash" | "clean_detailed" => Self::PoshSlash,
+            "posh_velvet" | "velvet" | "rail" | "chips" => Self::PoshVelvet,
+            "pills" | "pill" | "soft_pills" => Self::Pills,
+            "posh_bubbles" | "bubbles" | "capsule" | "capsules" | "catppuccin" => Self::PoshBubbles,
+            "powerline" | "posh_powerline" | "omp" | "chevron" | "arrows" => Self::Powerline,
+            "posh_slant" | "slant" | "diagonal" => Self::PoshSlant,
+            "posh_diamond" | "diamond" | "atomic" => Self::PoshDiamond,
             "compact" | "dense" | "short" => Self::Compact,
             "minimal" | "clean" | "plain" => Self::Minimal,
             "brackets" | "bracket" | "tags" => Self::Brackets,
@@ -1288,8 +1312,20 @@ pub enum ModeBarStyle {
     /// Classic piped mode strip `· ponytail:full | caveman:full | streaming` (Default)
     #[default]
     Classic,
-    /// Elevated subtle pill chips per active mode
+    /// Oh My Posh Pure minimal quiet badges (`• ponytail·full  • caveman·full  • stream`)
+    PoshPure,
+    /// Oh My Posh clean minimal slash rhythm (`ponytail·full / caveman·full / stream`)
+    PoshSlash,
+    /// Oh My Posh velvet tinted chips with thin left accent rail (`▎ ponytail·full `)
+    PoshVelvet,
+    /// Oh My Posh soft theme-tinted pill chips per mode
     Pills,
+    /// Oh My Posh rounded capsule bubbles (`ponytail·full caveman·full stream`)
+    PoshBubbles,
+    /// Oh My Posh right-aligned Powerline ribbon pointing left (` ponytail·full  …`)
+    PoshPowerline,
+    /// Oh My Posh right-aligned diagonal slant ribbon (` ponytail·full  …`)
+    PoshSlant,
     /// Status dot indicators (`● ponytail:full  ● caveman:full  ● streaming`)
     Dots,
     /// Ultra-compact abbreviations (`pt:full · cm:full · strm`)
@@ -1310,7 +1346,13 @@ impl ModeBarStyle {
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::Classic => "classic",
+            Self::PoshPure => "posh_pure",
+            Self::PoshSlash => "posh_slash",
+            Self::PoshVelvet => "posh_velvet",
             Self::Pills => "pills",
+            Self::PoshBubbles => "posh_bubbles",
+            Self::PoshPowerline => "posh_powerline",
+            Self::PoshSlant => "posh_slant",
             Self::Dots => "dots",
             Self::Compact => "compact",
             Self::Minimal => "minimal",
@@ -1323,7 +1365,13 @@ impl ModeBarStyle {
     #[must_use]
     pub fn from_str_loose(s: &str) -> Self {
         match s.trim().to_lowercase().as_str() {
-            "pills" | "pill" | "chips" => Self::Pills,
+            "posh_pure" | "pure" | "starship" => Self::PoshPure,
+            "posh_slash" | "slash" => Self::PoshSlash,
+            "posh_velvet" | "velvet" | "rail" | "chips" => Self::PoshVelvet,
+            "pills" | "pill" | "soft_pills" => Self::Pills,
+            "posh_bubbles" | "bubbles" | "capsule" | "capsules" | "catppuccin" => Self::PoshBubbles,
+            "posh_powerline" | "powerline" | "omp" => Self::PoshPowerline,
+            "posh_slant" | "slant" | "diagonal" => Self::PoshSlant,
             "dots" | "dot" | "led" => Self::Dots,
             "compact" | "short" | "mini" => Self::Compact,
             "minimal" | "clean" | "plain" => Self::Minimal,

@@ -122,15 +122,51 @@ pub static STATUS_BAR_STYLE_OPTIONS: &[StatusBarStyleOption] = &[
         preview: &[],
     },
     StatusBarStyleOption {
+        id: "posh_pure",
+        name: "Oh My Posh: Pure Minimal",
+        description: "Airy Starship/Pure typography: model  effort  path on ⎇ branch (Unicode)",
+        preview: &[],
+    },
+    StatusBarStyleOption {
+        id: "posh_slash",
+        name: "Oh My Posh: Clean Slash",
+        description: "Minimalist hairline slash flow: model / effort / path / ⎇ branch (Unicode)",
+        preview: &[],
+    },
+    StatusBarStyleOption {
+        id: "posh_velvet",
+        name: "Oh My Posh: Velvet Chips",
+        description: "Soft theme-tinted flat chips with crisp left accent rail ▎ (Unicode)",
+        preview: &[],
+    },
+    StatusBarStyleOption {
         id: "pills",
-        name: "Elevated Pill Chips",
-        description: "Subtle surface pill badges per status segment",
+        name: "Oh My Posh: Soft Tinted Pills",
+        description: "Velvety per-segment theme-blended pill chips with clean gaps (Unicode)",
+        preview: &[],
+    },
+    StatusBarStyleOption {
+        id: "posh_bubbles",
+        name: "Oh My Posh: Bubbles Capsules",
+        description: "Rounded … capsule pills inspired by Catppuccin & Bubbles (Nerd Font)",
         preview: &[],
     },
     StatusBarStyleOption {
         id: "powerline",
-        name: "Powerline Chevrons",
-        description: "Directional flow with ▸ and › chevron dividers",
+        name: "Oh My Posh: Powerline Ribbon",
+        description: "Seamless color-blended contiguous ribbon with  transitions (Nerd Font)",
+        preview: &[],
+    },
+    StatusBarStyleOption {
+        id: "posh_slant",
+        name: "Oh My Posh: Diagonal Slant",
+        description: "Contiguous diagonal ribbon with smooth  cuts between segments (Nerd Font)",
+        preview: &[],
+    },
+    StatusBarStyleOption {
+        id: "posh_diamond",
+        name: "Oh My Posh: Diamond Badges",
+        description: "Spaced pointed  …  badges inspired by Atomic theme (Nerd Font)",
         preview: &[],
     },
     StatusBarStyleOption {
@@ -224,9 +260,45 @@ pub static MODE_BAR_STYLE_OPTIONS: &[ModeBarStyleOption] = &[
         preview: &[],
     },
     ModeBarStyleOption {
+        id: "posh_pure",
+        name: "Oh My Posh: Pure Minimal",
+        description: "Quiet indicator dots & soft labels: • ponytail·full  • stream (Unicode)",
+        preview: &[],
+    },
+    ModeBarStyleOption {
+        id: "posh_slash",
+        name: "Oh My Posh: Clean Slash",
+        description: "Minimal hairline slashes: ponytail·full / caveman·full / stream (Unicode)",
+        preview: &[],
+    },
+    ModeBarStyleOption {
+        id: "posh_velvet",
+        name: "Oh My Posh: Velvet Chips",
+        description: "Soft theme-tinted chips with thin accent rail ▎ (Unicode)",
+        preview: &[],
+    },
+    ModeBarStyleOption {
         id: "pills",
-        name: "Elevated Pill Chips",
-        description: "Soft pill chips highlighting active autonomy and streaming modes",
+        name: "Oh My Posh: Soft Tinted Pills",
+        description: "Velvety per-mode tinted pill chips with clean gaps (Unicode)",
+        preview: &[],
+    },
+    ModeBarStyleOption {
+        id: "posh_bubbles",
+        name: "Oh My Posh: Bubbles Capsules",
+        description: "Rounded ponytail·full stream capsules (Nerd Font)",
+        preview: &[],
+    },
+    ModeBarStyleOption {
+        id: "posh_powerline",
+        name: "Oh My Posh: Right Powerline",
+        description: "Right-aligned seamless ribbon with  transitions (Nerd Font)",
+        preview: &[],
+    },
+    ModeBarStyleOption {
+        id: "posh_slant",
+        name: "Oh My Posh: Right Slant",
+        description: "Right-aligned diagonal slant ribbon with  transitions (Nerd Font)",
         preview: &[],
     },
     ModeBarStyleOption {
@@ -245,18 +317,6 @@ pub static MODE_BAR_STYLE_OPTIONS: &[ModeBarStyleOption] = &[
         id: "minimal",
         name: "Minimal Spaced",
         description: "Clean open typography without pipes or leading dots",
-        preview: &[],
-    },
-    ModeBarStyleOption {
-        id: "brackets",
-        name: "Bracketed Tags",
-        description: "Structured [ponytail:full] [caveman:full] [streaming] badges",
-        preview: &[],
-    },
-    ModeBarStyleOption {
-        id: "icons",
-        name: "Operator Glyphs (✦ ◈ ⚡)",
-        description: "Crisp prefix glyphs for ponytail, caveman, and streaming state",
         preview: &[],
     },
     ModeBarStyleOption {
@@ -1733,8 +1793,9 @@ pub fn render_theme_select(
             let live_status_preview = |style_id: &str| -> Vec<Line<'static>> {
                 let mut opts = crate::ui::status::StatusDisplayOptions::from_ui_config(ui_prefs);
                 opts.status_bar_style = crate::config::StatusBarStyle::from_str_loose(style_id);
-                let line1 = crate::ui::status::StatusWidgets::render_status_left_spans(
+                let line1 = crate::ui::status::StatusWidgets::render_status_left_spans_with_bg(
                     theme,
+                    theme.bg_elevated,
                     "minimax",
                     "MiniMax-M3.1-Flash",
                     "medium",
@@ -1747,8 +1808,9 @@ pub fn render_theme_select(
                     status_budget,
                     &opts,
                 );
-                let line2 = crate::ui::status::StatusWidgets::render_status_left_spans(
+                let line2 = crate::ui::status::StatusWidgets::render_status_left_spans_with_bg(
                     theme,
+                    theme.bg_elevated,
                     "anthropic",
                     "claude-sonnet-4-6",
                     "high",
@@ -1769,6 +1831,7 @@ pub fn render_theme_select(
                     )));
                 } else {
                     out.push(Line::from(line1));
+                    out.push(Line::from(String::new()));
                     out.push(Line::from(line2));
                 }
                 out
@@ -1780,7 +1843,7 @@ pub fn render_theme_select(
                 status_bar_styles,
                 status_bar_style_selected_index,
                 ui_prefs.status_bar_style_enum().as_str(),
-                28,
+                30,
                 list_max_visible,
                 right_w,
                 theme,
@@ -1852,8 +1915,9 @@ pub fn render_theme_select(
         crate::ui::modals::ThemeModalTab::ModeBarStyles => {
             let live_mode_preview = |style_id: &str| -> Vec<Line<'static>> {
                 let st = crate::config::ModeBarStyle::from_str_loose(style_id);
-                let active_spans = crate::ui::status::StatusWidgets::render_mode_bar_spans(
+                let active_spans = crate::ui::status::StatusWidgets::render_mode_bar_spans_with_bg(
                     theme,
+                    theme.bg_elevated,
                     true,
                     "full",
                     true,
@@ -1864,8 +1928,9 @@ pub fn render_theme_select(
                     ui_prefs.show_caveman_badge,
                     ui_prefs.show_streaming_badge,
                 );
-                let mixed_spans = crate::ui::status::StatusWidgets::render_mode_bar_spans(
+                let mixed_spans = crate::ui::status::StatusWidgets::render_mode_bar_spans_with_bg(
                     theme,
+                    theme.bg_elevated,
                     false,
                     "full",
                     true,
@@ -1886,7 +1951,7 @@ pub fn render_theme_select(
                     l1.extend(active_spans);
                     let mut l2 = vec![Span::styled("Mixed  : ", Style::default().fg(theme.muted))];
                     l2.extend(mixed_spans);
-                    vec![Line::from(l1), Line::from(l2)]
+                    vec![Line::from(l1), Line::from(String::new()), Line::from(l2)]
                 }
             };
             render_style_preview_list(
@@ -2060,8 +2125,9 @@ pub fn render_theme_select(
                 6.3,
                 theme,
             );
-            let mode_spans = crate::ui::status::StatusWidgets::render_mode_bar_spans(
+            let mode_spans = crate::ui::status::StatusWidgets::render_mode_bar_spans_with_bg(
                 theme,
+                theme.bg_elevated,
                 true,
                 "full",
                 true,
@@ -2084,8 +2150,9 @@ pub fn render_theme_select(
             preview_lines.push(Line::from(act_row));
 
             let status_opts = crate::ui::status::StatusDisplayOptions::from_ui_config(ui_prefs);
-            let left_spans = crate::ui::status::StatusWidgets::render_status_left_spans(
+            let left_spans = crate::ui::status::StatusWidgets::render_status_left_spans_with_bg(
                 theme,
+                theme.bg_elevated,
                 "minimax",
                 "MiniMax-M3.1-Flash",
                 "medium",

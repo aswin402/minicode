@@ -511,11 +511,69 @@ impl StatusWidgets {
         spans
     }
 
+    /// Softly blends `accent` into `base` by `ratio` (0.0..=1.0) for Oh My Posh velvety tinted
+    /// segment backgrounds that harmonize automatically with both dark and light themes.
+    fn tint_bg(
+        accent: ratatui::style::Color,
+        base: ratatui::style::Color,
+        fallback: ratatui::style::Color,
+        ratio: f32,
+    ) -> ratatui::style::Color {
+        use ratatui::style::Color;
+        match (accent, base) {
+            (Color::Rgb(ar, ag, ab), Color::Rgb(br, bg, bb)) => {
+                let t = ratio.clamp(0.0, 1.0);
+                let r = (br as f32 + (ar as f32 - br as f32) * t)
+                    .round()
+                    .clamp(0.0, 255.0) as u8;
+                let g = (bg as f32 + (ag as f32 - bg as f32) * t)
+                    .round()
+                    .clamp(0.0, 255.0) as u8;
+                let b = (bb as f32 + (ab as f32 - bb as f32) * t)
+                    .round()
+                    .clamp(0.0, 255.0) as u8;
+                Color::Rgb(r, g, b)
+            }
+            _ => fallback,
+        }
+    }
+
     /// Renders the right-aligned Mode Badges strip (`· ponytail:full | caveman:full | streaming`)
-    /// according to the active `ModeBarStyle` and per-badge visibility toggles.
+    /// on `theme.bg_primary` according to the active `ModeBarStyle` and per-badge visibility toggles.
     #[allow(clippy::too_many_arguments)]
     pub fn render_mode_bar_spans(
         theme: &Theme,
+        ponytail_active: bool,
+        ponytail_level: &str,
+        caveman_active: bool,
+        caveman_level: &str,
+        streaming_active: bool,
+        style: crate::config::ModeBarStyle,
+        show_ponytail: bool,
+        show_caveman: bool,
+        show_streaming: bool,
+    ) -> Vec<Span<'static>> {
+        Self::render_mode_bar_spans_with_bg(
+            theme,
+            theme.bg_primary,
+            ponytail_active,
+            ponytail_level,
+            caveman_active,
+            caveman_level,
+            streaming_active,
+            style,
+            show_ponytail,
+            show_caveman,
+            show_streaming,
+        )
+    }
+
+    /// Renders the right-aligned Mode Badges strip with an explicit surrounding `bar_bg` so
+    /// Oh My Posh caps (``, ``, ``, ``) blend seamlessly in both the live bar and `/theme` previews.
+    #[allow(clippy::too_many_arguments)]
+    pub fn render_mode_bar_spans_with_bg(
+        theme: &Theme,
+        bar_bg: ratatui::style::Color,
         ponytail_active: bool,
         ponytail_level: &str,
         caveman_active: bool,
@@ -537,6 +595,7 @@ impl StatusWidgets {
 
         struct BadgeItem {
             full: String,
+            posh: String,
             short: String,
             icon: &'static str,
             active: bool,
@@ -550,6 +609,11 @@ impl StatusWidgets {
                     format!("ponytail:{}", pt_lvl.as_str())
                 } else {
                     "ponytail:off".to_string()
+                },
+                posh: if ponytail_active {
+                    format!("ponytail·{}", pt_lvl.as_str())
+                } else {
+                    "ponytail".to_string()
                 },
                 short: if ponytail_active {
                     format!("pt:{}", pt_lvl.as_str())
@@ -568,6 +632,11 @@ impl StatusWidgets {
                 } else {
                     "caveman:off".to_string()
                 },
+                posh: if caveman_active {
+                    format!("caveman·{}", cm_lvl.as_str())
+                } else {
+                    "caveman".to_string()
+                },
                 short: if caveman_active {
                     format!("cm:{}", cm_lvl.as_str())
                 } else {
@@ -581,12 +650,21 @@ impl StatusWidgets {
         if show_streaming {
             items.push(BadgeItem {
                 full: "streaming".to_string(),
+                posh: "stream".to_string(),
                 short: "strm".to_string(),
                 icon: "⚡",
                 active: streaming_active,
                 color: theme.success,
             });
         }
+
+        let item_bg = |item: &BadgeItem| -> ratatui::style::Color {
+            if item.active {
+                Self::tint_bg(item.color, bar_bg, theme.bg_elevated, 0.20)
+            } else {
+                Self::tint_bg(theme.muted, bar_bg, theme.bg_elevated, 0.10)
+            }
+        };
 
         let mut spans: Vec<Span<'static>> = Vec::new();
         for (idx, item) in items.iter().enumerate() {
@@ -605,19 +683,91 @@ impl StatusWidgets {
                         spans.push(Span::styled(item.full.clone(), fg_style));
                     }
                 }
+                ModeBarStyle::PoshPure => {
+                    if idx > 0 {
+                        spans.push(Span::raw("  "));
+                    }
+                    if item.active {
+                        spans.push(Span::styled("• ", Style::default().fg(item.color)));
+                        spans.push(Span::styled(
+                            item.posh.clone(),
+                            Style::default().fg(theme.text_primary),
+                        ));
+                    } else {
+                        spans.push(Span::styled("◦ ", Style::default().fg(theme.border)));
+                        spans.push(Span::styled(
+                            item.posh.clone(),
+                            Style::default().fg(theme.muted),
+                        ));
+                    }
+                }
+                ModeBarStyle::PoshSlash => {
+                    if idx > 0 {
+                        spans.push(Span::styled(" / ", Style::default().fg(theme.border)));
+                    }
+                    let txt_st = if item.active {
+                        Style::default().fg(item.color)
+                    } else {
+                        Style::default().fg(theme.muted)
+                    };
+                    spans.push(Span::styled(item.posh.clone(), txt_st));
+                }
+                ModeBarStyle::PoshVelvet => {
+                    if idx > 0 {
+                        spans.push(Span::styled(" ", Style::default().bg(bar_bg)));
+                    }
+                    let seg_bg = item_bg(item);
+                    let rail_fg = if item.active {
+                        item.color
+                    } else {
+                        theme.border
+                    };
+                    spans.push(Span::styled("▎", Style::default().fg(rail_fg).bg(seg_bg)));
+                    spans.push(Span::styled(
+                        format!(" {} ", item.posh),
+                        fg_style.bg(seg_bg),
+                    ));
+                }
                 ModeBarStyle::Pills => {
                     if idx > 0 {
-                        spans.push(Span::raw(" "));
+                        spans.push(Span::styled(" ", Style::default().bg(bar_bg)));
                     }
-                    let pill_style = if item.active {
-                        Style::default()
-                            .fg(item.color)
-                            .bg(theme.bg_elevated)
-                            .add_modifier(Modifier::BOLD)
+                    let seg_bg = item_bg(item);
+                    spans.push(Span::styled(
+                        format!(" {} ", item.posh),
+                        fg_style.bg(seg_bg),
+                    ));
+                }
+                ModeBarStyle::PoshBubbles => {
+                    if idx > 0 {
+                        spans.push(Span::styled(" ", Style::default().bg(bar_bg)));
+                    }
+                    let seg_bg = item_bg(item);
+                    let cap_style = Style::default().fg(seg_bg).bg(bar_bg);
+                    spans.push(Span::styled("\u{e0b6}", cap_style));
+                    spans.push(Span::styled(item.posh.clone(), fg_style.bg(seg_bg)));
+                    spans.push(Span::styled("\u{e0b4}", cap_style));
+                }
+                ModeBarStyle::PoshPowerline | ModeBarStyle::PoshSlant => {
+                    let sep_glyph = if style == ModeBarStyle::PoshSlant {
+                        "\u{e0ba}" //  right-aligned diagonal slant
                     } else {
-                        Style::default().fg(theme.muted).bg(theme.bg_elevated)
+                        "\u{e0b2}" //  right-aligned powerline arrow
                     };
-                    spans.push(Span::styled(format!(" {} ", item.full), pill_style));
+                    let seg_bg = item_bg(item);
+                    let prev_bg = if idx == 0 {
+                        bar_bg
+                    } else {
+                        item_bg(&items[idx - 1])
+                    };
+                    spans.push(Span::styled(
+                        sep_glyph,
+                        Style::default().fg(seg_bg).bg(prev_bg),
+                    ));
+                    spans.push(Span::styled(
+                        format!(" {} ", item.posh),
+                        fg_style.bg(seg_bg),
+                    ));
                 }
                 ModeBarStyle::Dots => {
                     if idx > 0 {
@@ -659,13 +809,13 @@ impl StatusWidgets {
         }
 
         if !spans.is_empty() {
-            spans.push(Span::raw(" "));
+            spans.push(Span::styled(" ", Style::default().bg(bar_bg)));
         }
         spans
     }
 
-    /// Renders the left-hand bottom Status Bar telemetry spans according to the active
-    /// `StatusBarStyle` and per-segment visibility flags.
+    /// Renders the left-hand bottom Status Bar telemetry spans on `theme.bg_primary` according
+    /// to the active `StatusBarStyle` and per-segment visibility flags.
     #[allow(clippy::too_many_arguments)]
     pub fn render_status_left_spans(
         theme: &Theme,
@@ -681,9 +831,57 @@ impl StatusWidgets {
         left_budget: usize,
         display: &StatusDisplayOptions,
     ) -> Vec<Span<'static>> {
+        Self::render_status_left_spans_with_bg(
+            theme,
+            theme.bg_primary,
+            provider,
+            model,
+            effort_level,
+            display_path,
+            git_branch,
+            mcp_count,
+            swarm_active,
+            tasks_summary,
+            web_badge,
+            left_budget,
+            display,
+        )
+    }
+
+    /// Renders the left-hand bottom Status Bar telemetry spans with an explicit surrounding `bar_bg`
+    /// so Oh My Posh caps (``, ``, ``, ``, ``) blend seamlessly in both the live bar and `/theme`.
+    #[allow(clippy::too_many_arguments)]
+    pub fn render_status_left_spans_with_bg(
+        theme: &Theme,
+        bar_bg: ratatui::style::Color,
+        provider: &str,
+        model: &str,
+        effort_level: &str,
+        display_path: &str,
+        git_branch: Option<&str>,
+        mcp_count: usize,
+        swarm_active: usize,
+        tasks_summary: (usize, f32, f32),
+        web_badge: Option<&str>,
+        left_budget: usize,
+        display: &StatusDisplayOptions,
+    ) -> Vec<Span<'static>> {
         use crate::config::StatusBarStyle;
 
         let style = display.status_bar_style;
+        let is_posh_ribbon = matches!(style, StatusBarStyle::Powerline | StatusBarStyle::PoshSlant);
+        let is_posh_clean = matches!(
+            style,
+            StatusBarStyle::PoshPure
+                | StatusBarStyle::PoshSlash
+                | StatusBarStyle::PoshVelvet
+                | StatusBarStyle::Pills
+                | StatusBarStyle::PoshBubbles
+                | StatusBarStyle::Powerline
+                | StatusBarStyle::PoshSlant
+                | StatusBarStyle::PoshDiamond
+        );
+
         let provider_prefix = format!("{}/", provider);
         let full_provider_model = if model.starts_with(&provider_prefix) {
             model.to_string()
@@ -733,15 +931,24 @@ impl StatusWidgets {
         let active_tasks = display.show_status_badges && task_count > 0;
         let active_web = display.show_status_badges.then_some(web_badge).flatten();
 
+        let pad_per_seg = if is_posh_clean { 4 } else { 3 };
         let base_model_w = usize::from(display.show_status_model)
-            * (1 + unicode_width::UnicodeWidthStr::width(model_display.as_str()))
+            * (pad_per_seg + unicode_width::UnicodeWidthStr::width(model_display.as_str()))
             + usize::from(display.show_status_effort)
-                * (3 + unicode_width::UnicodeWidthStr::width(level_label));
-        let git_w = git_branch_opt.map(|b| 3 + 4 + b.len()).unwrap_or(0);
-        let mcp_full_w = mcp_short.as_ref().map(|s| 3 + s.len() + 7).unwrap_or(0);
-        let swarm_full_w = swarm_short.as_ref().map(|s| 3 + s.len() + 7).unwrap_or(0);
+                * (pad_per_seg + unicode_width::UnicodeWidthStr::width(level_label));
+        let git_w = git_branch_opt
+            .map(|b| pad_per_seg + 4 + b.len())
+            .unwrap_or(0);
+        let mcp_full_w = mcp_short
+            .as_ref()
+            .map(|s| pad_per_seg + s.len() + 7)
+            .unwrap_or(0);
+        let swarm_full_w = swarm_short
+            .as_ref()
+            .map(|s| pad_per_seg + s.len() + 7)
+            .unwrap_or(0);
         let tasks_full_w = if active_tasks {
-            3 + tasks_full_str.len()
+            pad_per_seg + tasks_full_str.len()
         } else {
             0
         };
@@ -756,7 +963,7 @@ impl StatusWidgets {
             display_path.to_string()
         };
         let path_full_w = if display.show_status_path {
-            3 + unicode_width::UnicodeWidthStr::width(path_source.as_str())
+            pad_per_seg + unicode_width::UnicodeWidthStr::width(path_source.as_str())
         } else {
             0
         };
@@ -764,17 +971,213 @@ impl StatusWidgets {
         let compact_badges = base_model_w + path_full_w + badges_full_w > left_budget;
         let badges_actual_w = if compact_badges {
             git_w
-                + mcp_short.as_ref().map(|s| 3 + s.len()).unwrap_or(0)
-                + swarm_short.as_ref().map(|s| 3 + s.len()).unwrap_or(0)
+                + mcp_short
+                    .as_ref()
+                    .map(|s| pad_per_seg + s.len())
+                    .unwrap_or(0)
+                + swarm_short
+                    .as_ref()
+                    .map(|s| pad_per_seg + s.len())
+                    .unwrap_or(0)
                 + tasks_full_w
         } else {
             badges_full_w
         };
 
         let path_budget = left_budget
-            .saturating_sub(base_model_w + badges_actual_w + 3)
+            .saturating_sub(base_model_w + badges_actual_w + 4)
             .max(12);
         let fitted_path = Self::compact_path_to_budget(&path_source, path_budget);
+
+        #[derive(Clone, Copy, PartialEq, Eq)]
+        enum SegmentGroup {
+            Primary,
+            Secondary,
+        }
+
+        struct StatusSeg {
+            group: SegmentGroup,
+            icon: Option<&'static str>,
+            pure_prefix: Option<&'static str>,
+            text: String,
+            accent: ratatui::style::Color,
+            bold: bool,
+            optional: bool,
+        }
+
+        let mut planned: Vec<StatusSeg> = Vec::with_capacity(8);
+
+        if display.show_status_model {
+            planned.push(StatusSeg {
+                group: SegmentGroup::Primary,
+                icon: Some("◈"),
+                pure_prefix: None,
+                text: model_display,
+                accent: theme.warning,
+                bold: true,
+                optional: false,
+            });
+        }
+        if display.show_status_effort {
+            planned.push(StatusSeg {
+                group: SegmentGroup::Primary,
+                icon: Some("⚡"),
+                pure_prefix: None,
+                text: level_label.to_string(),
+                accent: level_color,
+                bold: true,
+                optional: false,
+            });
+        }
+        if display.show_status_path {
+            planned.push(StatusSeg {
+                group: SegmentGroup::Secondary,
+                icon: Some("⌂"),
+                pure_prefix: None,
+                text: fitted_path,
+                accent: theme.info,
+                bold: false,
+                optional: false,
+            });
+        }
+        if let Some(branch) = git_branch_opt {
+            let seg = match style {
+                StatusBarStyle::Compact | StatusBarStyle::Minimal | StatusBarStyle::Icons => {
+                    branch.to_string()
+                }
+                StatusBarStyle::PoshPure
+                | StatusBarStyle::PoshSlash
+                | StatusBarStyle::PoshVelvet
+                | StatusBarStyle::Pills
+                | StatusBarStyle::PoshBubbles
+                | StatusBarStyle::Powerline
+                | StatusBarStyle::PoshSlant
+                | StatusBarStyle::PoshDiamond => format!("⎇ {}", branch),
+                _ => format!("git:{}", branch),
+            };
+            planned.push(StatusSeg {
+                group: SegmentGroup::Secondary,
+                icon: Some("⎇"),
+                pure_prefix: Some("on "),
+                text: seg,
+                accent: theme.success,
+                bold: false,
+                optional: true,
+            });
+        }
+        if let Some(mut seg) = mcp_short {
+            if !compact_badges && style == StatusBarStyle::Classic {
+                seg.push_str(" active");
+            }
+            planned.push(StatusSeg {
+                group: SegmentGroup::Secondary,
+                icon: Some("⊕"),
+                pure_prefix: None,
+                text: seg,
+                accent: theme.brand_accent,
+                bold: false,
+                optional: true,
+            });
+        }
+        if let Some(mut seg) = swarm_short {
+            if !compact_badges && style == StatusBarStyle::Classic {
+                seg.push_str(" active");
+            }
+            planned.push(StatusSeg {
+                group: SegmentGroup::Secondary,
+                icon: Some("❖"),
+                pure_prefix: None,
+                text: seg,
+                accent: theme.info,
+                bold: true,
+                optional: true,
+            });
+        }
+        if active_tasks {
+            let task_color = if task_mem_mb > 1500.0 || task_cpu_pct > 80.0 {
+                theme.destructive
+            } else if task_mem_mb > 800.0 || task_cpu_pct > 40.0 {
+                theme.warning
+            } else {
+                theme.success
+            };
+            let badge_text = if compact_badges {
+                format!("tasks:{}", task_count)
+            } else {
+                tasks_full_str
+            };
+            planned.push(StatusSeg {
+                group: SegmentGroup::Secondary,
+                icon: Some("⚙"),
+                pure_prefix: None,
+                text: badge_text,
+                accent: task_color,
+                bold: true,
+                optional: true,
+            });
+        }
+        if let Some(web) = active_web {
+            planned.push(StatusSeg {
+                group: SegmentGroup::Secondary,
+                icon: Some("◎"),
+                pure_prefix: None,
+                text: web.to_string(),
+                accent: theme.brand_accent,
+                bold: false,
+                optional: true,
+            });
+        }
+
+        if planned.is_empty() {
+            return Vec::new();
+        }
+
+        // Seamless Oh My Posh contiguous ribbon styles (Powerline `` & Slant ``)
+        if is_posh_ribbon {
+            let sep_glyph = if style == StatusBarStyle::PoshSlant {
+                "\u{e0b8}" // 
+            } else {
+                "\u{e0b0}" // 
+            };
+            let mut accepted: Vec<&StatusSeg> = Vec::with_capacity(planned.len());
+            let mut used_w = 1usize; // leading space
+            for seg in &planned {
+                let seg_w = unicode_width::UnicodeWidthStr::width(seg.text.as_str()) + 3; // " text " + cap
+                if !seg.optional || used_w + seg_w <= left_budget {
+                    used_w += seg_w;
+                    accepted.push(seg);
+                }
+            }
+            if accepted.is_empty() {
+                return Vec::new();
+            }
+
+            let mut spans: Vec<Span<'static>> =
+                vec![Span::styled(" ", Style::default().bg(bar_bg))];
+            let mut prev_bg: Option<ratatui::style::Color> = None;
+            for seg in &accepted {
+                let seg_bg = Self::tint_bg(seg.accent, bar_bg, theme.bg_elevated, 0.22);
+                if let Some(p_bg) = prev_bg {
+                    spans.push(Span::styled(
+                        sep_glyph,
+                        Style::default().fg(p_bg).bg(seg_bg),
+                    ));
+                }
+                let mut text_st = Style::default().fg(seg.accent).bg(seg_bg);
+                if seg.bold {
+                    text_st = text_st.add_modifier(Modifier::BOLD);
+                }
+                spans.push(Span::styled(format!(" {} ", seg.text), text_st));
+                prev_bg = Some(seg_bg);
+            }
+            if let Some(last_bg) = prev_bg {
+                spans.push(Span::styled(
+                    sep_glyph,
+                    Style::default().fg(last_bg).bg(bar_bg),
+                ));
+            }
+            return spans;
+        }
 
         let current_left_width = |spans: &[Span]| -> usize {
             spans
@@ -783,41 +1186,40 @@ impl StatusWidgets {
                 .sum()
         };
 
-        #[derive(Clone, Copy, PartialEq, Eq)]
-        enum SegmentGroup {
-            Primary,
-            Secondary,
-        }
-
         let mut left_spans: Vec<Span<'static>> = Vec::new();
         let mut last_group: Option<SegmentGroup> = None;
 
-        let push_segment = |spans: &mut Vec<Span<'static>>,
-                            last_group: &mut Option<SegmentGroup>,
-                            group: SegmentGroup,
-                            icon: Option<&'static str>,
-                            text: String,
-                            text_style: Style,
-                            check_budget: bool| {
-            let mut candidate: Vec<Span<'static>> = Vec::new();
+        for seg in planned {
+            let mut text_style = Style::default().fg(seg.accent);
+            if seg.bold {
+                text_style = text_style.add_modifier(Modifier::BOLD);
+            }
+            let seg_bg = Self::tint_bg(seg.accent, bar_bg, theme.bg_elevated, 0.20);
             let is_first = last_group.is_none();
             let switched_group =
-                *last_group == Some(SegmentGroup::Primary) && group == SegmentGroup::Secondary;
+                last_group == Some(SegmentGroup::Primary) && seg.group == SegmentGroup::Secondary;
 
+            let mut candidate: Vec<Span<'static>> = Vec::new();
             if is_first {
-                candidate.push(Span::raw(" "));
+                candidate.push(Span::styled(" ", Style::default().bg(bar_bg)));
             } else {
                 match style {
                     StatusBarStyle::Classic => {
                         let sep = if switched_group { " | " } else { " · " };
                         candidate.push(Span::styled(sep, Style::default().fg(theme.muted)));
                     }
-                    StatusBarStyle::Pills | StatusBarStyle::Brackets => {
-                        candidate.push(Span::raw(" "));
+                    StatusBarStyle::PoshPure => {
+                        candidate.push(Span::raw("  "));
                     }
-                    StatusBarStyle::Powerline => {
-                        let sep = if switched_group { " ▸ " } else { " › " };
-                        candidate.push(Span::styled(sep, Style::default().fg(theme.border)));
+                    StatusBarStyle::PoshSlash => {
+                        candidate.push(Span::styled(" / ", Style::default().fg(theme.border)));
+                    }
+                    StatusBarStyle::PoshVelvet
+                    | StatusBarStyle::Pills
+                    | StatusBarStyle::PoshBubbles
+                    | StatusBarStyle::PoshDiamond
+                    | StatusBarStyle::Brackets => {
+                        candidate.push(Span::styled(" ", Style::default().bg(bar_bg)));
                     }
                     StatusBarStyle::Compact => {
                         candidate.push(Span::styled(" · ", Style::default().fg(theme.muted)));
@@ -829,168 +1231,79 @@ impl StatusWidgets {
                         let sep = if switched_group { " │ " } else { " · " };
                         candidate.push(Span::styled(sep, Style::default().fg(theme.border)));
                     }
+                    StatusBarStyle::Powerline | StatusBarStyle::PoshSlant => {}
                 }
             }
 
             match style {
+                StatusBarStyle::PoshPure => {
+                    if let Some(pfx) = seg.pure_prefix {
+                        candidate.push(Span::styled(
+                            pfx,
+                            Style::default()
+                                .fg(theme.muted)
+                                .add_modifier(Modifier::ITALIC),
+                        ));
+                    }
+                    candidate.push(Span::styled(seg.text, text_style));
+                }
+                StatusBarStyle::PoshVelvet => {
+                    candidate.push(Span::styled(
+                        "▎",
+                        Style::default().fg(seg.accent).bg(seg_bg),
+                    ));
+                    candidate.push(Span::styled(
+                        format!(" {} ", seg.text),
+                        text_style.bg(seg_bg),
+                    ));
+                }
                 StatusBarStyle::Pills => {
-                    let pill_st = text_style.bg(theme.bg_elevated);
-                    candidate.push(Span::styled(format!(" {} ", text), pill_st));
+                    candidate.push(Span::styled(
+                        format!(" {} ", seg.text),
+                        text_style.bg(seg_bg),
+                    ));
+                }
+                StatusBarStyle::PoshBubbles => {
+                    let cap_style = Style::default().fg(seg_bg).bg(bar_bg);
+                    candidate.push(Span::styled("\u{e0b6}", cap_style));
+                    candidate.push(Span::styled(seg.text, text_style.bg(seg_bg)));
+                    candidate.push(Span::styled("\u{e0b4}", cap_style));
+                }
+                StatusBarStyle::PoshDiamond => {
+                    let cap_style = Style::default().fg(seg_bg).bg(bar_bg);
+                    candidate.push(Span::styled("\u{e0b2}", cap_style));
+                    candidate.push(Span::styled(
+                        format!(" {} ", seg.text),
+                        text_style.bg(seg_bg),
+                    ));
+                    candidate.push(Span::styled("\u{e0b0}", cap_style));
                 }
                 StatusBarStyle::Brackets => {
                     candidate.push(Span::styled("[", Style::default().fg(theme.border)));
-                    candidate.push(Span::styled(text, text_style));
+                    candidate.push(Span::styled(seg.text, text_style));
                     candidate.push(Span::styled("]", Style::default().fg(theme.border)));
                 }
-                StatusBarStyle::Powerline => {
-                    if is_first {
-                        candidate.push(Span::styled("▸ ", Style::default().fg(theme.brand_accent)));
-                    }
-                    candidate.push(Span::styled(text, text_style));
-                }
                 StatusBarStyle::Icons => {
-                    if let Some(ic) = icon {
+                    if let Some(ic) = seg.icon {
                         candidate.push(Span::styled(format!("{} ", ic), text_style));
                     }
-                    candidate.push(Span::styled(text, text_style));
+                    candidate.push(Span::styled(seg.text, text_style));
                 }
-                StatusBarStyle::Classic | StatusBarStyle::Compact | StatusBarStyle::Minimal => {
-                    candidate.push(Span::styled(text, text_style));
+                StatusBarStyle::Classic
+                | StatusBarStyle::PoshSlash
+                | StatusBarStyle::Compact
+                | StatusBarStyle::Minimal
+                | StatusBarStyle::Powerline
+                | StatusBarStyle::PoshSlant => {
+                    candidate.push(Span::styled(seg.text, text_style));
                 }
             }
 
             let add_w = current_left_width(&candidate);
-            if !check_budget || current_left_width(spans) + add_w <= left_budget {
-                spans.extend(candidate);
-                *last_group = Some(group);
+            if !seg.optional || current_left_width(&left_spans) + add_w <= left_budget {
+                left_spans.extend(candidate);
+                last_group = Some(seg.group);
             }
-        };
-
-        if display.show_status_model {
-            push_segment(
-                &mut left_spans,
-                &mut last_group,
-                SegmentGroup::Primary,
-                Some("◈"),
-                model_display,
-                Style::default()
-                    .fg(theme.warning)
-                    .add_modifier(Modifier::BOLD),
-                false,
-            );
-        }
-
-        if display.show_status_effort {
-            push_segment(
-                &mut left_spans,
-                &mut last_group,
-                SegmentGroup::Primary,
-                Some("⚡"),
-                level_label.to_string(),
-                Style::default()
-                    .fg(level_color)
-                    .add_modifier(Modifier::BOLD),
-                false,
-            );
-        }
-
-        if display.show_status_path {
-            push_segment(
-                &mut left_spans,
-                &mut last_group,
-                SegmentGroup::Secondary,
-                Some("⌂"),
-                fitted_path,
-                Style::default().fg(theme.info),
-                false,
-            );
-        }
-
-        if let Some(branch) = git_branch_opt {
-            let seg = match style {
-                StatusBarStyle::Compact | StatusBarStyle::Minimal | StatusBarStyle::Icons => {
-                    branch.to_string()
-                }
-                _ => format!("git:{}", branch),
-            };
-            push_segment(
-                &mut left_spans,
-                &mut last_group,
-                SegmentGroup::Secondary,
-                Some("⎇"),
-                seg,
-                Style::default().fg(theme.success),
-                true,
-            );
-        }
-
-        if let Some(mut seg) = mcp_short {
-            if !compact_badges && style == StatusBarStyle::Classic {
-                seg.push_str(" active");
-            }
-            push_segment(
-                &mut left_spans,
-                &mut last_group,
-                SegmentGroup::Secondary,
-                Some("⊕"),
-                seg,
-                Style::default().fg(theme.brand_accent),
-                true,
-            );
-        }
-
-        if let Some(mut seg) = swarm_short {
-            if !compact_badges && style == StatusBarStyle::Classic {
-                seg.push_str(" active");
-            }
-            push_segment(
-                &mut left_spans,
-                &mut last_group,
-                SegmentGroup::Secondary,
-                Some("❖"),
-                seg,
-                Style::default().fg(theme.info).add_modifier(Modifier::BOLD),
-                true,
-            );
-        }
-
-        if active_tasks {
-            let task_color = if task_mem_mb > 1500.0 || task_cpu_pct > 80.0 {
-                theme.destructive
-            } else if task_mem_mb > 800.0 || task_cpu_pct > 40.0 {
-                theme.warning
-            } else {
-                theme.success
-            };
-
-            let badge_text =
-                if current_left_width(&left_spans) + 3 + tasks_full_str.len() <= left_budget {
-                    tasks_full_str
-                } else {
-                    format!("tasks:{}", task_count)
-                };
-
-            push_segment(
-                &mut left_spans,
-                &mut last_group,
-                SegmentGroup::Secondary,
-                Some("⚙"),
-                badge_text,
-                Style::default().fg(task_color).add_modifier(Modifier::BOLD),
-                true,
-            );
-        }
-
-        if let Some(web) = active_web {
-            push_segment(
-                &mut left_spans,
-                &mut last_group,
-                SegmentGroup::Secondary,
-                Some("◎"),
-                web.to_string(),
-                Style::default().fg(theme.brand_accent),
-                true,
-            );
         }
 
         left_spans
@@ -1371,5 +1684,102 @@ mod tests {
         assert!(!left.contains("MiniMax"));
         assert!(!left.contains("~/code/app"));
         assert!(left.contains("⚡ medium") && left.contains("⎇ main"));
+    }
+
+    #[test]
+    fn test_oh_my_posh_status_bar_and_mode_bar_styles() {
+        use crate::config::{ModeBarStyle, StatusBarStyle};
+
+        let theme = Theme::aura_dark();
+        let join_spans = |spans: Vec<Span<'static>>| -> String {
+            spans.into_iter().map(|s| s.content.into_owned()).collect()
+        };
+
+        // 1. Every Oh My Posh status bar style renders cleanly with matching cap bg
+        for (style, expected_marker) in [
+            (StatusBarStyle::PoshPure, "on ⎇ main"),
+            (StatusBarStyle::PoshSlash, " / "),
+            (StatusBarStyle::PoshVelvet, "▎"),
+            (StatusBarStyle::Pills, "⎇ main"),
+            (StatusBarStyle::PoshBubbles, "\u{e0b6}"),
+            (StatusBarStyle::Powerline, "\u{e0b0}"),
+            (StatusBarStyle::PoshSlant, "\u{e0b8}"),
+            (StatusBarStyle::PoshDiamond, "\u{e0b2}"),
+        ] {
+            let opts = StatusDisplayOptions {
+                status_bar_style: style,
+                ..Default::default()
+            };
+            let spans = StatusWidgets::render_status_left_spans_with_bg(
+                &theme,
+                theme.bg_elevated,
+                "minimax",
+                "MiniMax-M3.1-Flash",
+                "medium",
+                "~/programming/minitest82",
+                Some("main"),
+                0,
+                0,
+                (0, 0.0, 0.0),
+                None,
+                140,
+                &opts,
+            );
+            let txt = join_spans(spans.clone());
+            assert!(
+                txt.contains(expected_marker) && txt.contains("MiniMax-M3.1-Flash"),
+                "Status style {:?} missing expected marker {:?}, got: {txt}",
+                style,
+                expected_marker
+            );
+            if matches!(
+                style,
+                StatusBarStyle::PoshBubbles
+                    | StatusBarStyle::Powerline
+                    | StatusBarStyle::PoshSlant
+                    | StatusBarStyle::PoshDiamond
+            ) {
+                let last_span = spans.last().expect("trailing cap");
+                assert_eq!(
+                    last_span.style.bg,
+                    Some(theme.bg_elevated),
+                    "Trailing cap for {:?} must match surrounding bar_bg",
+                    style
+                );
+            }
+        }
+
+        // 2. Every Oh My Posh mode bar style renders cleanly & omits noisy `:off` clutter
+        for (style, expected_marker) in [
+            (ModeBarStyle::PoshPure, "• "),
+            (ModeBarStyle::PoshSlash, " / "),
+            (ModeBarStyle::PoshVelvet, "▎"),
+            (ModeBarStyle::Pills, "ponytail·full"),
+            (ModeBarStyle::PoshBubbles, "\u{e0b6}"),
+            (ModeBarStyle::PoshPowerline, "\u{e0b2}"),
+            (ModeBarStyle::PoshSlant, "\u{e0ba}"),
+        ] {
+            let txt = join_spans(StatusWidgets::render_mode_bar_spans_with_bg(
+                &theme,
+                theme.bg_elevated,
+                true,
+                "full",
+                false,
+                "full",
+                true,
+                style,
+                true,
+                true,
+                true,
+            ));
+            assert!(
+                txt.contains(expected_marker)
+                    && txt.contains("ponytail·full")
+                    && txt.contains("stream")
+                    && !txt.contains("caveman:off"),
+                "Mode style {:?} unexpected rendering: {txt}",
+                style
+            );
+        }
     }
 }
