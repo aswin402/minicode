@@ -988,7 +988,9 @@ pub enum ToastSymbolTheme {
     Cyber,
     /// Compact bracketed status tags (`[OK]`, `[i]`, `[!]`, `[ERR]`, `[BOT]`, `[TSK]`, `[SKL]`)
     Bracket,
-    /// Nerd Font FontAwesome vector icons (``, ``, ``, ``, ``, ``, ``)
+    /// Universal Unicode Technical Symbols (`✓`, `◈`, `△`, `✗`, `❖`, `⎇`, `⚡`) — zero boxes in any font
+    Technical,
+    /// Nerd Font Codicons vector icons (`\u{eab2}`, `\u{ea74}`, `\u{ea6c}`, `\u{ea87}`, `\u{eb08}`, `\u{eaa6}`, `\u{ea61}`)
     NerdFont,
 }
 
@@ -1024,9 +1026,14 @@ const TOAST_SYMBOL_THEME_TABLE: &[(ToastSymbolTheme, &str, &[&str])] = &[
         &["bracket", "brackets", "tags", "badge"],
     ),
     (
+        ToastSymbolTheme::Technical,
+        "technical",
+        &["technical", "alt", "branch", "universal", "utf8"],
+    ),
+    (
         ToastSymbolTheme::NerdFont,
         "nerdfont",
-        &["nerdfont", "nerd", "nf", "fontawesome", "fa"],
+        &["nerdfont", "nerd", "nf", "fontawesome", "fa", "codicons"],
     ),
 ];
 
@@ -1090,6 +1097,16 @@ pub enum ActivityBarStyle {
     NfTool,
     /// Nerd Font + Style 3: `Working... | <nf-icon> <action target>` (Hermes trail with Nerd Font icon)
     NfTrail,
+    /// Unicode Symbols + Style 1: `Action... | ✎ tool_name · target` (zero-box standard Unicode icons)
+    SymDetail,
+    /// Unicode Symbols + Style 2: `Action... | ✎ tool_name` (zero-box standard Unicode icons)
+    SymTool,
+    /// Unicode Symbols + Style 3: `Working... | ✎ <action target>` (Hermes trail with Unicode icons)
+    SymTrail,
+    /// Pure 7-bit ASCII + Style 1: `Action... | [>] tool_name - target`
+    AsciiDetail,
+    /// Pure 7-bit ASCII + Style 2: `Action... | [>] tool_name`
+    AsciiTool,
 }
 
 #[allow(dead_code)]
@@ -1112,6 +1129,11 @@ impl ActivityBarStyle {
             Self::NfDetail => "nf_detail",
             Self::NfTool => "nf_tool",
             Self::NfTrail => "nf_trail",
+            Self::SymDetail => "sym_detail",
+            Self::SymTool => "sym_tool",
+            Self::SymTrail => "sym_trail",
+            Self::AsciiDetail => "ascii_detail",
+            Self::AsciiTool => "ascii_tool",
         }
     }
 
@@ -1133,6 +1155,11 @@ impl ActivityBarStyle {
             "nf_detail" | "nerdfont" | "nerd_detail" | "nf1" => Self::NfDetail,
             "nf_tool" | "nerd_tool" | "nf2" => Self::NfTool,
             "nf_trail" | "nerd_trail" | "nf3" => Self::NfTrail,
+            "sym_detail" | "symbols" | "symbol_detail" | "unicode" => Self::SymDetail,
+            "sym_tool" | "symbol_tool" => Self::SymTool,
+            "sym_trail" | "symbol_trail" => Self::SymTrail,
+            "ascii_detail" | "ascii" => Self::AsciiDetail,
+            "ascii_tool" => Self::AsciiTool,
             _ => Self::ActionDetail,
         }
     }
@@ -1221,13 +1248,23 @@ pub enum StatusBarStyle {
     Minimal,
     /// Structured bracketed CLI badges `[model] [effort] [path] [git:branch]`
     Brackets,
-    /// Crisp geometric operator indicators (`◈ model · ⚡effort · ⌂ path · ⎇ branch`)
+    /// Crisp geometric operator indicators (`◈ model · ⚡effort │ ⌂ path · ⎇ branch`)
     Icons,
-    /// Nerd Font clean icon bar (` model ·  effort │  path ·  branch`)
+    /// Oh My Posh rounded capsules with universal Unicode symbols (`◈ model ⚡ effort ⌂ path ⎇ branch`)
+    SymbolBubbles,
+    /// Oh My Posh Powerline ribbon with universal Unicode symbols (` ◈ model  ⚡ effort  ⌂ path  ⎇ branch `)
+    SymbolPowerline,
+    /// Expressive Emoji indicators (`🧠 model · ⚡ effort │ 📁 path · 🌿 branch`)
+    Emoji,
+    /// Expressive Kaomoji indicators (`(◈_◈) model · (ง°_°)ง effort │ (◉_◉) path · (•‿•) branch`)
+    Kaomoji,
+    /// Strict 7-bit ASCII status bar (`[model] | effort | path | git:branch`)
+    Ascii,
+    /// Nerd Font clean icon bar (Codicons/Devicons)
     NerdIcons,
-    /// Oh My Posh rounded capsules with Nerd Font icons (` model  effort  path  branch`)
+    /// Oh My Posh rounded capsules with Nerd Font Codicons
     NerdBubbles,
-    /// Oh My Posh seamless Powerline ribbon with Nerd Font icons (`  model   effort   path   branch `)
+    /// Oh My Posh seamless Powerline ribbon with Nerd Font Codicons
     NerdPowerline,
 }
 
@@ -1249,6 +1286,11 @@ impl StatusBarStyle {
             Self::Minimal => "minimal",
             Self::Brackets => "brackets",
             Self::Icons => "icons",
+            Self::SymbolBubbles => "symbol_bubbles",
+            Self::SymbolPowerline => "symbol_powerline",
+            Self::Emoji => "emoji",
+            Self::Kaomoji => "kaomoji",
+            Self::Ascii => "ascii",
             Self::NerdIcons => "nerd_icons",
             Self::NerdBubbles => "nerd_bubbles",
             Self::NerdPowerline => "nerd_powerline",
@@ -1269,7 +1311,12 @@ impl StatusBarStyle {
             "compact" | "dense" | "short" => Self::Compact,
             "minimal" | "clean" | "plain" => Self::Minimal,
             "brackets" | "bracket" | "tags" => Self::Brackets,
-            "icons" | "icon" | "glyphs" => Self::Icons,
+            "icons" | "icon" | "glyphs" | "symbols" => Self::Icons,
+            "symbol_bubbles" | "sym_bubbles" | "unicode_bubbles" => Self::SymbolBubbles,
+            "symbol_powerline" | "sym_powerline" | "unicode_powerline" => Self::SymbolPowerline,
+            "emoji" | "emojis" => Self::Emoji,
+            "kaomoji" | "kamoji" => Self::Kaomoji,
+            "ascii" | "retro" => Self::Ascii,
             "nerd_icons" | "nerdfont" | "nerd" | "nf" => Self::NerdIcons,
             "nerd_bubbles" | "nf_bubbles" => Self::NerdBubbles,
             "nerd_powerline" | "nf_powerline" => Self::NerdPowerline,
@@ -1301,9 +1348,19 @@ pub enum ContextMeterStyle {
     Minimal,
     /// Sleek thin horizontal line gauge `━━──────── 21%`
     Gauge,
-    /// Nerd Font icons + pie gauge (` 98% •  ◔ 21%`)
+    /// Universal Unicode Technical Symbols + pie ring (`◈ 98% • ⌘ ◔ 21%`)
+    SymbolCircle,
+    /// Universal Unicode Technical Symbols + block bar (`◈ 98% • ⌘ [██░░░░░░] 21%`)
+    SymbolBar,
+    /// Expressive Emoji + block bar (`⚡ 98% • 🧠 [██░░░░░░] 21%`)
+    EmojiBar,
+    /// Expressive Kaomoji telemetry (`(•‿•) 98% · (◉_◉) 21%`)
+    Kaomoji,
+    /// Pure 7-bit ASCII progress bar (`kv 98% | [##......] 21%`)
+    AsciiBar,
+    /// Nerd Font Codicons + pie gauge
     NerdIcons,
-    /// Nerd Font icons + sleek block progress bar (` 98% •  [██░░░░░░░░] 21%`)
+    /// Nerd Font Codicons + sleek block progress bar
     NerdBar,
 }
 
@@ -1321,6 +1378,11 @@ impl ContextMeterStyle {
             Self::Pills => "pills",
             Self::Minimal => "minimal",
             Self::Gauge => "gauge",
+            Self::SymbolCircle => "symbol_circle",
+            Self::SymbolBar => "symbol_bar",
+            Self::EmojiBar => "emoji_bar",
+            Self::Kaomoji => "kaomoji",
+            Self::AsciiBar => "ascii_bar",
             Self::NerdIcons => "nerd_icons",
             Self::NerdBar => "nerd_bar",
         }
@@ -1337,6 +1399,11 @@ impl ContextMeterStyle {
             "pills" | "pill" | "chips" => Self::Pills,
             "minimal" | "clean" => Self::Minimal,
             "gauge" | "line" | "thin" => Self::Gauge,
+            "symbol_circle" | "symbols" | "sym_circle" => Self::SymbolCircle,
+            "symbol_bar" | "sym_bar" => Self::SymbolBar,
+            "emoji_bar" | "emoji" => Self::EmojiBar,
+            "kaomoji" | "kamoji" => Self::Kaomoji,
+            "ascii_bar" | "ascii" => Self::AsciiBar,
             "nerd_icons" | "nerd" | "nerdfont" | "nf" => Self::NerdIcons,
             "nerd_bar" | "nf_bar" => Self::NerdBar,
             _ => Self::Compact,
@@ -1373,11 +1440,21 @@ pub enum ModeBarStyle {
     Minimal,
     /// Structured CLI bracket badges (`[ponytail:full] [caveman:full] [streaming]`)
     Brackets,
-    /// Operator glyph indicators (`✦ ponytail:full · ◈ caveman:full · ⚡stream`)
+    /// Universal Unicode Technical Symbols (`✦ ponytail·full · ◈ caveman·full · ▸ stream`)
     Icons,
-    /// Nerd Font clean icons (` ponytail·full ·  caveman·full ·  stream`)
+    /// Oh My Posh rounded capsules with universal Unicode symbols (`✦ ponytail·full ◈ caveman·full ▸ stream`)
+    SymbolBubbles,
+    /// Oh My Posh right-aligned Powerline with universal Unicode symbols (` ✦ ponytail·full  …`)
+    SymbolPowerline,
+    /// Expressive Emoji badges (`✨ ponytail·full · 🔥 caveman·full · ⚡ stream`)
+    Emoji,
+    /// Expressive Kaomoji badges (`(✧_✧) ponytail · (ง•_•)ง caveman · (•‿•) stream`)
+    Kaomoji,
+    /// Pure 7-bit ASCII mode strip (`* ponytail:full | # caveman:full | > stream`)
+    Ascii,
+    /// Nerd Font clean Codicon icons
     NerdIcons,
-    /// Oh My Posh rounded capsules with Nerd Font icons (` ponytail·full  caveman·full  stream`)
+    /// Oh My Posh rounded capsules with Nerd Font Codicon icons
     NerdBubbles,
     /// Hide the entire mode strip
     Hidden,
@@ -1401,6 +1478,11 @@ impl ModeBarStyle {
             Self::Minimal => "minimal",
             Self::Brackets => "brackets",
             Self::Icons => "icons",
+            Self::SymbolBubbles => "symbol_bubbles",
+            Self::SymbolPowerline => "symbol_powerline",
+            Self::Emoji => "emoji",
+            Self::Kaomoji => "kaomoji",
+            Self::Ascii => "ascii",
             Self::NerdIcons => "nerd_icons",
             Self::NerdBubbles => "nerd_bubbles",
             Self::Hidden => "hidden",
@@ -1421,7 +1503,12 @@ impl ModeBarStyle {
             "compact" | "short" | "mini" => Self::Compact,
             "minimal" | "clean" | "plain" => Self::Minimal,
             "brackets" | "bracket" | "tags" => Self::Brackets,
-            "icons" | "icon" | "glyphs" => Self::Icons,
+            "icons" | "icon" | "glyphs" | "symbols" => Self::Icons,
+            "symbol_bubbles" | "sym_bubbles" | "unicode_bubbles" => Self::SymbolBubbles,
+            "symbol_powerline" | "sym_powerline" | "unicode_powerline" => Self::SymbolPowerline,
+            "emoji" | "emojis" => Self::Emoji,
+            "kaomoji" | "kamoji" => Self::Kaomoji,
+            "ascii" | "retro" => Self::Ascii,
             "nerd_icons" | "nerd" | "nerdfont" | "nf" => Self::NerdIcons,
             "nerd_bubbles" | "nf_bubbles" => Self::NerdBubbles,
             "hidden" | "hide" | "off" | "none" => Self::Hidden,
@@ -1449,6 +1536,16 @@ pub enum ActivityHintStyle {
     Dot,
     /// Bare compact seconds `6.3s`
     Compact,
+    /// Universal Unicode Technical Symbols (`◷ 6.3s · ⎋ cancel`)
+    Symbols,
+    /// Expressive Emoji timer (`⏱ 6.3s · 🛑 esc`)
+    Emoji,
+    /// Expressive Kaomoji timer (`(•_•) 6.3s · esc`)
+    Kaomoji,
+    /// Pure 7-bit ASCII timer (`(6.3s | esc)`)
+    Ascii,
+    /// Nerd Font Codicon clock (`\u{ea82} 6.3s · esc`)
+    NerdFont,
     /// Hide both elapsed timer and interrupt hint completely
     Hidden,
 }
@@ -1465,6 +1562,11 @@ impl ActivityHintStyle {
             Self::Bracket => "bracket",
             Self::Dot => "dot",
             Self::Compact => "compact",
+            Self::Symbols => "symbols",
+            Self::Emoji => "emoji",
+            Self::Kaomoji => "kaomoji",
+            Self::Ascii => "ascii",
+            Self::NerdFont => "nerdfont",
             Self::Hidden => "hidden",
         }
     }
@@ -1478,8 +1580,125 @@ impl ActivityHintStyle {
             "bracket" | "brackets" | "angle" => Self::Bracket,
             "dot" | "dots" | "subtle" => Self::Dot,
             "compact" | "bare" | "seconds" => Self::Compact,
+            "symbols" | "unicode" | "technical" => Self::Symbols,
+            "emoji" | "emojis" => Self::Emoji,
+            "kaomoji" | "kamoji" => Self::Kaomoji,
+            "ascii" | "plain" => Self::Ascii,
+            "nerdfont" | "nerd" | "nf" => Self::NerdFont,
             "hidden" | "hide" | "off" | "none" => Self::Hidden,
             _ => Self::Classic,
+        }
+    }
+}
+
+/// Visual card / container layout style for inline Agent Tool Execution blocks in the timeline.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum ToolCardStyle {
+    /// Classic minimal tree (`• Bash cmd` / `  │ out` / `  └ ✓ completed (48ms)`) (Default)
+    #[default]
+    Classic,
+    /// Sleek rounded card frame (`╭─ Bash cmd ─── ✓ 48ms ─╮` / `│ out │` / `╰──────╯`)
+    RoundedCard,
+    /// Sharp architectural square box (`┌─ Bash cmd ─── ✓ 48ms ─┐` / `│ out │` / `└──────┘`)
+    SquareCard,
+    /// Elevated left accent spine card (`┃ Bash cmd` on tinted surface with quiet status pill)
+    LeftRail,
+    /// OpenCode-style split vertical accent bars (`┃ … ┃`) on elevated surface
+    SplitBar,
+    /// Oh My Posh tinted header pill (` Bash ` + command + crisp `▎` body gutter + status pill)
+    PoshPill,
+    /// Oh My Posh rounded capsule header (`Bash` + command + clean `│` body + `✓ 48ms`)
+    PoshBubbles,
+    /// Ultra-dense compact inline block (header + inline `✓ 48ms` badge + clean indented output)
+    Compact,
+    /// Minimalist hairline rule (`── Bash cmd ───────── ✓ 48ms` + borderless indented output)
+    Minimal,
+    /// Pure CLI bracket telemetry (`[BASH] cmd` / `  > out` / `  [OK · 48ms]`)
+    Brackets,
+}
+
+#[allow(dead_code)]
+impl ToolCardStyle {
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Classic => "classic",
+            Self::RoundedCard => "rounded_card",
+            Self::SquareCard => "square_card",
+            Self::LeftRail => "left_rail",
+            Self::SplitBar => "split_bar",
+            Self::PoshPill => "posh_pill",
+            Self::PoshBubbles => "posh_bubbles",
+            Self::Compact => "compact",
+            Self::Minimal => "minimal",
+            Self::Brackets => "brackets",
+        }
+    }
+
+    #[must_use]
+    pub fn from_str_loose(s: &str) -> Self {
+        match s.trim().to_lowercase().as_str() {
+            "rounded_card" | "rounded" | "card" => Self::RoundedCard,
+            "square_card" | "square" | "box" => Self::SquareCard,
+            "left_rail" | "rail" | "left_bar" => Self::LeftRail,
+            "split_bar" | "split" | "opencode" => Self::SplitBar,
+            "posh_pill" | "pill" | "pills" | "posh" => Self::PoshPill,
+            "posh_bubbles" | "bubbles" | "capsule" => Self::PoshBubbles,
+            "compact" | "dense" | "inline" => Self::Compact,
+            "minimal" | "hairline" | "rule" => Self::Minimal,
+            "brackets" | "bracket" | "cli" | "ascii" => Self::Brackets,
+            _ => Self::Classic,
+        }
+    }
+}
+
+/// Icon & indicator pack for inline Agent Tool Execution blocks, Thought headers, and Approvals.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum ToolIconStyle {
+    /// Clean minimal dot (`•` / `✓` / `✗`) (Default)
+    #[default]
+    Minimal,
+    /// Universal Unicode Technical Symbols (`❯`, `◎`, `✎`, `⚙`, `⌖`, `⎇`, `❖`, `✦`, `◈`)
+    Symbols,
+    /// Strict 7-bit ASCII operators (`$`, `@`, `+`, `~`, `?`, `#`, `&`, `*`, `[OK]`, `[ERR]`)
+    Ascii,
+    /// Expressive Emoji (`⚡`, `🌐`, `📝`, `🔧`, `📖`, `🔍`, `🧭`, `🤖`, `🧠`, `✅`, `❌`)
+    Emoji,
+    /// Expressive Kaomoji (`(ง°_°)ง`, `( °o°)`, `( ▸_▸)◈`, `(⌐▪_▪)`, `( ◉_◉)`, `(•‿•)`, `(×_×)`)
+    Kaomoji,
+    /// Collision-free Nerd Font Codicons (`\u{ea85}`, `\u{eb01}`, `\u{ea73}`, `\u{ea6d}`, `\u{ea68}`)
+    NerdFont,
+    /// Pure typography with zero leading bullet or icon
+    None,
+}
+
+#[allow(dead_code)]
+impl ToolIconStyle {
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Minimal => "minimal",
+            Self::Symbols => "symbols",
+            Self::Ascii => "ascii",
+            Self::Emoji => "emoji",
+            Self::Kaomoji => "kaomoji",
+            Self::NerdFont => "nerdfont",
+            Self::None => "none",
+        }
+    }
+
+    #[must_use]
+    pub fn from_str_loose(s: &str) -> Self {
+        match s.trim().to_lowercase().as_str() {
+            "symbols" | "symbol" | "unicode" | "technical" | "alt" | "icons" => Self::Symbols,
+            "ascii" | "plain" | "retro" => Self::Ascii,
+            "emoji" | "emojis" => Self::Emoji,
+            "kaomoji" | "kamoji" | "faces" => Self::Kaomoji,
+            "nerdfont" | "nerd" | "nf" | "codicons" => Self::NerdFont,
+            "none" | "off" | "text" | "hidden" => Self::None,
+            _ => Self::Minimal,
         }
     }
 }
@@ -1539,6 +1758,12 @@ pub struct UiConfig {
 
     #[serde(default = "default_activity_hint_style")]
     pub activity_hint_style: String,
+
+    #[serde(default = "default_tool_card_style")]
+    pub tool_card_style: String,
+
+    #[serde(default = "default_tool_icon_style")]
+    pub tool_icon_style: String,
 
     #[serde(default)]
     pub plain: bool,
@@ -1685,6 +1910,16 @@ impl UiConfig {
     pub fn activity_hint_style_enum(&self) -> ActivityHintStyle {
         ActivityHintStyle::from_str_loose(&self.activity_hint_style)
     }
+
+    #[must_use]
+    pub fn tool_card_style_enum(&self) -> ToolCardStyle {
+        ToolCardStyle::from_str_loose(&self.tool_card_style)
+    }
+
+    #[must_use]
+    pub fn tool_icon_style_enum(&self) -> ToolIconStyle {
+        ToolIconStyle::from_str_loose(&self.tool_icon_style)
+    }
 }
 
 impl Default for UiConfig {
@@ -1708,6 +1943,8 @@ impl Default for UiConfig {
             context_meter_style: default_context_meter_style(),
             mode_bar_style: default_mode_bar_style(),
             activity_hint_style: default_activity_hint_style(),
+            tool_card_style: default_tool_card_style(),
+            tool_icon_style: default_tool_icon_style(),
             plain: false,
             max_width: default_max_width(),
             show_cost: false,
@@ -1781,6 +2018,14 @@ fn default_mode_bar_style() -> String {
 
 fn default_activity_hint_style() -> String {
     "classic".to_string()
+}
+
+fn default_tool_card_style() -> String {
+    "classic".to_string()
+}
+
+fn default_tool_icon_style() -> String {
+    "minimal".to_string()
 }
 
 fn default_max_width() -> usize {

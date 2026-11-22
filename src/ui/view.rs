@@ -14,6 +14,8 @@ use unicode_width::UnicodeWidthStr;
 mod entry_renderers;
 #[path = "view_impl/subagents_and_selection.rs"]
 mod subagents_and_selection;
+#[path = "view_impl/tool_cards.rs"]
+pub mod tool_cards;
 #[path = "view_impl/wrapping_and_format.rs"]
 mod wrapping_and_format;
 
@@ -410,6 +412,8 @@ pub struct TimelineContext<'a> {
     pub provider: &'a str,
     pub model: &'a str,
     pub show_thought_tokens: bool,
+    pub tool_card_style: crate::config::ToolCardStyle,
+    pub tool_icon_style: crate::config::ToolIconStyle,
 }
 
 impl Default for TimelineView {
@@ -1604,13 +1608,19 @@ impl TimelineView {
             } => {
                 let trimmed = text.trim();
                 if !trimmed.is_empty() {
+                    let thought_pfx = tool_cards::thought_header_prefix(ctx.tool_icon_style);
                     let header = match (duration_secs, started_at) {
-                        (Some(secs), _) if *secs >= 0.1 => format!("• Thought for {:.1}s", secs),
-                        (Some(_), _) => "• Thought".to_string(),
-                        (None, Some(st)) if ctx.is_working => {
-                            format!("• Thinking ({:.1}s)", st.elapsed().as_secs_f64().max(0.1))
+                        (Some(secs), _) if *secs >= 0.1 => {
+                            format!("{thought_pfx}Thought for {:.1}s", secs)
                         }
-                        (None, _) => "• Thought".to_string(),
+                        (Some(_), _) => format!("{thought_pfx}Thought"),
+                        (None, Some(st)) if ctx.is_working => {
+                            format!(
+                                "{thought_pfx}Thinking ({:.1}s)",
+                                st.elapsed().as_secs_f64().max(0.1)
+                            )
+                        }
+                        (None, _) => format!("{thought_pfx}Thought"),
                     };
 
                     let mut header_spans = vec![Span::styled(
@@ -1656,35 +1666,20 @@ impl TimelineView {
                 name,
                 command_or_path,
             } => {
-                let title = Self::format_tool_title(name);
-                let mut spans = vec![
-                    Span::styled("• ", Style::default().fg(theme.brand_accent)),
-                    Span::styled(
-                        format!("{} ", title),
-                        Style::default()
-                            .fg(theme.brand_accent)
-                            .add_modifier(Modifier::BOLD),
-                    ),
-                ];
-                if !command_or_path.is_empty() {
-                    let clean_cmd = crate::ui::markdown::MarkdownRenderer::normalize_status_glyphs(
-                        command_or_path,
-                    );
-                    spans.push(Span::styled(
-                        clean_cmd,
-                        Style::default().fg(theme.text_primary),
-                    ));
-                }
-                lines.push(Line::from(spans));
-                lines.push(Line::from(vec![
-                    Span::styled("  └ ", Style::default().fg(theme.muted)),
-                    Span::styled(
-                        "running...",
-                        Style::default()
-                            .fg(theme.muted)
-                            .add_modifier(Modifier::ITALIC),
-                    ),
-                ]));
+                lines.extend(tool_cards::render_tool_block_lines(
+                    name,
+                    command_or_path,
+                    None,
+                    true,
+                    true,
+                    None,
+                    area_width,
+                    ctx.tool_card_style,
+                    ctx.tool_icon_style,
+                    theme.bg_primary,
+                    None,
+                    theme,
+                ));
                 lines.push(Line::from(String::new()));
             }
             TimelineEntry::ToolApproved {
@@ -1695,9 +1690,10 @@ impl TimelineView {
                 let title = Self::format_tool_title(name);
                 let clean_cmd =
                     crate::ui::markdown::MarkdownRenderer::normalize_status_glyphs(command_or_path);
+                let ok_glyph = tool_cards::tool_outcome_glyph(ctx.tool_icon_style, true);
                 lines.push(Line::from(vec![
                     Span::styled(
-                        "✓ ",
+                        format!("{} ", ok_glyph),
                         Style::default()
                             .fg(theme.success)
                             .add_modifier(Modifier::BOLD),
@@ -1722,238 +1718,20 @@ impl TimelineView {
                 duration_ms,
                 ..
             } => {
-                let title = Self::format_tool_title(name);
-                let status_color = if *success {
-                    theme.brand_accent
-                } else {
-                    theme.destructive
-                };
-
-                let bullet = if *success { "• " } else { "✗ " };
-                let mut spans = vec![
-                    Span::styled(
-                        bullet,
-                        Style::default()
-                            .fg(status_color)
-                            .add_modifier(Modifier::BOLD),
-                    ),
-                    Span::styled(
-                        format!("{} ", title),
-                        Style::default()
-                            .fg(status_color)
-                            .add_modifier(Modifier::BOLD),
-                    ),
-                ];
-                if !command_or_path.is_empty() {
-                    let clean_cmd = crate::ui::markdown::MarkdownRenderer::normalize_status_glyphs(
-                        command_or_path,
-                    );
-                    spans.push(Span::styled(
-                        clean_cmd,
-                        Style::default().fg(theme.text_primary),
-                    ));
-                }
-                lines.push(Line::from(spans));
-
-                let diff_marker = crate::tools::middleware::DIFF_MARKER;
-                let (diff_section, regular_output) =
-                    if let Some(rest) = output.strip_prefix(diff_marker) {
-                        if let Some(split_pos) = rest.find("\n\n") {
-                            (&rest[..split_pos + 1], rest[split_pos + 2..].trim())
-                        } else {
-                            (rest, "")
-                        }
-                    } else {
-                        ("", output.trim())
-                    };
-
-                if !diff_section.is_empty() {
-                    let diff_usable_width = area_width.saturating_sub(2) as usize;
-                    let max_content_width = diff_usable_width.saturating_sub(6).max(20);
-                    let mut diff_line_count = 0;
-                    for diff_line in diff_section.lines() {
-                        if let Some(rem_str) = diff_line.strip_prefix(FOLDED_DIFF_SENTINEL) {
-                            lines.push(Line::from(vec![
-                                Span::styled("  │ ", Style::default().fg(theme.muted)),
-                                Span::styled(
-                                    format!("... +{} diff lines (folded)", rem_str.trim()),
-                                    Style::default().fg(theme.border),
-                                ),
-                            ]));
-                            break;
-                        }
-                        if diff_line.starts_with("---") || diff_line.starts_with("+++") {
-                            let chunks = Self::split_line_into_chunks(diff_line, max_content_width);
-                            for (c_idx, chunk) in chunks.into_iter().enumerate() {
-                                let pfx = if c_idx == 0 { "  │ " } else { "  │   " };
-                                lines.push(Line::from(vec![
-                                    Span::styled(pfx, Style::default().fg(theme.muted)),
-                                    Span::styled(
-                                        chunk,
-                                        Style::default()
-                                            .fg(theme.muted)
-                                            .add_modifier(Modifier::ITALIC),
-                                    ),
-                                ]));
-                            }
-                        } else if let Some((marker, color, rest)) = diff_line
-                            .strip_prefix("+ ")
-                            .map(|r| ("+", theme.success, r))
-                            .or_else(|| {
-                                diff_line
-                                    .strip_prefix("- ")
-                                    .map(|r| ("-", theme.destructive, r))
-                            })
-                        {
-                            let chunks = Self::split_line_into_chunks(rest, max_content_width);
-                            for (c_idx, chunk) in chunks.into_iter().enumerate() {
-                                if c_idx == 0 {
-                                    lines.push(Line::from(vec![
-                                        Span::styled("  │ ", Style::default().fg(theme.muted)),
-                                        Span::styled(
-                                            marker,
-                                            Style::default().fg(color).add_modifier(Modifier::BOLD),
-                                        ),
-                                        Span::styled(
-                                            format!(" {}", chunk),
-                                            Style::default().fg(color),
-                                        ),
-                                    ]));
-                                } else {
-                                    lines.push(Line::from(vec![
-                                        Span::styled("  │   ", Style::default().fg(theme.muted)),
-                                        Span::styled(chunk, Style::default().fg(color)),
-                                    ]));
-                                }
-                            }
-                            diff_line_count += 1;
-                        } else if let Some(rest) = diff_line.strip_prefix("  ") {
-                            let chunks = Self::split_line_into_chunks(rest, max_content_width);
-                            for chunk in chunks {
-                                lines.push(Line::from(vec![
-                                    Span::styled("  │   ", Style::default().fg(theme.muted)),
-                                    Span::styled(chunk, Style::default().fg(theme.muted)),
-                                ]));
-                            }
-                        }
-                        if diff_line_count > crate::constants::UI_MAX_TOOL_OUTPUT_LINES {
-                            let remaining = diff_section
-                                .lines()
-                                .filter(|l| l.starts_with("+ ") || l.starts_with("- "))
-                                .count()
-                                .saturating_sub(diff_line_count);
-                            if remaining > 0 {
-                                lines.push(Line::from(vec![
-                                    Span::styled("  │ ", Style::default().fg(theme.muted)),
-                                    Span::styled(
-                                        format!("... +{} diff lines (folded)", remaining),
-                                        Style::default().fg(theme.border),
-                                    ),
-                                ]));
-                            }
-                            break;
-                        }
-                    }
-                }
-
-                let trimmed = regular_output;
-                if !trimmed.is_empty() {
-                    let out_usable_width = area_width.saturating_sub(2) as usize;
-                    let max_content_width = out_usable_width.saturating_sub(6).max(20);
-                    let max_lines = if *success {
-                        crate::constants::UI_MAX_TOOL_OUTPUT_LINES
-                    } else {
-                        12
-                    };
-                    let border_color = if *success {
-                        theme.muted
-                    } else {
-                        theme.destructive
-                    };
-                    let mut after_panic = false;
-                    let mut pre_folded_rem: Option<usize> = None;
-
-                    for (shown_count, raw_out_line) in trimmed.lines().enumerate() {
-                        if let Some(rem_str) = raw_out_line.strip_prefix(FOLDED_OUT_SENTINEL) {
-                            pre_folded_rem = rem_str.trim().parse::<usize>().ok();
-                            break;
-                        }
-                        if shown_count >= max_lines {
-                            break;
-                        }
-                        let out_line = if !*success && raw_out_line.contains("Raw arguments") {
-                            "[Arguments payload truncated: model exceeded single-call capacity]"
-                        } else {
-                            raw_out_line
-                        };
-                        let trimmed_line = out_line.trim();
-                        let is_panic_header = trimmed_line.contains("panicked at");
-                        let line_style = classify_diagnostic_line(
-                            out_line,
-                            trimmed_line,
-                            is_panic_header || after_panic,
-                            *success,
-                        )
-                        .style(theme);
-                        after_panic = is_panic_header;
-
-                        let chunks = Self::split_line_into_chunks(out_line, max_content_width);
-                        for (c_idx, chunk) in chunks.into_iter().enumerate() {
-                            let pfx = if c_idx == 0 { "  │ " } else { "  │   " };
-                            lines.push(Line::from(vec![
-                                Span::styled(pfx, Style::default().fg(border_color)),
-                                Span::styled(chunk, line_style),
-                            ]));
-                        }
-                    }
-
-                    let folded_remaining = pre_folded_rem.or_else(|| {
-                        let total = trimmed.lines().count();
-                        (total > max_lines).then(|| total.saturating_sub(max_lines))
-                    });
-                    if let Some(remaining) = folded_remaining.filter(|&r| r > 0) {
-                        lines.push(Line::from(vec![
-                            Span::styled("  │ ", Style::default().fg(border_color)),
-                            Span::styled(
-                                format!("... +{} lines (output folded)", remaining),
-                                Style::default().fg(theme.border),
-                            ),
-                        ]));
-                    }
-                }
-
-                let dur_str = duration_ms
-                    .filter(|d| *d > 0)
-                    .map(|d| format!(" ({}ms)", d))
-                    .unwrap_or_default();
-                let (status_glyph, glyph_color, status_text) = if *success {
-                    ("✓", theme.success, "completed")
-                } else {
-                    ("✗", theme.destructive, "failed")
-                };
-
-                let foot_border = if *success {
-                    theme.muted
-                } else {
-                    theme.destructive
-                };
-                lines.push(Line::from(vec![
-                    Span::styled("  └ ", Style::default().fg(foot_border)),
-                    Span::styled(
-                        format!("{} ", status_glyph),
-                        Style::default()
-                            .fg(glyph_color)
-                            .add_modifier(Modifier::BOLD),
-                    ),
-                    Span::styled(
-                        format!("{}{}", status_text, dur_str),
-                        Style::default().fg(if *success {
-                            theme.muted
-                        } else {
-                            theme.destructive
-                        }),
-                    ),
-                ]));
+                lines.extend(tool_cards::render_tool_block_lines(
+                    name,
+                    command_or_path,
+                    Some(output),
+                    false,
+                    *success,
+                    *duration_ms,
+                    area_width,
+                    ctx.tool_card_style,
+                    ctx.tool_icon_style,
+                    theme.bg_primary,
+                    None,
+                    theme,
+                ));
                 lines.push(Line::from(String::new()));
             }
             TimelineEntry::SubagentTree(block) => {
@@ -2059,7 +1837,14 @@ impl TimelineView {
 
         let theme_key = Self::theme_fingerprint(theme);
         let mut layout_hasher = std::collections::hash_map::DefaultHasher::new();
-        (area.width, theme_key, ctx.show_thought_tokens).hash(&mut layout_hasher);
+        (
+            area.width,
+            theme_key,
+            ctx.show_thought_tokens,
+            ctx.tool_card_style,
+            ctx.tool_icon_style,
+        )
+            .hash(&mut layout_hasher);
         let layout_key = layout_hasher.finish();
 
         let spinner_tick = ctx.working_millis / crate::constants::SPINNER_FRAME_MS;

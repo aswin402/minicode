@@ -159,6 +159,8 @@ fn test_paragraph_rendering_alignment() {
         provider: "test",
         model: "test",
         show_thought_tokens: false,
+        tool_card_style: crate::config::ToolCardStyle::default(),
+        tool_icon_style: crate::config::ToolIconStyle::default(),
     };
 
     // Render with auto_scroll=true (which will scroll down)
@@ -563,6 +565,8 @@ fn test_wide_table_and_scroll_alignment_in_timeline_render() {
                     provider: "openrouter",
                     model: "qwen",
                     show_thought_tokens: false,
+                    tool_card_style: crate::config::ToolCardStyle::default(),
+                    tool_icon_style: crate::config::ToolIconStyle::default(),
                 };
                 view.render(frame, area, &ctx);
             })
@@ -615,6 +619,8 @@ fn test_clicking_bottom_line_does_not_show_back_to_bottom_pill() {
                 provider: "minimax",
                 model: "MiniMax-M3.1-Flash",
                 show_thought_tokens: false,
+                tool_card_style: crate::config::ToolCardStyle::default(),
+                tool_icon_style: crate::config::ToolIconStyle::default(),
             };
             v.render(frame, area, &ctx);
         })
@@ -678,6 +684,8 @@ fn test_long_pasted_user_prompt_shows_full_lines_and_sticky_header_wraps_full_wo
                 provider: "openrouter",
                 model: "qwen",
                 show_thought_tokens: false,
+                tool_card_style: crate::config::ToolCardStyle::default(),
+                tool_icon_style: crate::config::ToolIconStyle::default(),
             };
             view.render(frame, area, &ctx);
         })
@@ -711,6 +719,8 @@ fn test_long_pasted_user_prompt_shows_full_lines_and_sticky_header_wraps_full_wo
                 provider: "openrouter",
                 model: "qwen",
                 show_thought_tokens: false,
+                tool_card_style: crate::config::ToolCardStyle::default(),
+                tool_icon_style: crate::config::ToolIconStyle::default(),
             };
             view.render(frame, area, &ctx);
         })
@@ -909,6 +919,8 @@ fn test_minitest65_git_commit_timeline_entry_and_toast_short_hash_rendering() {
                 provider: "minimax",
                 model: "MiniMax-M3.1",
                 show_thought_tokens: false,
+                tool_card_style: crate::config::ToolCardStyle::default(),
+                tool_icon_style: crate::config::ToolIconStyle::default(),
             };
             view.render(frame, frame.area(), &ctx);
         })
@@ -1001,6 +1013,8 @@ fn test_thought_blocks_freeze_on_tool_and_stream_transitions_never_all_ticking()
                     provider: "anthropic",
                     model: "claude-sonnet-4-6",
                     show_thought_tokens: false,
+                    tool_card_style: crate::config::ToolCardStyle::default(),
+                    tool_icon_style: crate::config::ToolIconStyle::default(),
                 };
                 view.render(frame, frame.area(), &ctx);
             })
@@ -1119,6 +1133,8 @@ fn test_thought_block_inline_token_usage_toggle_and_cache_invalidation() {
                 provider: "minimax",
                 model: "MiniMax-M3.1",
                 show_thought_tokens: show_tokens,
+                tool_card_style: crate::config::ToolCardStyle::default(),
+                tool_icon_style: crate::config::ToolIconStyle::default(),
             };
             view.render(frame, frame.area(), &ctx);
         })
@@ -1147,5 +1163,116 @@ fn test_thought_block_inline_token_usage_toggle_and_cache_invalidation() {
     assert!(
         screen_on.contains("• Thought for 0.9s · ") && screen_on.contains(" tokens"),
         "Enabling show_thought_tokens must display inline token usage immediately:\n{screen_on}"
+    );
+}
+
+#[test]
+fn test_tool_card_styles_and_icon_packs_render_and_invalidate_cache() {
+    use crate::config::{ToolCardStyle, ToolIconStyle};
+    use ratatui::backend::TestBackend;
+    use ratatui::Terminal;
+
+    let theme = Theme::aura_dark();
+    let ws = std::path::PathBuf::from("/tmp/tool_card_test");
+    let mut view = TimelineView::new();
+    view.entries.push(TimelineEntry::ToolFinished {
+        name: "exec_cmd".to_string(),
+        command_or_path: "node -e 'console.log(1)'".to_string(),
+        success: true,
+        output: "lines compared: 12 | runtime mismatches: 0".to_string(),
+        duration_ms: Some(48),
+    });
+    view.entries.push(TimelineEntry::ToolFinished {
+        name: "browser_navigate".to_string(),
+        command_or_path: "http://127.0.0.1:4173/".to_string(),
+        success: true,
+        output: "Viewport: 1440x900px".to_string(),
+        duration_ms: Some(312),
+    });
+
+    let mut terminal = Terminal::new(TestBackend::new(90, 24)).unwrap();
+    let render_combo =
+        |term: &mut Terminal<TestBackend>, card: ToolCardStyle, icon: ToolIconStyle| -> String {
+            term.draw(|frame| {
+                let ctx = TimelineContext {
+                    theme: &theme,
+                    is_working: false,
+                    working_millis: 0,
+                    current_activity: None,
+                    spinner_style: crate::ui::animation::SpinnerStyle::default(),
+                    workspace: &ws,
+                    provider: "minimax",
+                    model: "MiniMax-M3.1",
+                    show_thought_tokens: false,
+                    tool_card_style: card,
+                    tool_icon_style: icon,
+                };
+                view.render(frame, frame.area(), &ctx);
+            })
+            .unwrap();
+            let buf = term.backend().buffer();
+            let mut out = String::new();
+            for y in 0..buf.area.height {
+                for x in 0..buf.area.width {
+                    out.push_str(buf[(x, y)].symbol());
+                }
+                out.push('\n');
+            }
+            out
+        };
+
+    // Every ToolCardStyle renders cleanly without panicking and shows Bash + Browser Navigate
+    for card in [
+        ToolCardStyle::Classic,
+        ToolCardStyle::RoundedCard,
+        ToolCardStyle::SquareCard,
+        ToolCardStyle::LeftRail,
+        ToolCardStyle::SplitBar,
+        ToolCardStyle::PoshPill,
+        ToolCardStyle::PoshBubbles,
+        ToolCardStyle::Compact,
+        ToolCardStyle::Minimal,
+        ToolCardStyle::Brackets,
+    ] {
+        let screen = render_combo(&mut terminal, card, ToolIconStyle::Symbols);
+        assert!(
+            screen.contains("❯") && screen.contains("◎") && screen.contains("48ms"),
+            "ToolCardStyle {:?} with Symbols icon pack missing expected glyphs:\n{screen}",
+            card
+        );
+    }
+
+    // Verify all ToolIconStyle packs render their distinct semantic icons
+    let rounded_card = render_combo(
+        &mut terminal,
+        ToolCardStyle::RoundedCard,
+        ToolIconStyle::Emoji,
+    );
+    assert!(
+        rounded_card.contains("╭─") && rounded_card.contains("⚡") && rounded_card.contains("🌐"),
+        "RoundedCard + Emoji unexpected:\n{rounded_card}"
+    );
+    let ascii_blk = render_combo(&mut terminal, ToolCardStyle::Brackets, ToolIconStyle::Ascii);
+    assert!(
+        ascii_blk.contains("[$ BASH]") && ascii_blk.contains("[OK"),
+        "Brackets + Ascii unexpected:\n{ascii_blk}"
+    );
+    let kaomoji_blk = render_combo(
+        &mut terminal,
+        ToolCardStyle::Classic,
+        ToolIconStyle::Kaomoji,
+    );
+    assert!(
+        kaomoji_blk.contains("(ง°_°)ง") && kaomoji_blk.contains("(•‿•)"),
+        "Classic + Kaomoji unexpected:\n{kaomoji_blk}"
+    );
+    let nf_blk = render_combo(
+        &mut terminal,
+        ToolCardStyle::PoshBubbles,
+        ToolIconStyle::NerdFont,
+    );
+    assert!(
+        nf_blk.contains("\u{ea85}") && nf_blk.contains("\u{eb01}") && nf_blk.contains("\u{eab2}"),
+        "PoshBubbles + NerdFont Codicons unexpected:\n{nf_blk}"
     );
 }

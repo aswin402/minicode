@@ -578,6 +578,8 @@ impl<'a> App<'a> {
                             provider: &self.config.provider.default,
                             model: &self.config.provider.model,
                             show_thought_tokens: self.config.ui.show_thought_tokens,
+                            tool_card_style: self.config.ui.tool_card_style_enum(),
+                            tool_icon_style: self.config.ui.tool_icon_style_enum(),
                         };
                         self.timeline.render(frame, chunks[0], &timeline_ctx);
 
@@ -2886,5 +2888,36 @@ mod tests {
         let reloaded2 = Config::load(Some(temp_dir.path()), None).expect("reload config 2");
         assert_eq!(reloaded2.ui.status_model_style, "posh_pure");
         assert_eq!(reloaded2.ui.status_git_style, "inherit");
+
+        // 6. Tool Cards (14) & Tool Icons (15) selection + disk persistence
+        app.open_theme_modal(Some(crate::ui::modals::ThemeModalTab::ToolCardStyles));
+        app.handle_modal_key(
+            KeyEvent::new(KeyCode::Down, KeyModifiers::NONE),
+            &control_tx,
+        )
+        .await;
+        app.handle_modal_key(
+            KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+            &control_tx,
+        )
+        .await;
+        assert_eq!(app.config.ui.tool_card_style, "rounded_card");
+
+        app.open_theme_modal(Some(crate::ui::modals::ThemeModalTab::ToolIconStyles));
+        app.handle_modal_key(
+            KeyEvent::new(KeyCode::Down, KeyModifiers::NONE),
+            &control_tx,
+        )
+        .await;
+        app.handle_modal_key(
+            KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+            &control_tx,
+        )
+        .await;
+        assert_eq!(app.config.ui.tool_icon_style, "symbols");
+
+        let reloaded3 = Config::load(Some(temp_dir.path()), None).expect("reload config 3");
+        assert_eq!(reloaded3.ui.tool_card_style, "rounded_card");
+        assert_eq!(reloaded3.ui.tool_icon_style, "symbols");
     }
 }

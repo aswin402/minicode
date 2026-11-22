@@ -1934,7 +1934,7 @@ pub const INTELLISENSE_EXACT_TOKEN_PREFIX_BONUS: i32 = 42;
 /// Default TUI chatbox intellisense & command menu visual style (`minimal`).
 pub const DEFAULT_MENU_STYLE: &str = "minimal";
 /// Total number of user-selectable TUI intellisense & command menu styles.
-pub const MENU_STYLE_COUNT: usize = 6;
+pub const MENU_STYLE_COUNT: usize = 9;
 /// Total number of semantic completion candidate categories indexed in `MenuStyleSpec`.
 pub const CANDIDATE_KIND_COUNT: usize = 9;
 /// Total number of intellisense trigger categories indexed in `MenuStyleSpec`.

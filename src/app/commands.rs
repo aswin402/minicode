@@ -591,6 +591,87 @@ impl<'a> App<'a> {
             return Ok(CommandAction::Continue);
         }
 
+        if prompt_lower == "/tool-style"
+            || prompt_lower.starts_with("/tool-style ")
+            || prompt_lower == "/tool-cards"
+            || prompt_lower.starts_with("/tool-cards ")
+        {
+            let arg = prompt_trimmed
+                .strip_prefix("/tool-style")
+                .or_else(|| prompt_trimmed.strip_prefix("/tool-cards"))
+                .unwrap_or("")
+                .trim();
+            if arg.is_empty() {
+                self.open_theme_modal(Some(crate::ui::modals::ThemeModalTab::ToolCardStyles));
+            } else {
+                let lower = arg.to_ascii_lowercase().replace('-', "_");
+                if let Some(opt) = crate::ui::modals::theme_select::TOOL_CARD_STYLE_OPTIONS
+                    .iter()
+                    .find(|o| o.id == lower || o.name.to_ascii_lowercase().contains(&lower))
+                {
+                    self.config.ui.tool_card_style = opt.id.to_string();
+                    let _ = self.config.save(Some(&self.workspace_root));
+                    let _ = self.config.save(None);
+                    self.toasts.push(
+                        crate::ui::ToastKind::Success,
+                        "Tool Card Style Updated",
+                        format!("Switched to \"{}\".", opt.name),
+                        Some(opt.id.to_string()),
+                        Some("tool_card_style_preview".to_string()),
+                    );
+                } else {
+                    let valid_ids = crate::ui::modals::theme_select::TOOL_CARD_STYLE_OPTIONS
+                        .iter()
+                        .map(|o| o.id)
+                        .collect::<Vec<_>>()
+                        .join(", ");
+                    self.add_timeline_status(format!(
+                        "! Unknown tool card style '{}'. Available: {}",
+                        arg, valid_ids
+                    ));
+                }
+            }
+            return Ok(CommandAction::Continue);
+        }
+
+        if prompt_lower == "/tool-icons" || prompt_lower.starts_with("/tool-icons ") {
+            let arg = prompt_trimmed
+                .strip_prefix("/tool-icons")
+                .unwrap_or("")
+                .trim();
+            if arg.is_empty() {
+                self.open_theme_modal(Some(crate::ui::modals::ThemeModalTab::ToolIconStyles));
+            } else {
+                let lower = arg.to_ascii_lowercase().replace('-', "_");
+                if let Some(opt) = crate::ui::modals::theme_select::TOOL_ICON_STYLE_OPTIONS
+                    .iter()
+                    .find(|o| o.id == lower || o.name.to_ascii_lowercase().contains(&lower))
+                {
+                    self.config.ui.tool_icon_style = opt.id.to_string();
+                    let _ = self.config.save(Some(&self.workspace_root));
+                    let _ = self.config.save(None);
+                    self.toasts.push(
+                        crate::ui::ToastKind::Success,
+                        "Tool Icon Pack Updated",
+                        format!("Switched to \"{}\".", opt.name),
+                        Some(opt.id.to_string()),
+                        Some("tool_icon_style_preview".to_string()),
+                    );
+                } else {
+                    let valid_ids = crate::ui::modals::theme_select::TOOL_ICON_STYLE_OPTIONS
+                        .iter()
+                        .map(|o| o.id)
+                        .collect::<Vec<_>>()
+                        .join(", ");
+                    self.add_timeline_status(format!(
+                        "! Unknown tool icon pack '{}'. Available: {}",
+                        arg, valid_ids
+                    ));
+                }
+            }
+            return Ok(CommandAction::Continue);
+        }
+
         if prompt == "/activity-style" || prompt.starts_with("/activity-style ") {
             let arg = prompt.strip_prefix("/activity-style").unwrap_or("").trim();
             if arg.is_empty() {

@@ -637,6 +637,9 @@ pub enum MenuStyle {
     Emoji = 3,
     Kaomoji = 4,
     Compact = 5,
+    Symbols = 6,
+    NerdFont = 7,
+    PoshCard = 8,
 }
 
 /// Declarative specification for a single `MenuStyle` variant (zero branching in render loops).
@@ -734,7 +737,7 @@ pub static MENU_STYLE_SPECS: [MenuStyleSpec; MENU_STYLE_COUNT] = [
         id: "icons",
         name: "3. Modern IDE Icons (❯ / ƒ / § / ⌖ / ◩)",
         description: "Crisp 1-cell developer glyphs (ƒ symbol, § prompt, ⌖ file, ◩ image, ↺ history)",
-        aliases: &["icon", "nerd", "ide", "glyph", "glyphs"],
+        aliases: &["icon", "ide", "glyph", "glyphs"],
         border_mode: MenuBorderMode::Rounded,
         trigger_badges: [
             " @ Mentions ",
@@ -842,6 +845,101 @@ pub static MENU_STYLE_SPECS: [MenuStyleSpec; MENU_STYLE_COUNT] = [
             "▎ @InputDock                    · struct · src/ui/input.rs:L1 ",
             "  @src/ui/intellisense.rs                         · rs · file ",
             "  @assets/hero.png                    · png · 1440x900 · 48KB ",
+        ],
+    },
+    MenuStyleSpec {
+        style: MenuStyle::Symbols,
+        id: "symbols",
+        name: "7. Unicode Technical Symbols (⎇ / ⌘ / ◈ / ✦ / ⚙)",
+        description: "Universal 1-cell Unicode symbols (⎇ ⌘ ◈ ✦ ⚙ ◎) — crisp in every terminal font",
+        aliases: &["symbol", "technical", "alt", "unicode"],
+        border_mode: MenuBorderMode::Rounded,
+        trigger_badges: [
+            " ⎇ Mentions ",
+            " ◈ Symbols ",
+            " ✦ Skills ",
+            " ⚙ Arguments ",
+            " ⌘ Suggestions ",
+        ],
+        key_hints: [
+            "[Tab/→] Complete  [Alt+1..3] Pick  [Enter] Send  [⎋] Close ",
+            "[Tab/Enter] Insert  [↑/↓] Select  [⇧Tab] Filter  [⎋] Close ",
+        ],
+        row_prefixes: ["   ", " ❯ "],
+        kind_prefixes: ["⌘ ", "◷ ", "◈ ", "⌂ ", "❯ ", "⎇ ", "✦ ", "⚙ ", "◎ "],
+        detail_wrap: ("· ", ""),
+        palette_chrome: (" ⌘ Commands ", "   ", " ❯ "),
+        preview: &[
+            "╭ ⎇ Mentions [Tab/Enter] Insert  [⇧Tab] Filter  [⎋] Close ───╮",
+            "│ ❯ ◈ @InputDock               · struct · src/ui/input.rs:L1 │",
+            "│   ⌂ @src/ui/intellisense.rs                    · rs · file │",
+            "│   ◎ @assets/hero.png               · png · 1440x900 · 48KB │",
+            "╰────────────────────────────────────────────────────────────╯",
+        ],
+    },
+    MenuStyleSpec {
+        style: MenuStyle::NerdFont,
+        id: "nerdfont",
+        name: "8. Nerd Font Codicons (Nerd Font)",
+        description: "Collision-free Nerd Font Codicon icons per item category (requires Nerd Font)",
+        aliases: &["nerd", "nf", "codicons", "nerd_font"],
+        border_mode: MenuBorderMode::Rounded,
+        trigger_badges: [
+            " \u{ea68} Mentions ",
+            " \u{ea8b} Symbols ",
+            " \u{ea61} Skills ",
+            " \u{eaf8} Arguments ",
+            " \u{eb65} Suggestions ",
+        ],
+        key_hints: [
+            "[Tab/→] Complete  [Alt+1..3] Pick  [Enter] Send  [Esc] Close ",
+            "[Tab/Enter] Insert  [↑/↓] Select  [⇧Tab] Filter  [Esc] Close ",
+        ],
+        row_prefixes: ["   ", " ❯ "],
+        kind_prefixes: [
+            "\u{eb65} ",
+            "\u{ea82} ",
+            "\u{ea8b} ",
+            "\u{ea7b} ",
+            "\u{ea85} ",
+            "\u{eaa6} ",
+            "\u{ea61} ",
+            "\u{eaf8} ",
+            "\u{eb3f} ",
+        ],
+        detail_wrap: ("· ", ""),
+        palette_chrome: (" \u{ea85} Commands ", "   ", " ❯ "),
+        preview: &[
+            "╭ \u{ea68} Mentions [Tab/Enter] Insert  [⇧Tab] Filter ──────────────╮",
+            "│ ❯ \u{ea8b} @InputDock               · struct · src/ui/input.rs:L1 │",
+            "│   \u{ea7b} @src/ui/intellisense.rs                    · rs · file │",
+            "│   \u{eb3f} @assets/hero.png               · png · 1440x900 · 48KB │",
+            "╰────────────────────────────────────────────────────────────╯",
+        ],
+    },
+    MenuStyleSpec {
+        style: MenuStyle::PoshCard,
+        id: "posh_card",
+        name: "9. Oh My Posh Minimal Rail (▎ + ⎇ / ◈)",
+        description: "Airy Oh My Posh borderless strip with left rail ▎ and universal ⎇/◈ symbols",
+        aliases: &["posh", "ohmyposh", "velvet", "rail"],
+        border_mode: MenuBorderMode::BorderlessCompact,
+        trigger_badges: [
+            " ⎇ Mentions ",
+            " ◈ Symbols ",
+            " ✦ Skills ",
+            " ⚙ Args ",
+            " ⌘ Suggest ",
+        ],
+        key_hints: ["[Tab] Complete", "[Tab] Insert  [⇧Tab] Filter"],
+        row_prefixes: ["  ", "▎ "],
+        kind_prefixes: ["⌘ ", "◷ ", "◈ ", "⌂ ", "❯ ", "⎇ ", "✦ ", "⚙ ", "◎ "],
+        detail_wrap: ("/ ", ""),
+        palette_chrome: (" ⌘ Commands ", "  ", "▎ "),
+        preview: &[
+            "▎ ◈ @InputDock                  / struct · src/ui/input.rs:L1 ",
+            "  ⌂ @src/ui/intellisense.rs                       / rs · file ",
+            "  ◎ @assets/hero.png                  / png · 1440x900 · 48KB ",
         ],
     },
 ];
@@ -2140,6 +2238,10 @@ mod tests {
         assert_eq!(MenuStyle::from_str_loose("kaomoji"), MenuStyle::Kaomoji);
         assert_eq!(MenuStyle::from_str_loose("kamoji"), MenuStyle::Kaomoji);
         assert_eq!(MenuStyle::from_str_loose("compact"), MenuStyle::Compact);
+        assert_eq!(MenuStyle::from_str_loose("symbols"), MenuStyle::Symbols);
+        assert_eq!(MenuStyle::from_str_loose("nerdfont"), MenuStyle::NerdFont);
+        assert_eq!(MenuStyle::from_str_loose("nerd"), MenuStyle::NerdFont);
+        assert_eq!(MenuStyle::from_str_loose("posh_card"), MenuStyle::PoshCard);
 
         let sample = CompletionCandidate {
             insert_text: "whats next".to_string(),

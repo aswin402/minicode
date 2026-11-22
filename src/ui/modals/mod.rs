@@ -102,6 +102,8 @@ pub enum ThemeModalTab {
     ContextMeterStyles,
     ModeBarStyles,
     ActivityHintStyles,
+    ToolCardStyles,
+    ToolIconStyles,
     Visibility,
 }
 
@@ -122,6 +124,8 @@ impl ThemeModalTab {
             ThemeModalTab::ContextMeterStyles,
             ThemeModalTab::ModeBarStyles,
             ThemeModalTab::ActivityHintStyles,
+            ThemeModalTab::ToolCardStyles,
+            ThemeModalTab::ToolIconStyles,
             ThemeModalTab::Visibility,
         ]
     }
@@ -142,7 +146,9 @@ impl ThemeModalTab {
             ThemeModalTab::ContextMeterStyles => "11. Context & KV",
             ThemeModalTab::ModeBarStyles => "12. Mode Badges",
             ThemeModalTab::ActivityHintStyles => "13. Timer & Hint",
-            ThemeModalTab::Visibility => "14. Show / Hide",
+            ThemeModalTab::ToolCardStyles => "14. Tool Cards",
+            ThemeModalTab::ToolIconStyles => "15. Tool Icons",
+            ThemeModalTab::Visibility => "16. Show / Hide",
         }
     }
 
@@ -171,7 +177,7 @@ impl ThemeModalTab {
             ),
             ThemeModalTab::ToastSymbols => (
                 "Toast Notification Symbol Sets",
-                "Select status indicator glyphs (ASCII, Geometric, Emoji, Kaomoji, Cyber, Bracket)",
+                "Select status indicator glyphs (ASCII, Geometric, Emoji, Kaomoji, Cyber, Technical ⎇, Nerd Font)",
             ),
             ThemeModalTab::ActivityStyles => (
                 "Activity Bar & Streaming Status",
@@ -179,7 +185,7 @@ impl ThemeModalTab {
             ),
             ThemeModalTab::MenuStyles => (
                 "Intellisense & Autocomplete Menu Styles",
-                "Customize chatbox autocomplete popup border, badges, and indicator style",
+                "Customize chatbox autocomplete popup border, badges, and icon pack (Minimal, Symbols ⎇, Emoji, Kaomoji, Nerd Font)",
             ),
             ThemeModalTab::InputBoxStyles => (
                 "Input Chat Box Frame & Styles",
@@ -187,11 +193,11 @@ impl ThemeModalTab {
             ),
             ThemeModalTab::StatusBarStyles => (
                 "Bottom Status Bar Layout Styles",
-                "Style provider/model, effort, workspace path, and git badges along the bottom bar",
+                "Style provider/model, effort, workspace path, and git badges (press 'c' for per-component overrides)",
             ),
             ThemeModalTab::ContextMeterStyles => (
                 "Context Occupancy & KV Cache Meters",
-                "Select visual meter for context tokens and KV cache (circle, bar, blocks, braille, gauge)",
+                "Select visual meter for context tokens and KV cache (circle, bar, blocks, braille, symbols, emoji)",
             ),
             ThemeModalTab::ModeBarStyles => (
                 "Mode Strip Styles (Ponytail · Caveman · Streaming)",
@@ -200,6 +206,14 @@ impl ThemeModalTab {
             ThemeModalTab::ActivityHintStyles => (
                 "Activity Timer & Interrupt Hint Styles",
                 "Style or hide the elapsed timer and '(esc to interrupt)' activity bar suffix",
+            ),
+            ThemeModalTab::ToolCardStyles => (
+                "Agent Tool Call Cards & Timeline Containers",
+                "Style inline Bash, Browser, Read/Edit tool blocks (classic tree, cards, rails, Oh My Posh pills, compact)",
+            ),
+            ThemeModalTab::ToolIconStyles => (
+                "Agent Tool Call & Thought Icon Packs",
+                "Choose icon set for inline tool calls & thoughts (Minimal, Unicode ⎇ ❯ ◎, ASCII, Emoji, Kaomoji, Nerd Font)",
             ),
             ThemeModalTab::Visibility => (
                 "Show / Hide TUI Elements & Inline Thought Tokens",
@@ -267,6 +281,8 @@ pub enum ModalState {
         context_meter_style_selected_index: usize,
         mode_bar_style_selected_index: usize,
         activity_hint_style_selected_index: usize,
+        tool_card_style_selected_index: usize,
+        tool_icon_style_selected_index: usize,
         visibility_selected_index: usize,
         active_theme_id: String,
         active_animation_id: String,
@@ -802,6 +818,8 @@ impl ModalState {
             context_meter_style_selected_index: 0,
             mode_bar_style_selected_index: 0,
             activity_hint_style_selected_index: 0,
+            tool_card_style_selected_index: 0,
+            tool_icon_style_selected_index: 0,
             visibility_selected_index: 0,
             active_theme_id: active_theme_id.to_string(),
             active_animation_id: active_animation_id.to_string(),
@@ -841,6 +859,8 @@ impl ModalState {
             ref mut context_meter_style_selected_index,
             ref mut mode_bar_style_selected_index,
             ref mut activity_hint_style_selected_index,
+            ref mut tool_card_style_selected_index,
+            ref mut tool_icon_style_selected_index,
             ref mut active_menu_style,
             ref mut ui_prefs,
             ..
@@ -873,6 +893,16 @@ impl ModalState {
             *activity_hint_style_selected_index = theme_select::ACTIVITY_HINT_STYLE_OPTIONS
                 .iter()
                 .position(|s| s.id == active_hint)
+                .unwrap_or(0);
+            let active_tool_card = ui.tool_card_style_enum().as_str();
+            *tool_card_style_selected_index = theme_select::TOOL_CARD_STYLE_OPTIONS
+                .iter()
+                .position(|s| s.id == active_tool_card)
+                .unwrap_or(0);
+            let active_tool_icon = ui.tool_icon_style_enum().as_str();
+            *tool_icon_style_selected_index = theme_select::TOOL_ICON_STYLE_OPTIONS
+                .iter()
+                .position(|s| s.id == active_tool_icon)
                 .unwrap_or(0);
             *ui_prefs = ui.clone();
         }
@@ -1377,6 +1407,8 @@ impl ModalState {
                 context_meter_style_selected_index,
                 mode_bar_style_selected_index,
                 activity_hint_style_selected_index,
+                tool_card_style_selected_index,
+                tool_icon_style_selected_index,
                 visibility_selected_index,
                 active_theme_id,
                 active_animation_id,
@@ -1402,6 +1434,8 @@ impl ModalState {
                     context_meter_styles: theme_select::CONTEXT_METER_STYLE_OPTIONS,
                     mode_bar_styles: theme_select::MODE_BAR_STYLE_OPTIONS,
                     activity_hint_styles: theme_select::ACTIVITY_HINT_STYLE_OPTIONS,
+                    tool_card_styles: theme_select::TOOL_CARD_STYLE_OPTIONS,
+                    tool_icon_styles: theme_select::TOOL_ICON_STYLE_OPTIONS,
                     active_tab: *active_tab,
                     theme_selected_index: *theme_selected_index,
                     animation_selected_index: *animation_selected_index,
@@ -1417,6 +1451,8 @@ impl ModalState {
                     context_meter_style_selected_index: *context_meter_style_selected_index,
                     mode_bar_style_selected_index: *mode_bar_style_selected_index,
                     activity_hint_style_selected_index: *activity_hint_style_selected_index,
+                    tool_card_style_selected_index: *tool_card_style_selected_index,
+                    tool_icon_style_selected_index: *tool_icon_style_selected_index,
                     visibility_selected_index: *visibility_selected_index,
                     active_theme_id,
                     active_animation_id,

@@ -58,15 +58,22 @@ pub const ACTIVITY_EMOJI_PREVIEW_FRAMES: &[&str] = &["💭", "📝", "🔧", "�
 /// Cyber geometric hexagon crystal pulse spinner (strictly 1-cell EAW=N)
 pub const HEX_PULSE_FRAMES: &[&str] = &["⎔", "⏣", "◈", "◆", "◈", "⏣"];
 
-/// Context-aware Nerd Font FontAwesome preview cycle (Thinking , Writing , Editing , Searching , Running , Skill )
+/// Context-aware Nerd Font Codicon preview cycle (Think, Write, Edit, Search, Terminal, Sparkle)
+/// Uses collision-free Codicons (`U+EA60..U+EB65`) that never clash with Verdana/Arial PUA tables.
 pub const ACTIVITY_NF_PREVIEW_FRAMES: &[&str] = &[
-    "\u{f0eb}", "\u{f044}", "\u{f0ad}", "\u{f002}", "\u{f120}", "\u{f0e7}",
+    "\u{ea61}", "\u{ea73}", "\u{eb10}", "\u{ea6d}", "\u{ea85}", "\u{eb65}",
 ];
 
-/// Animated Nerd Font telemetry icon wave ( ->  ->  ->  ->  -> )
+/// Animated Nerd Font Codicon telemetry wave (gear -> hubot -> lightbulb -> rocket -> terminal -> bug)
 pub const NF_PULSE_FRAMES: &[&str] = &[
-    "\u{f013}", "\u{f085}", "\u{f0e7}", "\u{f135}", "\u{f0eb}", "\u{f120}",
+    "\u{eaf8}", "\u{eb08}", "\u{ea61}", "\u{eb25}", "\u{ea85}", "\u{eaaf}",
 ];
+
+/// Context-aware universal 1-cell Unicode Technical Symbol preview cycle (zero boxes in any font)
+pub const ACTIVITY_SYMBOL_PREVIEW_FRAMES: &[&str] = &["✦", "✎", "⚙", "⌖", "◎", "❯", "⎇", "❖"];
+
+/// Pure 7-bit ASCII spinner frames
+pub const ASCII_SPINNER_FRAMES: &[&str] = &["|", "/", "-", "\\"];
 
 /// Supported loading animation styles selectable by the user in /theme
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -85,6 +92,9 @@ pub enum SpinnerStyle {
     KaomojiAction,
     KaomojiDance,
     HexPulse,
+    SymbolOrbit,
+    SymbolActivity,
+    AsciiSpinner,
     NerdActivity,
     NerdOrbit,
     NerdPulse,
@@ -107,6 +117,11 @@ impl SpinnerStyle {
             "kaomoji_action" => SpinnerStyle::KaomojiAction,
             "kaomoji_dance" => SpinnerStyle::KaomojiDance,
             "hex_pulse" | "hex" => SpinnerStyle::HexPulse,
+            "symbol_orbit" | "sym_orbit" => SpinnerStyle::SymbolOrbit,
+            "symbol_activity" | "symbols" | "sym_activity" | "technical" => {
+                SpinnerStyle::SymbolActivity
+            }
+            "ascii_spin" | "ascii" => SpinnerStyle::AsciiSpinner,
             "nf_activity" | "nerdfont" | "nerd_activity" => SpinnerStyle::NerdActivity,
             "nf_orbit" | "nerd_orbit" => SpinnerStyle::NerdOrbit,
             "nf_pulse" | "nerd_pulse" => SpinnerStyle::NerdPulse,
@@ -130,6 +145,9 @@ impl SpinnerStyle {
             SpinnerStyle::KaomojiAction => "kaomoji_action",
             SpinnerStyle::KaomojiDance => "kaomoji_dance",
             SpinnerStyle::HexPulse => "hex_pulse",
+            SpinnerStyle::SymbolOrbit => "symbol_orbit",
+            SpinnerStyle::SymbolActivity => "symbol_activity",
+            SpinnerStyle::AsciiSpinner => "ascii_spin",
             SpinnerStyle::NerdActivity => "nf_activity",
             SpinnerStyle::NerdOrbit => "nf_orbit",
             SpinnerStyle::NerdPulse => "nf_pulse",
@@ -226,21 +244,39 @@ pub const ANIMATION_OPTIONS: &[AnimationOption] = &[
         style: SpinnerStyle::ParticleOrbit,
     },
     AnimationOption {
+        id: "symbol_orbit",
+        name: "Unicode Orbit + Symbol",
+        description: "Rotating Braille spinner + universal Unicode action glyph (⠋ ✎ / ⠙ ❯ / ⠹ ⎇) — zero boxes",
+        style: SpinnerStyle::SymbolOrbit,
+    },
+    AnimationOption {
+        id: "symbol_activity",
+        name: "Unicode Symbols (Gradient)",
+        description: "Context-aware 1-cell Unicode symbols (✦ Think, ✎ Write, ⚙ Edit, ❯ Run, ⎇ Plan) — works in any font",
+        style: SpinnerStyle::SymbolActivity,
+    },
+    AnimationOption {
+        id: "ascii_spin",
+        name: "Pure ASCII Spinner",
+        description: "Classic 7-bit ASCII terminal spinner (| / - \\) for universal compatibility",
+        style: SpinnerStyle::AsciiSpinner,
+    },
+    AnimationOption {
         id: "nf_orbit",
         name: "Nerd Font Orbit + Icon",
-        description: "Live rotating Braille spinner + themed FontAwesome action icon (Nerd Font)",
+        description: "Live rotating Braille spinner + collision-free Codicon action glyph (Nerd Font)",
         style: SpinnerStyle::NerdOrbit,
     },
     AnimationOption {
         id: "nf_activity",
         name: "Nerd Font Action Pulse",
-        description: "Context-aware FontAwesome icon per action ( Think,  Write,  Run) with RGB shimmer",
+        description: "Context-aware Codicon glyph per action with RGB shimmer (Nerd Font)",
         style: SpinnerStyle::NerdActivity,
     },
     AnimationOption {
         id: "nf_pulse",
         name: "Nerd Font Telemetry Wave",
-        description: "Animated cycling FontAwesome developer icons ( ->  ->  -> ) with shimmer",
+        description: "Animated cycling Codicon developer glyphs with RGB shimmer (Nerd Font)",
         style: SpinnerStyle::NerdPulse,
     },
 ];
@@ -686,7 +722,7 @@ pub fn render_spinner_spans_with_activity(
 }
 
 /// Renders the spinner glyph spans with optional context-aware activity Emoji, Kaomoji,
-/// and Nerd Font FontAwesome/Codicon vector icon.
+/// and Nerd Font Codicon vector icon.
 #[allow(clippy::too_many_arguments)]
 pub fn render_spinner_spans_with_icons(
     style: SpinnerStyle,
@@ -697,6 +733,33 @@ pub fn render_spinner_spans_with_icons(
     activity_emoji: Option<&str>,
     activity_kaomoji: Option<&str>,
     activity_nf: Option<&str>,
+) -> Vec<Span<'static>> {
+    render_spinner_spans_with_all_icons(
+        style,
+        millis,
+        c1,
+        c2,
+        theme,
+        activity_emoji,
+        activity_kaomoji,
+        activity_nf,
+        None,
+    )
+}
+
+/// Renders the spinner glyph spans with optional context-aware Emoji, Kaomoji, Nerd Font Codicon,
+/// and universal 1-cell Unicode Technical Symbol.
+#[allow(clippy::too_many_arguments)]
+pub fn render_spinner_spans_with_all_icons(
+    style: SpinnerStyle,
+    millis: u64,
+    c1: Color,
+    c2: Color,
+    theme: &Theme,
+    activity_emoji: Option<&str>,
+    activity_kaomoji: Option<&str>,
+    activity_nf: Option<&str>,
+    activity_symbol: Option<&str>,
 ) -> Vec<Span<'static>> {
     match style {
         SpinnerStyle::DualPillars => {
@@ -736,6 +799,55 @@ pub fn render_spinner_spans_with_icons(
             vec![Span::styled(
                 format!("{}  ", emoji),
                 Style::default().fg(grad_color).add_modifier(Modifier::BOLD),
+            )]
+        }
+        SpinnerStyle::SymbolActivity => {
+            let sym = activity_symbol.unwrap_or_else(|| {
+                let idx = ((millis / 460) as usize) % ACTIVITY_SYMBOL_PREVIEW_FRAMES.len();
+                ACTIVITY_SYMBOL_PREVIEW_FRAMES[idx]
+            });
+            let phase = phase_rad(millis, 160.0);
+            let factor = (phase.sin() * 0.5 + 0.5).clamp(0.0, 1.0);
+            let grad_color = lerp_color(c1, c2, factor);
+            vec![Span::styled(
+                format!("{}  ", sym),
+                Style::default().fg(grad_color).add_modifier(Modifier::BOLD),
+            )]
+        }
+        SpinnerStyle::SymbolOrbit => {
+            let spin_idx = ((millis / crate::constants::SPINNER_FRAME_MS) as usize)
+                % BRAILLE_SPINNER_FRAMES.len();
+            let sym = activity_symbol.unwrap_or_else(|| {
+                let idx = ((millis / 560) as usize) % ACTIVITY_SYMBOL_PREVIEW_FRAMES.len();
+                ACTIVITY_SYMBOL_PREVIEW_FRAMES[idx]
+            });
+            let phase = phase_rad(millis, 160.0);
+            let f1 = (phase.sin() * 0.5 + 0.5).clamp(0.0, 1.0);
+            let f2 = ((phase + 1.2).sin() * 0.5 + 0.5).clamp(0.0, 1.0);
+            vec![
+                Span::styled(
+                    format!("{} ", BRAILLE_SPINNER_FRAMES[spin_idx]),
+                    Style::default()
+                        .fg(lerp_color(c1, c2, f1))
+                        .add_modifier(Modifier::BOLD),
+                ),
+                Span::styled(
+                    format!("{}  ", sym),
+                    Style::default()
+                        .fg(lerp_color(c2, c1, f2))
+                        .add_modifier(Modifier::BOLD),
+                ),
+            ]
+        }
+        SpinnerStyle::AsciiSpinner => {
+            let idx = ((millis / 110) as usize) % ASCII_SPINNER_FRAMES.len();
+            let phase = phase_rad(millis, 160.0);
+            let factor = (phase.sin() * 0.5 + 0.5).clamp(0.0, 1.0);
+            vec![Span::styled(
+                format!("{}  ", ASCII_SPINNER_FRAMES[idx]),
+                Style::default()
+                    .fg(lerp_color(c1, c2, factor))
+                    .add_modifier(Modifier::BOLD),
             )]
         }
         SpinnerStyle::NerdActivity => {
@@ -937,6 +1049,40 @@ pub fn render_activity_hint_spans(
             format!(" {:.1}s", elapsed_secs),
             Style::default().fg(theme.muted),
         )],
+        ActivityHintStyle::Symbols => vec![
+            Span::styled(" ◷ ", Style::default().fg(theme.info)),
+            Span::styled(
+                format!("{:.1}s", elapsed_secs),
+                Style::default().fg(theme.text_primary),
+            ),
+            Span::styled(" · ⎋ cancel", Style::default().fg(theme.muted)),
+        ],
+        ActivityHintStyle::Emoji => vec![
+            Span::styled(
+                format!(" ⏱ {:.1}s", elapsed_secs),
+                Style::default().fg(theme.text_primary),
+            ),
+            Span::styled(" · 🛑 esc", Style::default().fg(theme.muted)),
+        ],
+        ActivityHintStyle::Kaomoji => vec![
+            Span::styled(" (•_•) ", Style::default().fg(theme.info)),
+            Span::styled(
+                format!("{:.1}s · esc", elapsed_secs),
+                Style::default().fg(theme.muted),
+            ),
+        ],
+        ActivityHintStyle::Ascii => vec![Span::styled(
+            format!(" ({:.1}s | esc)", elapsed_secs),
+            Style::default().fg(theme.muted),
+        )],
+        ActivityHintStyle::NerdFont => vec![
+            Span::styled(" \u{ea82} ", Style::default().fg(theme.info)),
+            Span::styled(
+                format!("{:.1}s", elapsed_secs),
+                Style::default().fg(theme.text_primary),
+            ),
+            Span::styled(" · esc", Style::default().fg(theme.muted)),
+        ],
         ActivityHintStyle::Hidden => Vec::new(),
     }
 }
@@ -982,11 +1128,13 @@ pub fn render_live_activity_line_full(
     let think_k_idx = ((millis / 800) as usize) % thinking_kaomojis.len();
 
     // Extract structured descriptors for the active state/action:
-    // (verb_label, trail_gerund, Option<(tool_name, target)>, emoji_glyph, kaomoji_face, nf_icon, c1, c2)
+    // (verb_label, trail_gerund, Option<(tool_name, target)>, emoji_glyph, kaomoji_face, nf_icon, sym_icon, ascii_tag, c1, c2)
     type ActivityDescriptor<'a> = (
         &'a str,
         &'a str,
         Option<(&'a str, &'a str)>,
+        &'a str,
+        &'a str,
         &'a str,
         &'a str,
         &'a str,
@@ -1000,6 +1148,8 @@ pub fn render_live_activity_line_full(
         emoji_glyph,
         kaomoji_face,
         nf_icon,
+        sym_icon,
+        ascii_tag,
         c1,
         c2,
     ): ActivityDescriptor<'_> = match activity {
@@ -1009,7 +1159,9 @@ pub fn render_live_activity_line_full(
             None,
             "💭",
             thinking_kaomojis[think_k_idx],
-            "\u{f0eb}", //  fa-lightbulb
+            "\u{ea61}", // cod-lightbulb
+            "✦",
+            "[*]",
             theme.brand_accent,
             theme.highlight,
         ),
@@ -1019,7 +1171,9 @@ pub fn render_live_activity_line_full(
             Some((last_tool.as_str(), "")),
             "💭",
             thinking_kaomojis[think_k_idx],
-            "\u{f0eb}", //  fa-lightbulb
+            "\u{ea61}", // cod-lightbulb
+            "✦",
+            "[*]",
             theme.brand_accent,
             theme.highlight,
         ),
@@ -1029,7 +1183,9 @@ pub fn render_live_activity_line_full(
             None,
             "🌟",
             "( •_•)",
-            "\u{f013}", //  fa-cog
+            "\u{eaf8}", // cod-settings-gear
+            "◈",
+            "[~]",
             theme.brand_accent,
             theme.info,
         ),
@@ -1039,7 +1195,9 @@ pub fn render_live_activity_line_full(
             None,
             "💬",
             "( ^_-)",
-            "\u{f075}", //  fa-comment
+            "\u{ea6b}", // cod-comment
+            "▸",
+            "[>]",
             theme.info,
             theme.brand_accent,
         ),
@@ -1049,7 +1207,9 @@ pub fn render_live_activity_line_full(
             Some((tool.as_str(), target.as_str())),
             "🧭",
             "( °_°)◈",
-            "\u{f0ae}", //  fa-tasks
+            "\u{eaa6}", // cod-checklist
+            "⎇",
+            "[#]",
             theme.brand_accent,
             theme.highlight,
         ),
@@ -1059,7 +1219,9 @@ pub fn render_live_activity_line_full(
             Some((tool.as_str(), path.as_str())),
             "📝",
             "( ▸_▸)◈",
-            "\u{f044}", //  fa-edit
+            "\u{ea73}", // cod-edit
+            "✎",
+            "[+]",
             theme.info,
             theme.brand_accent,
         ),
@@ -1069,7 +1231,9 @@ pub fn render_live_activity_line_full(
             Some(("patch_file", path.as_str())),
             "🔧",
             "(⌐▪_▪)",
-            "\u{f0ad}", //  fa-wrench
+            "\u{eb10}", // cod-tools
+            "⚙",
+            "[~]",
             theme.info,
             theme.brand_accent,
         ),
@@ -1079,7 +1243,9 @@ pub fn render_live_activity_line_full(
             Some((tool.as_str(), path.as_str())),
             "📖",
             "( ◉_◉)",
-            "\u{f02d}", //  fa-book
+            "\u{eaa4}", // cod-book
+            "⌖",
+            "[?]",
             theme.info,
             theme.brand_accent,
         ),
@@ -1089,7 +1255,9 @@ pub fn render_live_activity_line_full(
             Some(("grep_search", target.as_str())),
             "🔭",
             "( ◉_◉)",
-            "\u{f002}", //  fa-search
+            "\u{ea6d}", // cod-search
+            "⌖",
+            "[?]",
             theme.info,
             theme.brand_accent,
         ),
@@ -1099,7 +1267,9 @@ pub fn render_live_activity_line_full(
             Some(("search_web", query.as_str())),
             "📡",
             "( °o°)",
-            "\u{f0ac}", //  fa-globe
+            "\u{eb01}", // cod-globe
+            "◎",
+            "[@]",
             theme.info,
             theme.success,
         ),
@@ -1109,7 +1279,9 @@ pub fn render_live_activity_line_full(
             Some(("exec_cmd", step.as_str())),
             "🚀",
             "(ง°_°)ง",
-            "\u{f188}", //  fa-bug
+            "\u{eaaf}", // cod-bug
+            "❯",
+            "[$]",
             theme.info,
             theme.brand_accent,
         ),
@@ -1119,7 +1291,9 @@ pub fn render_live_activity_line_full(
             Some(("exec_cmd", command.as_str())),
             "🚀",
             "(ง°_°)ง",
-            "\u{f120}", //  fa-terminal
+            "\u{ea85}", // cod-terminal
+            "❯",
+            "[$]",
             theme.info,
             theme.brand_accent,
         ),
@@ -1129,7 +1303,9 @@ pub fn render_live_activity_line_full(
             Some(("spawn_subagent", role.as_str())),
             "🐝",
             "( ◉_◉)⊃",
-            "\u{f085}", //  fa-cogs
+            "\u{eb08}", // cod-hubot
+            "❖",
+            "[&]",
             theme.highlight,
             theme.brand_accent,
         ),
@@ -1139,7 +1315,9 @@ pub fn render_live_activity_line_full(
             Some((tool.as_str(), skill.as_str())),
             "🧠",
             "( ✧_✧)",
-            "\u{f0e7}", //  fa-bolt
+            "\u{eb65}", // cod-sparkle
+            "✦",
+            "[*]",
             theme.brand_accent,
             theme.highlight,
         ),
@@ -1149,7 +1327,9 @@ pub fn render_live_activity_line_full(
             Some((tool.as_str(), target.as_str())),
             "🌟",
             "( •_•)",
-            "\u{f013}", //  fa-cog
+            "\u{eaf8}", // cod-settings-gear
+            "◈",
+            "[>]",
             theme.info,
             theme.brand_accent,
         ),
@@ -1159,7 +1339,9 @@ pub fn render_live_activity_line_full(
             Some(("context_memory", "")),
             "💾",
             "( ~_~)",
-            "\u{f1c0}", //  fa-database
+            "\u{eace}", // cod-database
+            "⌘",
+            "[=]",
             theme.muted,
             theme.text_primary,
         ),
@@ -1197,7 +1379,7 @@ pub fn render_live_activity_line_full(
             AgentActivity::CompactingContext => Cow::Borrowed("Compacting memory..."),
         };
 
-        let mut spans = render_spinner_spans_with_icons(
+        let mut spans = render_spinner_spans_with_all_icons(
             spinner_style,
             millis,
             c1,
@@ -1206,6 +1388,7 @@ pub fn render_live_activity_line_full(
             Some(emoji_glyph),
             Some(kaomoji_face),
             Some(nf_icon),
+            Some(sym_icon),
         );
         spans.extend(render_shimmer_spans(&label, c1, c2, millis, 160.0, 0.32));
         spans.extend(render_activity_hint_spans(
@@ -1224,6 +1407,8 @@ pub fn render_live_activity_line_full(
         Emoji,
         Kaomoji,
         NerdFont,
+        Symbol,
+        Ascii,
     }
 
     #[derive(Clone, Copy, PartialEq, Eq)]
@@ -1245,6 +1430,10 @@ pub fn render_live_activity_line_full(
         ActivityBarStyle::NfDetail | ActivityBarStyle::NfTool | ActivityBarStyle::NfTrail => {
             PostPipeBadgeKind::NerdFont
         }
+        ActivityBarStyle::SymDetail | ActivityBarStyle::SymTool | ActivityBarStyle::SymTrail => {
+            PostPipeBadgeKind::Symbol
+        }
+        ActivityBarStyle::AsciiDetail | ActivityBarStyle::AsciiTool => PostPipeBadgeKind::Ascii,
         ActivityBarStyle::ActionDetail
         | ActivityBarStyle::ActionTool
         | ActivityBarStyle::HermesTrail
@@ -1257,21 +1446,26 @@ pub fn render_live_activity_line_full(
         ActivityBarStyle::ActionTool
         | ActivityBarStyle::EmojiTool
         | ActivityBarStyle::KaomojiTool
-        | ActivityBarStyle::NfTool => PipeFormatKind::ToolOnly,
+        | ActivityBarStyle::NfTool
+        | ActivityBarStyle::SymTool
+        | ActivityBarStyle::AsciiTool => PipeFormatKind::ToolOnly,
         ActivityBarStyle::HermesTrail
         | ActivityBarStyle::EmojiTrail
         | ActivityBarStyle::KaomojiTrail
-        | ActivityBarStyle::NfTrail => PipeFormatKind::Trail,
+        | ActivityBarStyle::NfTrail
+        | ActivityBarStyle::SymTrail => PipeFormatKind::Trail,
         ActivityBarStyle::CompactBadge => PipeFormatKind::CompactBadge,
         ActivityBarStyle::CyberArrow => PipeFormatKind::CyberArrow,
         ActivityBarStyle::ActionDetail
         | ActivityBarStyle::EmojiDetail
         | ActivityBarStyle::KaomojiDetail
         | ActivityBarStyle::NfDetail
+        | ActivityBarStyle::SymDetail
+        | ActivityBarStyle::AsciiDetail
         | ActivityBarStyle::Classic => PipeFormatKind::Detail,
     };
 
-    let mut spans = render_spinner_spans_with_icons(
+    let mut spans = render_spinner_spans_with_all_icons(
         spinner_style,
         millis,
         c1,
@@ -1280,10 +1474,10 @@ pub fn render_live_activity_line_full(
         Some(emoji_glyph),
         Some(kaomoji_face),
         Some(nf_icon),
+        Some(sym_icon),
     );
 
-    // Helper closure: renders the Emoji, Kaomoji, or Nerd Font badge ONLY after the `|` pipe
-    // with the current theme's dynamic sine-wave gradient animation!
+    // Helper closure: renders the Emoji, Kaomoji, Unicode Symbol, ASCII, or Nerd Font badge ONLY after the `|` pipe
     let push_post_pipe_badge = |spans: &mut Vec<Span<'static>>| match badge_kind {
         PostPipeBadgeKind::None => {}
         PostPipeBadgeKind::Emoji => {
@@ -1314,6 +1508,23 @@ pub fn render_live_activity_line_full(
             spans.push(Span::styled(
                 format!("{} ", nf_icon),
                 Style::default().fg(nf_color).add_modifier(Modifier::BOLD),
+            ));
+        }
+        PostPipeBadgeKind::Symbol => {
+            let sym_phase = phase_rad(millis, 160.0);
+            let sym_factor = (sym_phase.sin() * 0.5 + 0.5).clamp(0.0, 1.0);
+            let sym_color = lerp_color(c1, c2, sym_factor);
+            spans.push(Span::styled(
+                format!("{} ", sym_icon),
+                Style::default().fg(sym_color).add_modifier(Modifier::BOLD),
+            ));
+        }
+        PostPipeBadgeKind::Ascii => {
+            spans.push(Span::styled(
+                format!("{} ", ascii_tag),
+                Style::default()
+                    .fg(theme.brand_accent)
+                    .add_modifier(Modifier::BOLD),
             ));
         }
     };
@@ -1954,8 +2165,8 @@ mod tests {
         };
 
         for (style, expected_icon) in [
-            (SpinnerStyle::NerdActivity, "\u{f044}"),
-            (SpinnerStyle::NerdOrbit, "\u{f044}"),
+            (SpinnerStyle::NerdActivity, "\u{ea73}"),
+            (SpinnerStyle::NerdOrbit, "\u{ea73}"),
         ] {
             let line = render_live_activity_line_full(
                 &write_act,
@@ -1976,12 +2187,12 @@ mod tests {
                 txt.contains(expected_icon)
                     && txt.contains("write_file")
                     && txt.contains("src/App.tsx"),
-                "Expected Nerd Font icon {:?} in activity line, got: {txt}",
+                "Expected Nerd Font Codicon {:?} in activity line, got: {txt}",
                 expected_icon
             );
         }
 
-        // NfTool omits path while retaining themed Nerd Font icon
+        // NfTool omits path while retaining collision-free Codicon icon
         let nf_tool = render_live_activity_line_with_style(
             &write_act,
             SpinnerStyle::DualPillars,
@@ -1996,8 +2207,49 @@ mod tests {
             .map(|s| s.content.into_owned())
             .collect();
         assert!(
-            nf_tool_txt.contains("\u{f044} write_file") && !nf_tool_txt.contains("src/App.tsx"),
+            nf_tool_txt.contains("\u{ea73} write_file") && !nf_tool_txt.contains("src/App.tsx"),
             "NfTool unexpected output: {nf_tool_txt}"
+        );
+
+        // Universal Unicode Technical Symbol & ASCII activity bar + spinner styles (zero PUA boxes)
+        let sym_line = render_live_activity_line_full(
+            &write_act,
+            SpinnerStyle::SymbolOrbit,
+            ActivityBarStyle::SymDetail,
+            ActivityHintStyle::Symbols,
+            true,
+            320,
+            6.3,
+            &theme,
+        );
+        let sym_txt: String = sym_line
+            .spans
+            .into_iter()
+            .map(|s| s.content.into_owned())
+            .collect();
+        assert!(
+            sym_txt.contains("✎") && sym_txt.contains("◷ 6.3s · ⎋ cancel"),
+            "Unicode symbol activity line unexpected: {sym_txt}"
+        );
+
+        let ascii_line = render_live_activity_line_full(
+            &write_act,
+            SpinnerStyle::AsciiSpinner,
+            ActivityBarStyle::AsciiDetail,
+            ActivityHintStyle::Ascii,
+            true,
+            320,
+            6.3,
+            &theme,
+        );
+        let ascii_txt: String = ascii_line
+            .spans
+            .into_iter()
+            .map(|s| s.content.into_owned())
+            .collect();
+        assert!(
+            ascii_txt.contains("[+] write_file") && ascii_txt.contains("(6.3s | esc)"),
+            "ASCII activity line unexpected: {ascii_txt}"
         );
     }
 }

@@ -54,6 +54,8 @@ pub type StatusBarStyleOption = StylePreviewOption;
 pub type ContextMeterStyleOption = StylePreviewOption;
 pub type ModeBarStyleOption = StylePreviewOption;
 pub type ActivityHintStyleOption = StylePreviewOption;
+pub type ToolCardStyleOption = StylePreviewOption;
+pub type ToolIconStyleOption = StylePreviewOption;
 
 #[derive(Debug, Clone, Copy)]
 pub struct VisibilityToggleOption {
@@ -189,26 +191,62 @@ pub static STATUS_BAR_STYLE_OPTIONS: &[StatusBarStyleOption] = &[
     },
     StatusBarStyleOption {
         id: "icons",
-        name: "Geometric Operator Icons",
-        description: "Crisp operator glyphs (◈ model · ⚡effort │ ⌂ path · ⎇ branch)",
+        name: "Unicode Technical Icons (⎇ ◈ ⚡ ⌂)",
+        description:
+            "Universal 1-cell Unicode glyphs (◈ model · ⚡ effort │ ⌂ path · ⎇ main) — zero boxes",
+        preview: &[],
+    },
+    StatusBarStyleOption {
+        id: "symbol_bubbles",
+        name: "Oh My Posh: Bubbles + Symbols (⎇ ◈)",
+        description:
+            "Rounded … capsules with universal Unicode symbols (◈ ⚡ ⌂ ⎇) — zero boxes in any font",
+        preview: &[],
+    },
+    StatusBarStyleOption {
+        id: "symbol_powerline",
+        name: "Oh My Posh: Powerline + Symbols (⎇ ◈)",
+        description:
+            "Seamless  ribbon with universal Unicode symbols (◈ ⚡ ⌂ ⎇) — zero boxes in any font",
+        preview: &[],
+    },
+    StatusBarStyleOption {
+        id: "emoji",
+        name: "Expressive Emoji (🧠 ⚡ 📁 🌿)",
+        description: "Full-color status bar emojis (🧠 model · ⚡ effort │ 📁 path · 🌿 branch)",
+        preview: &[],
+    },
+    StatusBarStyleOption {
+        id: "kaomoji",
+        name: "Kaomoji Expressions ((◈_◈) / (•‿•))",
+        description: "Playful Japanese kaomoji telemetry per segment",
+        preview: &[],
+    },
+    StatusBarStyleOption {
+        id: "ascii",
+        name: "Pure 7-bit ASCII ([model] | [git])",
+        description:
+            "Strict 7-bit ASCII bracketed segments with pipe dividers for universal terminals",
         preview: &[],
     },
     StatusBarStyleOption {
         id: "nerd_icons",
-        name: "Nerd Font: Clean Icons",
-        description: "FontAwesome/Devicon glyphs:  model ·  effort │  path ·  main (Nerd Font)",
+        name: "Nerd Font: Clean Codicons (Nerd Font)",
+        description: "Collision-free Nerd Font Codicon/FA glyphs per segment (requires Nerd Font)",
         preview: &[],
     },
     StatusBarStyleOption {
         id: "nerd_bubbles",
-        name: "Nerd Font: Bubbles + Icons",
-        description: "Oh My Posh … capsules with crisp Nerd Font icons inside (Nerd Font)",
+        name: "Nerd Font: Bubbles + Icons (Nerd Font)",
+        description:
+            "Oh My Posh … capsules with collision-free Codicons inside (requires Nerd Font)",
         preview: &[],
     },
     StatusBarStyleOption {
         id: "nerd_powerline",
-        name: "Nerd Font: Powerline + Icons",
-        description: "Oh My Posh  ribbon with Nerd Font icons per segment (Nerd Font)",
+        name: "Nerd Font: Powerline + Icons (Nerd Font)",
+        description:
+            "Oh My Posh  ribbon with collision-free Codicons per segment (requires Nerd Font)",
         preview: &[],
     },
 ];
@@ -340,16 +378,47 @@ pub static CONTEXT_METER_STYLE_OPTIONS: &[ContextMeterStyleOption] = &[
         preview: &[],
     },
     ContextMeterStyleOption {
+        id: "symbol_circle",
+        name: "Unicode Symbols + Pie (◈ 98% • ⌘ ◔)",
+        description: "Universal 1-cell Unicode symbols with pie gauge — zero boxes in any font",
+        preview: &[],
+    },
+    ContextMeterStyleOption {
+        id: "symbol_bar",
+        name: "Unicode Symbols + Bar (◈ 98% • ⌘ [██])",
+        description: "Universal 1-cell Unicode symbols with sleek progress bar — zero boxes",
+        preview: &[],
+    },
+    ContextMeterStyleOption {
+        id: "emoji_bar",
+        name: "Emoji + Bar (⚡ 98% • 🧠 [██░░])",
+        description: "Expressive cache & brain emojis paired with block progress bar",
+        preview: &[],
+    },
+    ContextMeterStyleOption {
+        id: "kaomoji",
+        name: "Kaomoji Meter ((•‿•) 98% · (◉_◉) 21%)",
+        description: "Mood-aware kaomoji faces reacting to context utilization thresholds",
+        preview: &[],
+    },
+    ContextMeterStyleOption {
+        id: "ascii_bar",
+        name: "Pure ASCII Bar (kv 98% | [##......])",
+        description: "Strict 7-bit ASCII hash-and-dot meter with zero Unicode glyphs",
+        preview: &[],
+    },
+    ContextMeterStyleOption {
         id: "nerd_icons",
-        name: "Nerd Font: Icons + Pie Ring",
-        description: "FontAwesome cache & chip icons with pie ring:  98% •  ◔ 21% (Nerd Font)",
+        name: "Nerd Font: Codicons + Pie (Nerd Font)",
+        description:
+            "Collision-free Nerd Font Codicon cache & chip icons with pie ring (requires Nerd Font)",
         preview: &[],
     },
     ContextMeterStyleOption {
         id: "nerd_bar",
-        name: "Nerd Font: Icons + Bar",
+        name: "Nerd Font: Codicons + Bar (Nerd Font)",
         description:
-            "FontAwesome cache & chip icons with block bar:  98% •  [██░░░░░░] 21% (Nerd Font)",
+            "Collision-free Nerd Font Codicon icons with block progress bar (requires Nerd Font)",
         preview: &[],
     },
 ];
@@ -422,15 +491,57 @@ pub static MODE_BAR_STYLE_OPTIONS: &[ModeBarStyleOption] = &[
         preview: &[],
     },
     ModeBarStyleOption {
+        id: "brackets",
+        name: "Bracketed Tags ([ponytail:full])",
+        description: "Structured CLI bracket tags around each active mode",
+        preview: &[],
+    },
+    ModeBarStyleOption {
+        id: "icons",
+        name: "Unicode Technical Symbols (✦ ◈ ▸)",
+        description: "Universal 1-cell Unicode symbols (✦ ponytail·full · ◈ caveman·full · ▸ stream) — zero boxes",
+        preview: &[],
+    },
+    ModeBarStyleOption {
+        id: "symbol_bubbles",
+        name: "Oh My Posh: Bubbles + Symbols (✦ ◈ ▸)",
+        description: "Rounded … capsules with universal Unicode symbols (✦ ◈ ▸) — zero boxes in any font",
+        preview: &[],
+    },
+    ModeBarStyleOption {
+        id: "symbol_powerline",
+        name: "Oh My Posh: Powerline + Symbols (✦ ◈)",
+        description: "Right-aligned  Powerline ribbon with universal Unicode symbols — zero boxes",
+        preview: &[],
+    },
+    ModeBarStyleOption {
+        id: "emoji",
+        name: "Expressive Emoji (✨ 🔥 ⚡)",
+        description: "Full-color mode emojis: ✨ ponytail·full · 🔥 caveman·full · ⚡ stream",
+        preview: &[],
+    },
+    ModeBarStyleOption {
+        id: "kaomoji",
+        name: "Kaomoji Expressions ((✧_✧) (ง•_•)ง)",
+        description: "Expressive Japanese kaomoji faces per active mode",
+        preview: &[],
+    },
+    ModeBarStyleOption {
+        id: "ascii",
+        name: "Pure 7-bit ASCII (* | # | >)",
+        description: "Strict 7-bit ASCII mode strip: * ponytail:full | # caveman:full | > streaming",
+        preview: &[],
+    },
+    ModeBarStyleOption {
         id: "nerd_icons",
-        name: "Nerd Font: Clean Icons",
-        description: "FontAwesome glyphs:  ponytail·full ·  caveman·full ·  stream (Nerd Font)",
+        name: "Nerd Font: Clean Codicons (Nerd Font)",
+        description: "Collision-free Nerd Font Codicon mode glyphs (requires Nerd Font)",
         preview: &[],
     },
     ModeBarStyleOption {
         id: "nerd_bubbles",
-        name: "Nerd Font: Bubbles + Icons",
-        description: "Oh My Posh … capsules with FontAwesome mode icons (Nerd Font)",
+        name: "Nerd Font: Bubbles + Icons (Nerd Font)",
+        description: "Oh My Posh … capsules with collision-free Codicons (requires Nerd Font)",
         preview: &[],
     },
     ModeBarStyleOption {
@@ -485,9 +596,149 @@ pub static ACTIVITY_HINT_STYLE_OPTIONS: &[ActivityHintStyleOption] = &[
         preview: &[],
     },
     ActivityHintStyleOption {
+        id: "symbols",
+        name: "Unicode Symbols (◷ 6.3s · ⎋ cancel)",
+        description: "Universal 1-cell clock & escape glyphs — crisp in every terminal font",
+        preview: &[],
+    },
+    ActivityHintStyleOption {
+        id: "emoji",
+        name: "Expressive Emoji (⏱ 6.3s · 🛑 esc)",
+        description: "Stopwatch and stop-sign emojis for elapsed time and interrupt hint",
+        preview: &[],
+    },
+    ActivityHintStyleOption {
+        id: "kaomoji",
+        name: "Kaomoji Timer ((•_•) 6.3s · esc)",
+        description: "Playful kaomoji face alongside live elapsed seconds",
+        preview: &[],
+    },
+    ActivityHintStyleOption {
+        id: "ascii",
+        name: "Pure 7-bit ASCII ((6.3s | esc))",
+        description: "Strict 7-bit ASCII timer and interrupt reminder",
+        preview: &[],
+    },
+    ActivityHintStyleOption {
+        id: "nerdfont",
+        name: "Nerd Font Codicon Clock (Nerd Font)",
+        description:
+            "Collision-free Nerd Font Codicon clock glyph + elapsed seconds (requires Nerd Font)",
+        preview: &[],
+    },
+    ActivityHintStyleOption {
         id: "hidden",
         name: "Hidden (No Timer or Hint)",
         description: "Completely hides both elapsed timer and esc interrupt hint",
+        preview: &[],
+    },
+];
+
+pub static TOOL_CARD_STYLE_OPTIONS: &[ToolCardStyleOption] = &[
+    ToolCardStyleOption {
+        id: "classic",
+        name: "Classic Tree (Default)",
+        description: "Clean inline tree (`• Bash cmd` / `  │ out` / `  └ ✓ completed (48ms)`)",
+        preview: &[],
+    },
+    ToolCardStyleOption {
+        id: "rounded_card",
+        name: "Rounded Card Frame (╭─ … ─╮)",
+        description: "Full rounded card container with right-aligned status & timing pill",
+        preview: &[],
+    },
+    ToolCardStyleOption {
+        id: "square_card",
+        name: "Square Architectural Card (┌─ … ─┐)",
+        description: "Crisp 90-degree bordered box card with status badge in top rule",
+        preview: &[],
+    },
+    ToolCardStyleOption {
+        id: "left_rail",
+        name: "Left Accent Rail Card (┃)",
+        description:
+            "Tinted elevated card with thick semantic left rail ┃ and right-aligned status",
+        preview: &[],
+    },
+    ToolCardStyleOption {
+        id: "split_bar",
+        name: "OpenCode Split-Bar Card (┃ … ┃)",
+        description: "Dual vertical accent rails on elevated surface with zero horizontal borders",
+        preview: &[],
+    },
+    ToolCardStyleOption {
+        id: "posh_pill",
+        name: "Oh My Posh: Header Pill (▎ Bash )",
+        description: "Soft theme-tinted tool pill header, crisp ▎ gutter, and tinted status pill",
+        preview: &[],
+    },
+    ToolCardStyleOption {
+        id: "posh_bubbles",
+        name: "Oh My Posh: Bubbles Capsule (Bash)",
+        description: "Rounded Oh My Posh capsule header & footer pills with clean │ output gutter",
+        preview: &[],
+    },
+    ToolCardStyleOption {
+        id: "compact",
+        name: "Compact Inline (Dense)",
+        description: "Single-line header with inline timing badge + quiet indented output",
+        preview: &[],
+    },
+    ToolCardStyleOption {
+        id: "minimal",
+        name: "Minimalist Hairline (── Bash ──)",
+        description: "Subtle horizontal rule header with borderless indented output",
+        preview: &[],
+    },
+    ToolCardStyleOption {
+        id: "brackets",
+        name: "CLI Telemetry Block ([BASH])",
+        description: "Developer CLI bracket header `[BASH]` with `>` output lines & `[OK · 48ms]`",
+        preview: &[],
+    },
+];
+
+pub static TOOL_ICON_STYLE_OPTIONS: &[ToolIconStyleOption] = &[
+    ToolIconStyleOption {
+        id: "minimal",
+        name: "1. Minimal Clean (`•` / `✓` / `✗`)",
+        description: "Current ultra-clean minimal bullet and checkmark indicators (Default)",
+        preview: &[],
+    },
+    ToolIconStyleOption {
+        id: "symbols",
+        name: "2. Unicode Technical Symbols (`❯` `◎` `✎` `⎇`)",
+        description: "Universal 1-cell Unicode icons per tool (❯ Bash, ◎ Browser, ✎ Write, ⎇ Plan) — zero boxes",
+        preview: &[],
+    },
+    ToolIconStyleOption {
+        id: "ascii",
+        name: "3. Pure 7-bit ASCII (`$` `@` `+` `~` `[OK]`)",
+        description: "Strict 7-bit ASCII semantic prefixes ($ Bash, @ Web, + Write, ~ Edit, [OK])",
+        preview: &[],
+    },
+    ToolIconStyleOption {
+        id: "emoji",
+        name: "4. Expressive Emoji (`⚡` `🌐` `📝` `🔧` `✅`)",
+        description: "Full-color category emojis for Bash, Browser, Files, Search, Plans, and Subagents",
+        preview: &[],
+    },
+    ToolIconStyleOption {
+        id: "kaomoji",
+        name: "5. Kaomoji Expressions (`(ง°_°)ง` `( °o°)`)",
+        description: "Expressive Japanese kaomoji faces per tool category and completion status",
+        preview: &[],
+    },
+    ToolIconStyleOption {
+        id: "nerdfont",
+        name: "6. Nerd Font Codicons (Nerd Font)",
+        description: "Collision-free Nerd Font Codicons per tool & thought header (requires Nerd Font)",
+        preview: &[],
+    },
+    ToolIconStyleOption {
+        id: "none",
+        name: "7. No Icons (Pure Typography)",
+        description: "Zero leading bullets or symbols — clean pure text headers",
         preview: &[],
     },
 ];
@@ -994,22 +1245,51 @@ pub static ACTIVITY_STYLE_OPTIONS: &[ActivityStyleOption] = &[
         ],
     },
     ActivityStyleOption {
+        id: "sym_detail",
+        name: "Unicode Symbols + Style 1 (Action | ✎ Tool · Target)",
+        description: "Universal 1-cell Unicode icons (✦ ✎ ⚙ ⌖ ◎ ❯ ⎇) after pipe — zero boxes in any font",
+        preview: &[],
+    },
+    ActivityStyleOption {
+        id: "sym_tool",
+        name: "Unicode Symbols + Style 2 (Action | ✎ Tool Name)",
+        description: "Minimal universal 1-cell Unicode symbol + tool name after pipe — zero boxes",
+        preview: &[],
+    },
+    ActivityStyleOption {
+        id: "sym_trail",
+        name: "Unicode Symbols + Style 3 (Hermes Trail + ✎)",
+        description: "Hermes trail with universal 1-cell Unicode action symbol after pipe",
+        preview: &[],
+    },
+    ActivityStyleOption {
+        id: "ascii_detail",
+        name: "Pure ASCII + Style 1 (Action | [+] Tool · Target)",
+        description: "Strict 7-bit ASCII action tags ([$], [+], [~], [?], [@]) after pipe",
+        preview: &[],
+    },
+    ActivityStyleOption {
+        id: "ascii_tool",
+        name: "Pure ASCII + Style 2 (Action | [+] Tool Name)",
+        description: "Minimal 7-bit ASCII action tag + tool name without paths",
+        preview: &[],
+    },
+    ActivityStyleOption {
         id: "nf_detail",
-        name: "Nerd Font + Style 1 (Action | Icon Tool · Target)",
-        description:
-            "Themed FontAwesome icon after pipe: Action... |  write_file · target (Nerd Font)",
+        name: "Nerd Font + Style 1 (Codicon Tool · Target)",
+        description: "Collision-free Nerd Font Codicon icon after pipe: Action... | icon tool · target (Nerd Font)",
         preview: &[],
     },
     ActivityStyleOption {
         id: "nf_tool",
-        name: "Nerd Font + Style 2 (Action | Icon Tool Name)",
-        description: "Minimal themed FontAwesome icon + tool name after pipe (Nerd Font)",
+        name: "Nerd Font + Style 2 (Codicon Tool Name)",
+        description: "Minimal collision-free Nerd Font Codicon + tool name after pipe (Nerd Font)",
         preview: &[],
     },
     ActivityStyleOption {
         id: "nf_trail",
-        name: "Nerd Font + Style 3 (Hermes Trail + Icon)",
-        description: "Hermes trail with themed FontAwesome action icon after pipe (Nerd Font)",
+        name: "Nerd Font + Style 3 (Hermes Trail + Codicon)",
+        description: "Hermes trail with collision-free Nerd Font Codicon after pipe (Nerd Font)",
         preview: &[],
     },
 ];
@@ -1083,9 +1363,16 @@ pub static TOAST_SYMBOL_OPTIONS: &[ToastSymbolOption] = &[
         ],
     },
     ToastSymbolOption {
+        id: "technical",
+        name: "7. Unicode Technical Symbols (`⎇` `◈` `❖` `⚡`)",
+        description:
+            "Universal 1-cell technical symbols (⎇ task, ❖ subagent, ⚡ skill, ◈ info) — zero boxes",
+        preview: &[],
+    },
+    ToastSymbolOption {
         id: "nerdfont",
-        name: "7. Nerd Font Icons (`` `` `` ``)",
-        description: "Crisp theme-colored FontAwesome vector icons (requires Nerd Font)",
+        name: "8. Nerd Font Codicons (Nerd Font)",
+        description: "Collision-free Nerd Font Codicons vector icons (requires Nerd Font)",
         preview: &[],
     },
 ];
@@ -1127,6 +1414,24 @@ pub static MENU_STYLE_OPTIONS: &[MenuStyleOption] = &[
         description: crate::ui::intellisense::MENU_STYLE_SPECS[5].description,
         preview: crate::ui::intellisense::MENU_STYLE_SPECS[5].preview,
     },
+    MenuStyleOption {
+        id: crate::ui::intellisense::MENU_STYLE_SPECS[6].id,
+        name: crate::ui::intellisense::MENU_STYLE_SPECS[6].name,
+        description: crate::ui::intellisense::MENU_STYLE_SPECS[6].description,
+        preview: crate::ui::intellisense::MENU_STYLE_SPECS[6].preview,
+    },
+    MenuStyleOption {
+        id: crate::ui::intellisense::MENU_STYLE_SPECS[7].id,
+        name: crate::ui::intellisense::MENU_STYLE_SPECS[7].name,
+        description: crate::ui::intellisense::MENU_STYLE_SPECS[7].description,
+        preview: crate::ui::intellisense::MENU_STYLE_SPECS[7].preview,
+    },
+    MenuStyleOption {
+        id: crate::ui::intellisense::MENU_STYLE_SPECS[8].id,
+        name: crate::ui::intellisense::MENU_STYLE_SPECS[8].name,
+        description: crate::ui::intellisense::MENU_STYLE_SPECS[8].description,
+        preview: crate::ui::intellisense::MENU_STYLE_SPECS[8].preview,
+    },
 ];
 
 pub struct ThemeSelectContext<'a> {
@@ -1143,6 +1448,8 @@ pub struct ThemeSelectContext<'a> {
     pub context_meter_styles: &'a [ContextMeterStyleOption],
     pub mode_bar_styles: &'a [ModeBarStyleOption],
     pub activity_hint_styles: &'a [ActivityHintStyleOption],
+    pub tool_card_styles: &'a [ToolCardStyleOption],
+    pub tool_icon_styles: &'a [ToolIconStyleOption],
     pub active_tab: crate::ui::modals::ThemeModalTab,
     pub theme_selected_index: usize,
     pub animation_selected_index: usize,
@@ -1158,6 +1465,8 @@ pub struct ThemeSelectContext<'a> {
     pub context_meter_style_selected_index: usize,
     pub mode_bar_style_selected_index: usize,
     pub activity_hint_style_selected_index: usize,
+    pub tool_card_style_selected_index: usize,
+    pub tool_icon_style_selected_index: usize,
     pub visibility_selected_index: usize,
     pub active_theme_id: &'a str,
     pub active_animation_id: &'a str,
@@ -1194,6 +1503,8 @@ pub fn render_theme_select(
         context_meter_styles,
         mode_bar_styles,
         activity_hint_styles,
+        tool_card_styles,
+        tool_icon_styles,
         active_tab,
         theme_selected_index,
         animation_selected_index,
@@ -1209,6 +1520,8 @@ pub fn render_theme_select(
         context_meter_style_selected_index,
         mode_bar_style_selected_index,
         activity_hint_style_selected_index,
+        tool_card_style_selected_index,
+        tool_icon_style_selected_index,
         visibility_selected_index,
         active_theme_id,
         active_animation_id,
@@ -1339,6 +1652,8 @@ pub fn render_theme_select(
             ("  ctx   ", ui_prefs.context_meter_style.as_str()),
             ("  stat  ", ui_prefs.status_bar_style.as_str()),
             ("  modes ", ui_prefs.mode_bar_style.as_str()),
+            ("  tools ", ui_prefs.tool_card_style.as_str()),
+            ("  icons ", ui_prefs.tool_icon_style.as_str()),
             ("  hint  ", ui_prefs.activity_hint_style.as_str()),
             ("  todo  ", active_todo_style),
             ("  toast ", active_toast_style),
@@ -1411,6 +1726,12 @@ pub fn render_theme_select(
             activity_hint_styles.len(),
             activity_hint_style_selected_index,
         ),
+        crate::ui::modals::ThemeModalTab::ToolCardStyles => {
+            (tool_card_styles.len(), tool_card_style_selected_index)
+        }
+        crate::ui::modals::ThemeModalTab::ToolIconStyles => {
+            (tool_icon_styles.len(), tool_icon_style_selected_index)
+        }
         crate::ui::modals::ThemeModalTab::Visibility => {
             (VISIBILITY_TOGGLE_OPTIONS.len(), visibility_selected_index)
         }
@@ -2018,7 +2339,7 @@ pub fn render_theme_select(
                 let mut out = Vec::new();
                 if line1.is_empty() && line2.is_empty() {
                     out.push(Line::from(Span::styled(
-                        "(all status bar segments hidden — enable in 14. Show / Hide)",
+                        "(all status bar segments hidden — enable in 16. Show / Hide)",
                         Style::default().fg(theme.muted),
                     )));
                 } else {
@@ -2083,7 +2404,7 @@ pub fn render_theme_select(
                     );
                     if meter.is_empty() {
                         spans.push(Span::styled(
-                            "(hidden — enable in 14. Show / Hide)",
+                            "(hidden — enable in 16. Show / Hide)",
                             Style::default().fg(theme.muted),
                         ));
                     } else {
@@ -2213,6 +2534,58 @@ pub fn render_theme_select(
                 right_w,
                 theme,
                 Some(&live_hint_preview),
+            );
+        }
+        crate::ui::modals::ThemeModalTab::ToolCardStyles => {
+            let preview_w = right_w.saturating_sub(8).max(44);
+            let active_icon = ui_prefs.tool_icon_style_enum();
+            let live_card_preview = |style_id: &str| -> Vec<Line<'static>> {
+                let st = crate::config::ToolCardStyle::from_str_loose(style_id);
+                crate::ui::view::tool_cards::render_tool_card_preview(
+                    st,
+                    active_icon,
+                    preview_w,
+                    theme,
+                )
+            };
+            render_style_preview_list(
+                &mut content_lines,
+                &mut preview_title,
+                &mut preview_lines,
+                tool_card_styles,
+                tool_card_style_selected_index,
+                ui_prefs.tool_card_style_enum().as_str(),
+                34,
+                list_max_visible,
+                right_w,
+                theme,
+                Some(&live_card_preview),
+            );
+        }
+        crate::ui::modals::ThemeModalTab::ToolIconStyles => {
+            let preview_w = right_w.saturating_sub(8).max(44);
+            let active_card = ui_prefs.tool_card_style_enum();
+            let live_icon_preview = |style_id: &str| -> Vec<Line<'static>> {
+                let ic = crate::config::ToolIconStyle::from_str_loose(style_id);
+                crate::ui::view::tool_cards::render_tool_card_preview(
+                    active_card,
+                    ic,
+                    preview_w,
+                    theme,
+                )
+            };
+            render_style_preview_list(
+                &mut content_lines,
+                &mut preview_title,
+                &mut preview_lines,
+                tool_icon_styles,
+                tool_icon_style_selected_index,
+                ui_prefs.tool_icon_style_enum().as_str(),
+                38,
+                list_max_visible,
+                right_w,
+                theme,
+                Some(&live_icon_preview),
             );
         }
         crate::ui::modals::ThemeModalTab::Visibility => {
@@ -2412,6 +2785,15 @@ pub fn render_theme_select(
             Span::styled("─".repeat(rule_rem), Style::default().fg(theme.border)),
         ]));
         content_lines.extend(preview_lines);
+        if preview_title.contains("Nerd Font") {
+            content_lines.push(Line::from(vec![
+                Span::styled("    Tip: ", Style::default().fg(theme.warning).add_modifier(Modifier::BOLD)),
+                Span::styled(
+                    "Nerd Font glyphs require a Nerd Font terminal font (e.g. FiraMono Nerd Font); pick Unicode Symbols (⎇ ◈ ✦) for zero-box icons in any font.",
+                    Style::default().fg(theme.muted),
+                ),
+            ]));
+        }
     }
 
     frame.render_widget(Paragraph::new(content_lines), right_area);
@@ -2596,7 +2978,7 @@ mod tests {
 
     #[test]
     fn test_toast_symbol_options_completeness() {
-        assert_eq!(TOAST_SYMBOL_OPTIONS.len(), 7);
+        assert_eq!(TOAST_SYMBOL_OPTIONS.len(), 8);
         let ids: Vec<&str> = TOAST_SYMBOL_OPTIONS.iter().map(|s| s.id).collect();
         assert!(ids.contains(&"ascii"));
         assert!(ids.contains(&"geometric"));
@@ -2604,12 +2986,13 @@ mod tests {
         assert!(ids.contains(&"kaomoji"));
         assert!(ids.contains(&"cyber"));
         assert!(ids.contains(&"bracket"));
+        assert!(ids.contains(&"technical"));
         assert!(ids.contains(&"nerdfont"));
     }
 
     #[test]
     fn test_render_theme_select_swarm_and_toast_styles_tabs() {
-        let backend = TestBackend::new(110, 30);
+        let backend = TestBackend::new(110, 34);
         let mut terminal = Terminal::new(backend).unwrap();
         let theme = Theme::default();
         let themes = Theme::list_themes();
@@ -2631,6 +3014,8 @@ mod tests {
                 context_meter_styles: CONTEXT_METER_STYLE_OPTIONS,
                 mode_bar_styles: MODE_BAR_STYLE_OPTIONS,
                 activity_hint_styles: ACTIVITY_HINT_STYLE_OPTIONS,
+                tool_card_styles: TOOL_CARD_STYLE_OPTIONS,
+                tool_icon_styles: TOOL_ICON_STYLE_OPTIONS,
                 active_tab: tab,
                 theme_selected_index: 0,
                 animation_selected_index: 0,
@@ -2646,6 +3031,8 @@ mod tests {
                 context_meter_style_selected_index: 0,
                 mode_bar_style_selected_index: 0,
                 activity_hint_style_selected_index: 0,
+                tool_card_style_selected_index: 0,
+                tool_icon_style_selected_index: 0,
                 visibility_selected_index: 0,
                 active_theme_id: "auto",
                 active_animation_id: "dual_pillars",
@@ -2677,7 +3064,9 @@ mod tests {
             assert!(rendered.contains("1. Themes"));
             assert!(rendered.contains("7. Activity Bar"));
             assert!(rendered.contains("8. Menu Styles"));
-            assert!(rendered.contains("14. Show / Hide"));
+            assert!(rendered.contains("14. Tool Cards"));
+            assert!(rendered.contains("15. Tool Icons"));
+            assert!(rendered.contains("16. Show / Hide"));
             assert!(rendered.contains("Live Preview:"));
         }
     }

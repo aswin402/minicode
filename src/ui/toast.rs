@@ -71,15 +71,19 @@ pub const TOAST_SYMBOL_PALETTES: &[ToastSymbolPalette] = &[
         glyphs: ["[OK]", "[i]", "[!]", "[ERR]", "[BOT]", "[TSK]", "[SKL]"],
     },
     ToastSymbolPalette {
+        theme: crate::config::ToastSymbolTheme::Technical,
+        glyphs: ["✓", "◈", "△", "✗", "❖", "⎇", "⚡"],
+    },
+    ToastSymbolPalette {
         theme: crate::config::ToastSymbolTheme::NerdFont,
         glyphs: [
-            "\u{f00c}", //  fa-check (Success)
-            "\u{f05a}", //  fa-info-circle (Info)
-            "\u{f071}", //  fa-exclamation-triangle (Warning)
-            "\u{f00d}", //  fa-times (Error)
-            "\u{f085}", //  fa-cogs (Subagent)
-            "\u{f0ae}", //  fa-tasks (Task)
-            "\u{f0e7}", //  fa-bolt (Skill)
+            "\u{eab2}", // cod-check (Success — zero Verdana/Arial PUA collision)
+            "\u{ea74}", // cod-info (Info)
+            "\u{ea6c}", // cod-warning (Warning)
+            "\u{ea87}", // cod-error (Error)
+            "\u{eb08}", // cod-hubot (Subagent)
+            "\u{eaa6}", // cod-checklist (Task)
+            "\u{ea61}", // cod-lightbulb (Skill)
         ],
     },
 ];

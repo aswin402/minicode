@@ -361,10 +361,45 @@ impl StatusWidgets {
                         Style::default().fg(theme.muted),
                     ));
                 }
+                ContextMeterStyle::SymbolCircle | ContextMeterStyle::SymbolBar => {
+                    push_sep(&mut spans, &mut has_prev, " • ");
+                    spans.push(Span::styled("◈ ", Style::default().fg(kv_color(hit_pct))));
+                    spans.push(Span::styled(
+                        format!("{}%", hit_pct),
+                        Style::default().fg(kv_color(hit_pct)),
+                    ));
+                }
+                ContextMeterStyle::EmojiBar => {
+                    push_sep(&mut spans, &mut has_prev, " • ");
+                    spans.push(Span::styled("⚡ ", Style::default().fg(kv_color(hit_pct))));
+                    spans.push(Span::styled(
+                        format!("{}%", hit_pct),
+                        Style::default().fg(kv_color(hit_pct)),
+                    ));
+                }
+                ContextMeterStyle::Kaomoji => {
+                    push_sep(&mut spans, &mut has_prev, " · ");
+                    spans.push(Span::styled(
+                        "(•‿•) ",
+                        Style::default().fg(kv_color(hit_pct)),
+                    ));
+                    spans.push(Span::styled(
+                        format!("kv {}%", hit_pct),
+                        Style::default().fg(kv_color(hit_pct)),
+                    ));
+                }
+                ContextMeterStyle::AsciiBar => {
+                    push_sep(&mut spans, &mut has_prev, " | ");
+                    spans.push(Span::styled("kv ", Style::default().fg(theme.muted)));
+                    spans.push(Span::styled(
+                        format!("{}%", hit_pct),
+                        Style::default().fg(kv_color(hit_pct)),
+                    ));
+                }
                 ContextMeterStyle::NerdIcons | ContextMeterStyle::NerdBar => {
                     push_sep(&mut spans, &mut has_prev, " • ");
                     spans.push(Span::styled(
-                        "\u{f1c0} ",
+                        "\u{eace} ", // cod-database (zero PUA collision)
                         Style::default().fg(kv_color(hit_pct)),
                     ));
                     spans.push(Span::styled(
@@ -528,6 +563,87 @@ impl StatusWidgets {
                         Style::default().fg(used_color).add_modifier(Modifier::BOLD),
                     ));
                 }
+                ContextMeterStyle::SymbolCircle => {
+                    push_sep(&mut spans, &mut has_prev, " • ");
+                    spans.push(Span::styled("⌘ ", Style::default().fg(used_color)));
+                    spans.push(Span::styled(
+                        format!("{} ", pie_glyph(ratio)),
+                        Style::default().fg(used_color).add_modifier(Modifier::BOLD),
+                    ));
+                    spans.push(Span::styled(
+                        format!("{}%", pct),
+                        Style::default().fg(used_color).add_modifier(Modifier::BOLD),
+                    ));
+                }
+                ContextMeterStyle::SymbolBar | ContextMeterStyle::EmojiBar => {
+                    push_sep(&mut spans, &mut has_prev, " • ");
+                    let width = 8usize;
+                    let filled = ((ratio * width as f64).round() as usize).min(width);
+                    let empty = width.saturating_sub(filled);
+                    let lead = if style == ContextMeterStyle::EmojiBar {
+                        "🧠 "
+                    } else {
+                        "⌘ "
+                    };
+                    spans.push(Span::styled(lead, Style::default().fg(used_color)));
+                    spans.push(Span::styled("[", Style::default().fg(theme.border)));
+                    if filled > 0 {
+                        spans.push(Span::styled(
+                            "█".repeat(filled),
+                            Style::default().fg(used_color),
+                        ));
+                    }
+                    if empty > 0 {
+                        spans.push(Span::styled(
+                            "░".repeat(empty),
+                            Style::default().fg(theme.border),
+                        ));
+                    }
+                    spans.push(Span::styled("] ", Style::default().fg(theme.border)));
+                    spans.push(Span::styled(
+                        format!("{}%", pct),
+                        Style::default().fg(used_color).add_modifier(Modifier::BOLD),
+                    ));
+                }
+                ContextMeterStyle::Kaomoji => {
+                    push_sep(&mut spans, &mut has_prev, " · ");
+                    let face = if ratio > 0.85 {
+                        "(°△°) "
+                    } else if ratio > 0.60 {
+                        "(・_・) "
+                    } else {
+                        "(◉_◉) "
+                    };
+                    spans.push(Span::styled(face, Style::default().fg(used_color)));
+                    spans.push(Span::styled(
+                        format!("{}%", pct),
+                        Style::default().fg(used_color).add_modifier(Modifier::BOLD),
+                    ));
+                }
+                ContextMeterStyle::AsciiBar => {
+                    push_sep(&mut spans, &mut has_prev, " | ");
+                    let width = 8usize;
+                    let filled = ((ratio * width as f64).round() as usize).min(width);
+                    let empty = width.saturating_sub(filled);
+                    spans.push(Span::styled("[", Style::default().fg(theme.border)));
+                    if filled > 0 {
+                        spans.push(Span::styled(
+                            "#".repeat(filled),
+                            Style::default().fg(used_color),
+                        ));
+                    }
+                    if empty > 0 {
+                        spans.push(Span::styled(
+                            ".".repeat(empty),
+                            Style::default().fg(theme.border),
+                        ));
+                    }
+                    spans.push(Span::styled("] ", Style::default().fg(theme.border)));
+                    spans.push(Span::styled(
+                        format!("{}%", pct),
+                        Style::default().fg(used_color).add_modifier(Modifier::BOLD),
+                    ));
+                }
                 ContextMeterStyle::NerdIcons => {
                     push_sep(&mut spans, &mut has_prev, " • ");
                     spans.push(Span::styled("\u{f2db} ", Style::default().fg(used_color)));
@@ -661,6 +777,9 @@ impl StatusWidgets {
             posh: String,
             short: String,
             icon: &'static str,
+            emoji: &'static str,
+            kaomoji: &'static str,
+            ascii: &'static str,
             nf_icon: &'static str,
             active: bool,
             color: ratatui::style::Color,
@@ -685,7 +804,10 @@ impl StatusWidgets {
                     "pt:off".to_string()
                 },
                 icon: "✦",
-                nf_icon: "\u{f135}", //  fa-rocket
+                emoji: "✨",
+                kaomoji: "(✧_✧)",
+                ascii: "*",
+                nf_icon: "\u{eb25}", // cod-rocket (zero PUA collision)
                 active: ponytail_active,
                 color: theme.brand_accent,
             });
@@ -708,7 +830,10 @@ impl StatusWidgets {
                     "cm:off".to_string()
                 },
                 icon: "◈",
-                nf_icon: "\u{f06d}", //  fa-fire
+                emoji: "🔥",
+                kaomoji: "(ง•_•)ง",
+                ascii: "#",
+                nf_icon: "\u{eaf2}", // cod-flame (zero PUA collision)
                 active: caveman_active,
                 color: theme.warning,
             });
@@ -718,8 +843,11 @@ impl StatusWidgets {
                 full: "streaming".to_string(),
                 posh: "stream".to_string(),
                 short: "strm".to_string(),
-                icon: "⚡",
-                nf_icon: "\u{f0e7}", //  fa-bolt
+                icon: "▸",
+                emoji: "⚡",
+                kaomoji: "(•‿•)",
+                ascii: ">",
+                nf_icon: "\u{ea61}", // cod-lightbulb/zap (zero PUA collision)
                 active: streaming_active,
                 color: theme.success,
             });
@@ -869,6 +997,56 @@ impl StatusWidgets {
                         spans.push(Span::styled(" · ", Style::default().fg(theme.muted)));
                     }
                     spans.push(Span::styled(format!("{} ", item.icon), fg_style));
+                    spans.push(Span::styled(item.posh.clone(), fg_style));
+                }
+                ModeBarStyle::SymbolBubbles => {
+                    if idx > 0 {
+                        spans.push(Span::styled(" ", Style::default().bg(bar_bg)));
+                    }
+                    let seg_bg = item_bg(item);
+                    let cap_style = Style::default().fg(seg_bg).bg(bar_bg);
+                    spans.push(Span::styled("\u{e0b6}", cap_style));
+                    spans.push(Span::styled(
+                        format!("{} {}", item.icon, item.posh),
+                        fg_style.bg(seg_bg),
+                    ));
+                    spans.push(Span::styled("\u{e0b4}", cap_style));
+                }
+                ModeBarStyle::SymbolPowerline => {
+                    let seg_bg = item_bg(item);
+                    let prev_bg = if idx == 0 {
+                        bar_bg
+                    } else {
+                        item_bg(&items[idx - 1])
+                    };
+                    spans.push(Span::styled(
+                        "\u{e0b2}",
+                        Style::default().fg(seg_bg).bg(prev_bg),
+                    ));
+                    spans.push(Span::styled(
+                        format!(" {} {} ", item.icon, item.posh),
+                        fg_style.bg(seg_bg),
+                    ));
+                }
+                ModeBarStyle::Emoji => {
+                    if idx > 0 {
+                        spans.push(Span::styled(" · ", Style::default().fg(theme.muted)));
+                    }
+                    spans.push(Span::styled(format!("{} ", item.emoji), fg_style));
+                    spans.push(Span::styled(item.posh.clone(), fg_style));
+                }
+                ModeBarStyle::Kaomoji => {
+                    if idx > 0 {
+                        spans.push(Span::styled(" · ", Style::default().fg(theme.muted)));
+                    }
+                    spans.push(Span::styled(format!("{} ", item.kaomoji), fg_style));
+                    spans.push(Span::styled(item.posh.clone(), fg_style));
+                }
+                ModeBarStyle::Ascii => {
+                    if idx > 0 {
+                        spans.push(Span::styled(" | ", Style::default().fg(theme.muted)));
+                    }
+                    spans.push(Span::styled(format!("{} ", item.ascii), fg_style));
                     spans.push(Span::styled(item.full.clone(), fg_style));
                 }
                 ModeBarStyle::NerdIcons => {
@@ -966,6 +1144,7 @@ impl StatusWidgets {
             matches!(
                 st,
                 StatusBarStyle::Powerline
+                    | StatusBarStyle::SymbolPowerline
                     | StatusBarStyle::NerdPowerline
                     | StatusBarStyle::PoshSlant
             )
@@ -1109,6 +1288,8 @@ impl StatusWidgets {
             group: SegmentGroup,
             style: StatusBarStyle,
             icon: Option<&'static str>,
+            emoji: Option<&'static str>,
+            kaomoji: Option<&'static str>,
             nf_icon: Option<&'static str>,
             pure_prefix: Option<&'static str>,
             text: String,
@@ -1124,7 +1305,9 @@ impl StatusWidgets {
                 group: SegmentGroup::Primary,
                 style: model_style,
                 icon: Some("◈"),
-                nf_icon: Some("\u{f2db}"), //  fa-microchip
+                emoji: Some("🧠"),
+                kaomoji: Some("(◈_◈)"),
+                nf_icon: Some("\u{f2db}"), // fa-microchip (zero collision)
                 pure_prefix: None,
                 text: model_display,
                 accent: theme.warning,
@@ -1137,7 +1320,9 @@ impl StatusWidgets {
                 group: SegmentGroup::Primary,
                 style: effort_style,
                 icon: Some("⚡"),
-                nf_icon: Some("\u{f0e7}"), //  fa-bolt
+                emoji: Some("⚡"),
+                kaomoji: Some("(ง°_°)ง"),
+                nf_icon: Some("\u{f0e7}"), // fa-bolt (zero collision)
                 pure_prefix: None,
                 text: level_label.to_string(),
                 accent: level_color,
@@ -1150,7 +1335,9 @@ impl StatusWidgets {
                 group: SegmentGroup::Secondary,
                 style: path_style,
                 icon: Some("⌂"),
-                nf_icon: Some("\u{f07b}"), //  fa-folder
+                emoji: Some("📁"),
+                kaomoji: Some("(◉_◉)"),
+                nf_icon: Some("\u{ea83}"), // cod-folder (zero collision)
                 pure_prefix: None,
                 text: fitted_path,
                 accent: theme.info,
@@ -1163,6 +1350,10 @@ impl StatusWidgets {
                 StatusBarStyle::Compact
                 | StatusBarStyle::Minimal
                 | StatusBarStyle::Icons
+                | StatusBarStyle::SymbolBubbles
+                | StatusBarStyle::SymbolPowerline
+                | StatusBarStyle::Emoji
+                | StatusBarStyle::Kaomoji
                 | StatusBarStyle::NerdIcons
                 | StatusBarStyle::NerdBubbles
                 | StatusBarStyle::NerdPowerline => branch.to_string(),
@@ -1180,7 +1371,9 @@ impl StatusWidgets {
                 group: SegmentGroup::Secondary,
                 style: git_style,
                 icon: Some("⎇"),
-                nf_icon: Some("\u{e725}"), //  dev-git_branch
+                emoji: Some("🌿"),
+                kaomoji: Some("(•‿•)"),
+                nf_icon: Some("\u{ea68}"), // cod-git-branch (zero collision)
                 pure_prefix: Some("on "),
                 text: seg,
                 accent: theme.success,
@@ -1196,7 +1389,9 @@ impl StatusWidgets {
                 group: SegmentGroup::Secondary,
                 style: badges_style,
                 icon: Some("⊕"),
-                nf_icon: Some("\u{f233}"), //  fa-server
+                emoji: Some("🔌"),
+                kaomoji: Some("(°_°)"),
+                nf_icon: Some("\u{eb50}"), // cod-server (zero collision)
                 pure_prefix: None,
                 text: seg,
                 accent: theme.brand_accent,
@@ -1212,7 +1407,9 @@ impl StatusWidgets {
                 group: SegmentGroup::Secondary,
                 style: badges_style,
                 icon: Some("❖"),
-                nf_icon: Some("\u{f085}"), //  fa-cogs
+                emoji: Some("🤖"),
+                kaomoji: Some("(◉_◉)⊃"),
+                nf_icon: Some("\u{eb08}"), // cod-hubot (zero collision)
                 pure_prefix: None,
                 text: seg,
                 accent: theme.info,
@@ -1237,7 +1434,9 @@ impl StatusWidgets {
                 group: SegmentGroup::Secondary,
                 style: badges_style,
                 icon: Some("⚙"),
-                nf_icon: Some("\u{f0ae}"), //  fa-tasks
+                emoji: Some("⚙"),
+                kaomoji: Some("(ง•_•)ง"),
+                nf_icon: Some("\u{eaa6}"), // cod-checklist (zero collision)
                 pure_prefix: None,
                 text: badge_text,
                 accent: task_color,
@@ -1250,7 +1449,9 @@ impl StatusWidgets {
                 group: SegmentGroup::Secondary,
                 style: badges_style,
                 icon: Some("◎"),
-                nf_icon: Some("\u{f0ac}"), //  fa-globe
+                emoji: Some("🌐"),
+                kaomoji: Some("( °o°)"),
+                nf_icon: Some("\u{eb01}"), // cod-globe (zero collision)
                 pure_prefix: None,
                 text: web.to_string(),
                 accent: theme.brand_accent,
@@ -1303,6 +1504,27 @@ impl StatusWidgets {
                         seg.text
                     }
                 }
+                StatusBarStyle::SymbolBubbles | StatusBarStyle::SymbolPowerline => {
+                    if let Some(ic) = seg.icon {
+                        format!("{} {}", ic, seg.text)
+                    } else {
+                        seg.text
+                    }
+                }
+                StatusBarStyle::Emoji => {
+                    if let Some(em) = seg.emoji {
+                        format!("{} {}", em, seg.text)
+                    } else {
+                        seg.text
+                    }
+                }
+                StatusBarStyle::Kaomoji => {
+                    if let Some(km) = seg.kaomoji {
+                        format!("{} {}", km, seg.text)
+                    } else {
+                        seg.text
+                    }
+                }
                 _ => seg.text,
             };
 
@@ -1336,6 +1558,9 @@ impl StatusWidgets {
                             let sep = if switched_group { " | " } else { " · " };
                             candidate.push(Span::styled(sep, Style::default().fg(theme.muted)));
                         }
+                        StatusBarStyle::Ascii => {
+                            candidate.push(Span::styled(" | ", Style::default().fg(theme.muted)));
+                        }
                         StatusBarStyle::PoshPure | StatusBarStyle::Minimal => {
                             candidate.push(Span::styled("  ", Style::default().bg(bar_bg)));
                         }
@@ -1345,10 +1570,12 @@ impl StatusWidgets {
                         StatusBarStyle::PoshVelvet
                         | StatusBarStyle::Pills
                         | StatusBarStyle::PoshBubbles
+                        | StatusBarStyle::SymbolBubbles
                         | StatusBarStyle::NerdBubbles
                         | StatusBarStyle::PoshDiamond
                         | StatusBarStyle::Brackets
                         | StatusBarStyle::Powerline
+                        | StatusBarStyle::SymbolPowerline
                         | StatusBarStyle::NerdPowerline
                         | StatusBarStyle::PoshSlant => {
                             candidate.push(Span::styled(" ", Style::default().bg(bar_bg)));
@@ -1356,7 +1583,10 @@ impl StatusWidgets {
                         StatusBarStyle::Compact => {
                             candidate.push(Span::styled(" · ", Style::default().fg(theme.muted)));
                         }
-                        StatusBarStyle::Icons | StatusBarStyle::NerdIcons => {
+                        StatusBarStyle::Icons
+                        | StatusBarStyle::Emoji
+                        | StatusBarStyle::Kaomoji
+                        | StatusBarStyle::NerdIcons => {
                             let sep = if switched_group { " │ " } else { " · " };
                             candidate.push(Span::styled(sep, Style::default().fg(theme.border)));
                         }
@@ -1392,7 +1622,9 @@ impl StatusWidgets {
                         text_style.bg(seg_bg),
                     ));
                 }
-                StatusBarStyle::PoshBubbles | StatusBarStyle::NerdBubbles => {
+                StatusBarStyle::PoshBubbles
+                | StatusBarStyle::SymbolBubbles
+                | StatusBarStyle::NerdBubbles => {
                     let cap_style = Style::default().fg(seg_bg).bg(bar_bg);
                     candidate.push(Span::styled("\u{e0b6}", cap_style));
                     candidate.push(Span::styled(display_text, text_style.bg(seg_bg)));
@@ -1408,6 +1640,7 @@ impl StatusWidgets {
                     candidate.push(Span::styled("\u{e0b0}", cap_style));
                 }
                 StatusBarStyle::Powerline
+                | StatusBarStyle::SymbolPowerline
                 | StatusBarStyle::NerdPowerline
                 | StatusBarStyle::PoshSlant => {
                     candidate.push(Span::styled(
@@ -1415,7 +1648,7 @@ impl StatusWidgets {
                         text_style.bg(seg_bg),
                     ));
                 }
-                StatusBarStyle::Brackets => {
+                StatusBarStyle::Brackets | StatusBarStyle::Ascii => {
                     candidate.push(Span::styled("[", Style::default().fg(theme.border)));
                     candidate.push(Span::styled(display_text, text_style));
                     candidate.push(Span::styled("]", Style::default().fg(theme.border)));
@@ -1430,6 +1663,8 @@ impl StatusWidgets {
                 | StatusBarStyle::PoshSlash
                 | StatusBarStyle::Compact
                 | StatusBarStyle::Minimal
+                | StatusBarStyle::Emoji
+                | StatusBarStyle::Kaomoji
                 | StatusBarStyle::NerdIcons => {
                     candidate.push(Span::styled(display_text, text_style));
                 }
@@ -1972,21 +2207,48 @@ mod tests {
             "Model must use NerdPowerline + closing cap: {txt}"
         );
         assert!(
-            txt.contains("\u{e0b6}\u{e725} main\u{e0b4}"),
-            "Git branch must use NerdBubbles: {txt}"
+            txt.contains("\u{e0b6}\u{ea68} main\u{e0b4}"),
+            "Git branch must use NerdBubbles Codicon: {txt}"
         );
         assert!(
-            txt.contains("\u{f233} mcp:2"),
-            "Badges must use NerdIcons: {txt}"
+            txt.contains("\u{eb50} mcp:2"),
+            "Badges must use NerdIcons Codicon: {txt}"
         );
 
-        // Nerd Font context meters omit raw token counts and include Nerd Font icons
+        // Universal Unicode SymbolBubbles & SymbolPowerline (zero PUA boxes in any font)
+        let sym_opts = StatusDisplayOptions {
+            status_bar_style: StatusBarStyle::SymbolBubbles,
+            status_model_style: Some(StatusBarStyle::SymbolPowerline),
+            ..Default::default()
+        };
+        let sym_txt = join_spans(StatusWidgets::render_status_left_spans_with_bg(
+            &theme,
+            theme.bg_primary,
+            "minimax",
+            "MiniMax-M3.1-Flash",
+            "medium",
+            "~/minitest82",
+            Some("main"),
+            0,
+            0,
+            (0, 0.0, 0.0),
+            None,
+            150,
+            &sym_opts,
+        ));
+        assert!(
+            sym_txt.contains("◈ minimax/MiniMax-M3.1-Flash")
+                && sym_txt.contains("\u{e0b6}⎇ main\u{e0b4}"),
+            "Universal symbol bubbles/powerline unexpected: {sym_txt}"
+        );
+
+        // Nerd Font context meters omit raw token counts and include collision-free Codicons
         for ctx_style in [ContextMeterStyle::NerdIcons, ContextMeterStyle::NerdBar] {
             let ctx_txt = join_spans(StatusWidgets::render_context_meter_spans(
                 &theme, 212_700, 1_000_000, 210_500, false, 0.0, true, true, ctx_style,
             ));
             assert!(
-                ctx_txt.contains("\u{f1c0}")
+                ctx_txt.contains("\u{eace}")
                     && ctx_txt.contains("\u{f2db}")
                     && ctx_txt.contains("21%")
                     && !ctx_txt.contains("212.7k"),
@@ -1995,7 +2257,25 @@ mod tests {
             );
         }
 
-        // Nerd Font mode badges
+        // Universal Unicode symbol, Emoji, Kaomoji, ASCII context meters
+        for (ctx_style, expected) in [
+            (ContextMeterStyle::SymbolCircle, "◈ 98%"),
+            (ContextMeterStyle::SymbolBar, "⌘ ["),
+            (ContextMeterStyle::EmojiBar, "🧠 ["),
+            (ContextMeterStyle::Kaomoji, "(•‿•)"),
+            (ContextMeterStyle::AsciiBar, "[##"),
+        ] {
+            let ctx_txt = join_spans(StatusWidgets::render_context_meter_spans(
+                &theme, 212_700, 1_000_000, 210_500, false, 0.0, true, true, ctx_style,
+            ));
+            assert!(
+                ctx_txt.contains(expected) && !ctx_txt.contains("212.7k"),
+                "Context meter {:?} unexpected: {ctx_txt}",
+                ctx_style
+            );
+        }
+
+        // Nerd Font Codicons & Universal SymbolBubbles mode badges
         let nf_modes = join_spans(StatusWidgets::render_mode_bar_spans_with_bg(
             &theme,
             theme.bg_primary,
@@ -2010,10 +2290,30 @@ mod tests {
             true,
         ));
         assert!(
-            nf_modes.contains("\u{e0b6}\u{f135} ponytail·full\u{e0b4}")
-                && nf_modes.contains("\u{f06d} caveman·full")
-                && nf_modes.contains("\u{f0e7} stream"),
+            nf_modes.contains("\u{e0b6}\u{eb25} ponytail·full\u{e0b4}")
+                && nf_modes.contains("\u{eaf2} caveman·full")
+                && nf_modes.contains("\u{ea61} stream"),
             "NerdBubbles mode strip unexpected: {nf_modes}"
+        );
+
+        let sym_modes = join_spans(StatusWidgets::render_mode_bar_spans_with_bg(
+            &theme,
+            theme.bg_primary,
+            true,
+            "full",
+            true,
+            "full",
+            true,
+            ModeBarStyle::SymbolBubbles,
+            true,
+            true,
+            true,
+        ));
+        assert!(
+            sym_modes.contains("\u{e0b6}✦ ponytail·full\u{e0b4}")
+                && sym_modes.contains("\u{e0b6}◈ caveman·full\u{e0b4}")
+                && sym_modes.contains("\u{e0b6}▸ stream\u{e0b4}"),
+            "SymbolBubbles mode strip unexpected: {sym_modes}"
         );
     }
 }
