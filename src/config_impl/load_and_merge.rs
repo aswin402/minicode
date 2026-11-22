@@ -114,6 +114,8 @@ pub struct RawUiConfig {
     pub activity_hint_style: Option<String>,
     pub tool_card_style: Option<String>,
     pub tool_icon_style: Option<String>,
+    pub output_frame_style: Option<String>,
+    pub output_style: Option<String>,
     pub max_width: Option<usize>,
     pub show_cost: Option<bool>,
     pub show_ponytail_badge: Option<bool>,
@@ -950,6 +952,12 @@ impl Config {
         if let Some(tool_icon_style) = other.ui.tool_icon_style {
             self.ui.tool_icon_style = tool_icon_style;
         }
+        if let Some(output_frame_style) = other.ui.output_frame_style {
+            self.ui.output_frame_style = output_frame_style;
+        }
+        if let Some(output_style) = other.ui.output_style {
+            self.ui.output_style = output_style;
+        }
         if let Some(max_width) = other.ui.max_width {
             self.ui.max_width = max_width;
         }
@@ -1222,6 +1230,12 @@ impl Config {
         }
         if let Some(ref tool_icon_style) = global.ui.tool_icon_style {
             self.ui.tool_icon_style = tool_icon_style.clone();
+        }
+        if let Some(ref output_frame_style) = global.ui.output_frame_style {
+            self.ui.output_frame_style = output_frame_style.clone();
+        }
+        if let Some(ref output_style) = global.ui.output_style {
+            self.ui.output_style = output_style.clone();
         }
         if let Some(show_cost) = global.ui.show_cost {
             self.ui.show_cost = show_cost;

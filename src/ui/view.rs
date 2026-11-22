@@ -12,6 +12,8 @@ use unicode_width::UnicodeWidthStr;
 
 #[path = "view_impl/entry_renderers.rs"]
 mod entry_renderers;
+#[path = "view_impl/output_frames.rs"]
+pub mod output_frames;
 #[path = "view_impl/subagents_and_selection.rs"]
 mod subagents_and_selection;
 #[path = "view_impl/tool_cards.rs"]
@@ -414,6 +416,8 @@ pub struct TimelineContext<'a> {
     pub show_thought_tokens: bool,
     pub tool_card_style: crate::config::ToolCardStyle,
     pub tool_icon_style: crate::config::ToolIconStyle,
+    pub output_frame_style: crate::config::OutputFrameStyle,
+    pub output_style: crate::config::OutputStyle,
 }
 
 impl Default for TimelineView {
@@ -1659,8 +1663,13 @@ impl TimelineView {
                 }
             }
             TimelineEntry::AssistantMarkdown(text) => {
-                let parsed_lines = Self::render_markdown_with_width(text, theme, usable_width);
-                lines.extend(parsed_lines);
+                lines.extend(output_frames::render_assistant_output_lines(
+                    text,
+                    usable_width,
+                    ctx.output_frame_style,
+                    ctx.output_style,
+                    theme,
+                ));
             }
             TimelineEntry::ToolStart {
                 name,
@@ -1843,6 +1852,8 @@ impl TimelineView {
             ctx.show_thought_tokens,
             ctx.tool_card_style,
             ctx.tool_icon_style,
+            ctx.output_frame_style,
+            ctx.output_style,
             crate::ui::icons::use_raw_nerd_font_pua(),
         )
             .hash(&mut layout_hasher);

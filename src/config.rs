@@ -1703,6 +1703,174 @@ impl ToolIconStyle {
     }
 }
 
+/// Top divider & open/enclosed frame container style for Assistant Markdown output blocks.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum OutputFrameStyle {
+    /// Clean borderless stream without a top divider or frame (Default)
+    #[default]
+    None,
+    /// Open-sided rounded bracket frame (`╭─ ✦ minicode ───╮` / `  body` / `╰───╯`) — zero side walls for clean copy-paste
+    OpenRounded,
+    /// Label-free open-sided rounded bracket (`╭──────╮` / `  body` / `╰──────╯`)
+    OpenRoundedMinimal,
+    /// Open-sided rounded frame with auto-detecting Nerd Font icon (`╭─ <nf> minicode ───╮` / `╰───╯`)
+    OpenRoundedNerd,
+    /// Open-sided rounded frame with expressive emoji badge (`╭─ ✨ minicode ───╮` / `╰───╯`)
+    OpenRoundedEmoji,
+    /// Sharp 90-degree open architectural bracket (`┌─ minicode ───┐` / `  body` / `└──────┘`)
+    OpenSquare,
+    /// Bold double-line open bracket (`╔═ minicode ═══╗` / `  body` / `╚══════╝`)
+    OpenDouble,
+    /// Open rounded top header cap only (`╭─ ✦ minicode ───╮` / `  body`, no bottom rule)
+    OpenTopOnly,
+    /// Full enclosed rounded card (`╭─ ✦ minicode ───╮` / `│ body │` / `╰───╯`)
+    FullCard,
+    /// Continuous left accent spine (`┃ ✦ minicode` / `┃ body`)
+    LeftRail,
+    /// Full-width hairline top divider (`────────────────────────────────────────`)
+    FullRule,
+    /// Balanced half-width hairline top divider (`────────────────────────`)
+    MediumRule,
+    /// Minimal compact 14-column top hairline (`──────────────`)
+    ShortRule,
+    /// Labeled top hairline (`── minicode ────────────────────────────────`)
+    LabeledRule,
+    /// Smooth theme-colored gradient fade top rule (`━━━━━━━━───────┈┈┈┈┈┈`)
+    GradientRule,
+    /// Oh My Posh rounded capsule pill + trailing hairline (`✦ minicode ────`)
+    PoshPill,
+    /// Oh My Posh angled powerline ribbon + trailing hairline (` ✦ minicode  ───`)
+    PoshPowerline,
+    /// Full-width dashed hairline top divider (`╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌`)
+    DashedRule,
+    /// Editorial full-width dotted hairline top divider (`┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈`)
+    DottedRule,
+    /// Pure 7-bit ASCII open frame (`+-- minicode ------+` / `  body` / `+------------------+`)
+    AsciiFrame,
+}
+
+#[allow(dead_code)]
+impl OutputFrameStyle {
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::None => "none",
+            Self::OpenRounded => "open_rounded",
+            Self::OpenRoundedMinimal => "open_rounded_minimal",
+            Self::OpenRoundedNerd => "open_rounded_nerd",
+            Self::OpenRoundedEmoji => "open_rounded_emoji",
+            Self::OpenSquare => "open_square",
+            Self::OpenDouble => "open_double",
+            Self::OpenTopOnly => "open_top_only",
+            Self::FullCard => "full_card",
+            Self::LeftRail => "left_rail",
+            Self::FullRule => "full_rule",
+            Self::MediumRule => "medium_rule",
+            Self::ShortRule => "short_rule",
+            Self::LabeledRule => "labeled_rule",
+            Self::GradientRule => "gradient_rule",
+            Self::PoshPill => "posh_pill",
+            Self::PoshPowerline => "posh_powerline",
+            Self::DashedRule => "dashed_rule",
+            Self::DottedRule => "dotted_rule",
+            Self::AsciiFrame => "ascii_frame",
+        }
+    }
+
+    #[must_use]
+    pub fn from_str_loose(s: &str) -> Self {
+        match s.trim().to_lowercase().replace('-', "_").as_str() {
+            "open_rounded" | "open_bracket" | "bracket" | "rounded" | "frame" | "catppuccin" => {
+                Self::OpenRounded
+            }
+            "open_rounded_minimal" | "open_minimal" | "rounded_minimal" => Self::OpenRoundedMinimal,
+            "open_rounded_nerd" | "open_nerd" | "nerd_frame" | "nerdfont" | "nerd" => {
+                Self::OpenRoundedNerd
+            }
+            "open_rounded_emoji" | "open_emoji" | "emoji_frame" | "emoji" => Self::OpenRoundedEmoji,
+            "open_square" | "square" => Self::OpenSquare,
+            "open_double" | "double" => Self::OpenDouble,
+            "open_top_only" | "top_only" | "open_top" | "cap" => Self::OpenTopOnly,
+            "full_card" | "card" | "box" => Self::FullCard,
+            "left_rail" | "rail" | "spine" => Self::LeftRail,
+            "full_rule" | "full" | "line" | "hairline" => Self::FullRule,
+            "medium_rule" | "medium" | "half" => Self::MediumRule,
+            "short_rule" | "short" | "minimal" | "compact" => Self::ShortRule,
+            "labeled_rule" | "labeled" | "label" => Self::LabeledRule,
+            "gradient_rule" | "gradient" | "fade" => Self::GradientRule,
+            "posh_pill" | "pill" | "posh" => Self::PoshPill,
+            "posh_powerline" | "powerline" | "ribbon" => Self::PoshPowerline,
+            "dashed_rule" | "dashed" => Self::DashedRule,
+            "dotted_rule" | "dotted" => Self::DottedRule,
+            "ascii_frame" | "ascii" | "plain" => Self::AsciiFrame,
+            _ => Self::None,
+        }
+    }
+}
+
+/// Markdown presentation preset for Assistant prose, headings, callouts, checklists, code & tables.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum OutputStyle {
+    /// Current minicode Aura Markdown presentation (with callouts & checklists) (Default)
+    #[default]
+    Default,
+    /// Minimal Linear / Vercel editorial style: quiet hairlines, borderless code rail, booktabs tables
+    Minimal,
+    /// Publication report (`Report-Skill` inspired): double-underlined H1, thick callout strips, booktabs numeric tables
+    Editorial,
+    /// Workspace document (Notion / Best-README inspired): rounded code cards, rounded tables, roadmap checklists
+    Workspace,
+    /// Oh My Posh: rounded pill H1, powerline H2, capsule code tags, tinted callout badges
+    Posh,
+    /// Nerd Font Codicons on headings, code headers, callouts, checklists & bullets (auto zero-box fallback)
+    NerdFont,
+    /// Universal 1-cell Unicode technical symbols (`◈`, `▸`, `✦`, `⌘`, `✓`, `○`) — zero boxes on any font
+    Symbols,
+    /// Expressive Emoji markers (`📌`, `💻`, `💡`, `⚠️`, `✅`, `⬜`)
+    Emoji,
+    /// Playful Kaomoji accents on headings & callouts with clean code/tables
+    Kaomoji,
+    /// Strict 7-bit ASCII (`===`, `---`, `+---+`, `|`, `[x]/[ ]`, `> [NOTE]`)
+    Ascii,
+}
+
+#[allow(dead_code)]
+impl OutputStyle {
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Default => "default",
+            Self::Minimal => "minimal",
+            Self::Editorial => "editorial",
+            Self::Workspace => "workspace",
+            Self::Posh => "posh",
+            Self::NerdFont => "nerdfont",
+            Self::Symbols => "symbols",
+            Self::Emoji => "emoji",
+            Self::Kaomoji => "kaomoji",
+            Self::Ascii => "ascii",
+        }
+    }
+
+    #[must_use]
+    pub fn from_str_loose(s: &str) -> Self {
+        match s.trim().to_lowercase().replace('-', "_").as_str() {
+            "minimal" | "linear" | "vercel" | "clean" => Self::Minimal,
+            "editorial" | "report" | "report_skill" | "publication" => Self::Editorial,
+            "workspace" | "notion" | "readme" | "doc" | "docs" => Self::Workspace,
+            "posh" | "oh_my_posh" | "ohmyposh" | "powerline" | "pill" => Self::Posh,
+            "nerdfont" | "nerd" | "nf" | "codicons" => Self::NerdFont,
+            "symbols" | "unicode" | "technical" => Self::Symbols,
+            "emoji" | "emojis" => Self::Emoji,
+            "kaomoji" | "kamoji" => Self::Kaomoji,
+            "ascii" | "plain" | "retro" => Self::Ascii,
+            _ => Self::Default,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct UiConfig {
     #[serde(default = "default_theme")]
@@ -1764,6 +1932,12 @@ pub struct UiConfig {
 
     #[serde(default = "default_tool_icon_style")]
     pub tool_icon_style: String,
+
+    #[serde(default = "default_output_frame_style")]
+    pub output_frame_style: String,
+
+    #[serde(default = "default_output_style")]
+    pub output_style: String,
 
     #[serde(default)]
     pub plain: bool,
@@ -1925,6 +2099,16 @@ impl UiConfig {
     pub fn tool_icon_style_enum(&self) -> ToolIconStyle {
         ToolIconStyle::from_str_loose(&self.tool_icon_style)
     }
+
+    #[must_use]
+    pub fn output_frame_style_enum(&self) -> OutputFrameStyle {
+        OutputFrameStyle::from_str_loose(&self.output_frame_style)
+    }
+
+    #[must_use]
+    pub fn output_style_enum(&self) -> OutputStyle {
+        OutputStyle::from_str_loose(&self.output_style)
+    }
 }
 
 impl Default for UiConfig {
@@ -1950,6 +2134,8 @@ impl Default for UiConfig {
             activity_hint_style: default_activity_hint_style(),
             tool_card_style: default_tool_card_style(),
             tool_icon_style: default_tool_icon_style(),
+            output_frame_style: default_output_frame_style(),
+            output_style: default_output_style(),
             plain: false,
             max_width: default_max_width(),
             show_cost: false,
@@ -2032,6 +2218,14 @@ fn default_tool_card_style() -> String {
 
 fn default_tool_icon_style() -> String {
     "minimal".to_string()
+}
+
+fn default_output_frame_style() -> String {
+    "none".to_string()
+}
+
+fn default_output_style() -> String {
+    "default".to_string()
 }
 
 fn default_max_width() -> usize {

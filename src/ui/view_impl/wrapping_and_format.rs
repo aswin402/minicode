@@ -583,6 +583,7 @@ impl TimelineView {
     }
 
     /// Renders assistant Markdown text into highlighted Ratatui lines constrained to `max_width`
+    #[allow(dead_code)]
     pub(super) fn render_markdown_with_width<'a>(
         text: &'a str,
         theme: &'a Theme,

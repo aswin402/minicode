@@ -161,6 +161,8 @@ fn test_paragraph_rendering_alignment() {
         show_thought_tokens: false,
         tool_card_style: crate::config::ToolCardStyle::default(),
         tool_icon_style: crate::config::ToolIconStyle::default(),
+        output_frame_style: crate::config::OutputFrameStyle::default(),
+        output_style: crate::config::OutputStyle::default(),
     };
 
     // Render with auto_scroll=true (which will scroll down)
@@ -567,6 +569,8 @@ fn test_wide_table_and_scroll_alignment_in_timeline_render() {
                     show_thought_tokens: false,
                     tool_card_style: crate::config::ToolCardStyle::default(),
                     tool_icon_style: crate::config::ToolIconStyle::default(),
+                    output_frame_style: crate::config::OutputFrameStyle::default(),
+                    output_style: crate::config::OutputStyle::default(),
                 };
                 view.render(frame, area, &ctx);
             })
@@ -621,6 +625,8 @@ fn test_clicking_bottom_line_does_not_show_back_to_bottom_pill() {
                 show_thought_tokens: false,
                 tool_card_style: crate::config::ToolCardStyle::default(),
                 tool_icon_style: crate::config::ToolIconStyle::default(),
+                output_frame_style: crate::config::OutputFrameStyle::default(),
+                output_style: crate::config::OutputStyle::default(),
             };
             v.render(frame, area, &ctx);
         })
@@ -686,6 +692,8 @@ fn test_long_pasted_user_prompt_shows_full_lines_and_sticky_header_wraps_full_wo
                 show_thought_tokens: false,
                 tool_card_style: crate::config::ToolCardStyle::default(),
                 tool_icon_style: crate::config::ToolIconStyle::default(),
+                output_frame_style: crate::config::OutputFrameStyle::default(),
+                output_style: crate::config::OutputStyle::default(),
             };
             view.render(frame, area, &ctx);
         })
@@ -721,6 +729,8 @@ fn test_long_pasted_user_prompt_shows_full_lines_and_sticky_header_wraps_full_wo
                 show_thought_tokens: false,
                 tool_card_style: crate::config::ToolCardStyle::default(),
                 tool_icon_style: crate::config::ToolIconStyle::default(),
+                output_frame_style: crate::config::OutputFrameStyle::default(),
+                output_style: crate::config::OutputStyle::default(),
             };
             view.render(frame, area, &ctx);
         })
@@ -921,6 +931,8 @@ fn test_minitest65_git_commit_timeline_entry_and_toast_short_hash_rendering() {
                 show_thought_tokens: false,
                 tool_card_style: crate::config::ToolCardStyle::default(),
                 tool_icon_style: crate::config::ToolIconStyle::default(),
+                output_frame_style: crate::config::OutputFrameStyle::default(),
+                output_style: crate::config::OutputStyle::default(),
             };
             view.render(frame, frame.area(), &ctx);
         })
@@ -1015,6 +1027,8 @@ fn test_thought_blocks_freeze_on_tool_and_stream_transitions_never_all_ticking()
                     show_thought_tokens: false,
                     tool_card_style: crate::config::ToolCardStyle::default(),
                     tool_icon_style: crate::config::ToolIconStyle::default(),
+                    output_frame_style: crate::config::OutputFrameStyle::default(),
+                    output_style: crate::config::OutputStyle::default(),
                 };
                 view.render(frame, frame.area(), &ctx);
             })
@@ -1135,6 +1149,8 @@ fn test_thought_block_inline_token_usage_toggle_and_cache_invalidation() {
                 show_thought_tokens: show_tokens,
                 tool_card_style: crate::config::ToolCardStyle::default(),
                 tool_icon_style: crate::config::ToolIconStyle::default(),
+                output_frame_style: crate::config::OutputFrameStyle::default(),
+                output_style: crate::config::OutputStyle::default(),
             };
             view.render(frame, frame.area(), &ctx);
         })
@@ -1206,6 +1222,8 @@ fn test_tool_card_styles_and_icon_packs_render_and_invalidate_cache() {
                     show_thought_tokens: false,
                     tool_card_style: card,
                     tool_icon_style: icon,
+                    output_frame_style: crate::config::OutputFrameStyle::default(),
+                    output_style: crate::config::OutputStyle::default(),
                 };
                 view.render(frame, frame.area(), &ctx);
             })
@@ -1290,4 +1308,147 @@ fn test_tool_card_styles_and_icon_packs_render_and_invalidate_cache() {
         "PoshBubbles + NerdFont Codicons unexpected:\n{nf_blk}"
     );
     crate::ui::icons::set_nerd_font_pua_override(None);
+}
+
+#[test]
+fn test_output_frame_styles_and_output_styles_render_and_invalidate_cache() {
+    use crate::config::{OutputFrameStyle, OutputStyle};
+    use ratatui::backend::TestBackend;
+    use ratatui::Terminal;
+
+    let theme = Theme::aura_dark();
+    let ws = std::path::PathBuf::from("/tmp/ws");
+    let mut view = TimelineView::new();
+    view.entries.push(TimelineEntry::AssistantMarkdown(
+        "## Status\n> [!TIP] Build succeeded in 142ms.\n- [x] Ship v0.5.75\n```rust\nlet x = 1;\n```\n| Check | Time |\n| --- | --- |\n| Tests | 1.74s |"
+            .to_string(),
+    ));
+
+    let mut terminal = Terminal::new(TestBackend::new(90, 26)).unwrap();
+    let render_combo = |term: &mut Terminal<TestBackend>,
+                        frame_st: OutputFrameStyle,
+                        out_st: OutputStyle|
+     -> String {
+        term.draw(|frame| {
+            let ctx = TimelineContext {
+                theme: &theme,
+                is_working: false,
+                working_millis: 0,
+                current_activity: None,
+                spinner_style: crate::ui::animation::SpinnerStyle::default(),
+                workspace: &ws,
+                provider: "minimax",
+                model: "MiniMax-M3.1",
+                show_thought_tokens: false,
+                tool_card_style: crate::config::ToolCardStyle::default(),
+                tool_icon_style: crate::config::ToolIconStyle::default(),
+                output_frame_style: frame_st,
+                output_style: out_st,
+            };
+            view.render(frame, frame.area(), &ctx);
+        })
+        .unwrap();
+        let buf = term.backend().buffer();
+        let mut out = String::new();
+        for y in 0..buf.area.height {
+            for x in 0..buf.area.width {
+                out.push_str(buf[(x, y)].symbol());
+            }
+            out.push('\n');
+        }
+        out
+    };
+
+    // 1. OpenRounded matches the open-sided rounded bracket aesthetic (╭─ ✦ minicode ──╮ / ╰──╯, NO side │ on body)
+    let open_rounded = render_combo(
+        &mut terminal,
+        OutputFrameStyle::OpenRounded,
+        OutputStyle::Default,
+    );
+    assert!(
+        open_rounded.contains("╭─ ✦ minicode ")
+            && open_rounded.contains("╮")
+            && open_rounded.contains("╰─")
+            && open_rounded.contains("╯"),
+        "OpenRounded frame missing expected rounded open brackets:\n{open_rounded}"
+    );
+    // Body prose line must be cleanly indented with no outer left `│`
+    assert!(
+        open_rounded.contains("  Status"),
+        "OpenRounded body line must be open-sided with 2-space indent:\n{open_rounded}"
+    );
+
+    // 2. Every OutputFrameStyle renders cleanly without panicking and invalidates timeline cache
+    for frame_st in [
+        OutputFrameStyle::None,
+        OutputFrameStyle::OpenRounded,
+        OutputFrameStyle::OpenRoundedMinimal,
+        OutputFrameStyle::OpenRoundedNerd,
+        OutputFrameStyle::OpenRoundedEmoji,
+        OutputFrameStyle::OpenSquare,
+        OutputFrameStyle::OpenDouble,
+        OutputFrameStyle::OpenTopOnly,
+        OutputFrameStyle::FullCard,
+        OutputFrameStyle::LeftRail,
+        OutputFrameStyle::FullRule,
+        OutputFrameStyle::MediumRule,
+        OutputFrameStyle::ShortRule,
+        OutputFrameStyle::LabeledRule,
+        OutputFrameStyle::GradientRule,
+        OutputFrameStyle::PoshPill,
+        OutputFrameStyle::PoshPowerline,
+        OutputFrameStyle::DashedRule,
+        OutputFrameStyle::DottedRule,
+        OutputFrameStyle::AsciiFrame,
+    ] {
+        let s = render_combo(&mut terminal, frame_st, OutputStyle::Minimal);
+        assert!(
+            s.contains("Build succeeded"),
+            "OutputFrameStyle {:?} failed to render body:\n{s}",
+            frame_st
+        );
+    }
+
+    // 3. Verify OpenRoundedNerd respects zero-box auto-fallback AND forced Nerd Font PUA
+    crate::ui::icons::set_nerd_font_pua_override(None);
+    let nf_auto = render_combo(
+        &mut terminal,
+        OutputFrameStyle::OpenRoundedNerd,
+        OutputStyle::NerdFont,
+    );
+    assert!(
+        nf_auto.contains("❖ minicode") && !nf_auto.contains('\u{eb08}'),
+        "OpenRoundedNerd auto-fallback should emit zero-box `❖`:\n{nf_auto}"
+    );
+    crate::ui::icons::set_nerd_font_pua_override(Some(true));
+    let nf_forced = render_combo(
+        &mut terminal,
+        OutputFrameStyle::OpenRoundedNerd,
+        OutputStyle::NerdFont,
+    );
+    assert!(
+        nf_forced.contains("\u{eb08} minicode") && nf_forced.contains('\u{ea85}'),
+        "OpenRoundedNerd + OutputStyle::NerdFont forced PUA should emit Codicons:\n{nf_forced}"
+    );
+    crate::ui::icons::set_nerd_font_pua_override(None);
+
+    // 4. Verify Editorial (Report-Skill) & Ascii output styles render distinct chrome
+    let editorial = render_combo(
+        &mut terminal,
+        OutputFrameStyle::FullRule,
+        OutputStyle::Editorial,
+    );
+    assert!(
+        editorial.contains("┃ ✦ TIP") && editorial.contains("━"),
+        "Editorial style should render thick callout rail + booktabs rule:\n{editorial}"
+    );
+    let ascii = render_combo(
+        &mut terminal,
+        OutputFrameStyle::AsciiFrame,
+        OutputStyle::Ascii,
+    );
+    assert!(
+        ascii.contains("+- minicode ") && ascii.contains("[x] Ship v0.5.75"),
+        "AsciiFrame + Ascii style unexpected:\n{ascii}"
+    );
 }

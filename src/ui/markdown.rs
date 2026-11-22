@@ -1,7 +1,107 @@
+use crate::config::OutputStyle;
+use crate::ui::icons::{nf, NerdIcon};
 use crate::ui::theme::Theme;
-use ratatui::style::{Modifier, Style};
+use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use unicode_width::UnicodeWidthStr;
+
+/// Semantic category for GitHub / Report-Skill blockquote callouts (`> [!NOTE]`, `> [!WARNING]`, etc.).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CalloutKind {
+    Note,
+    Tip,
+    Important,
+    Warning,
+    Caution,
+}
+
+impl CalloutKind {
+    fn parse_tag(text: &str) -> Option<(Self, &str)> {
+        let trimmed = text.trim_start();
+        for (prefix, kind) in [
+            ("[!NOTE]", Self::Note),
+            ("[!INFO]", Self::Note),
+            ("[!TIP]", Self::Tip),
+            ("[!SUCCESS]", Self::Tip),
+            ("[!IMPORTANT]", Self::Important),
+            ("[!WARNING]", Self::Warning),
+            ("[!WARN]", Self::Warning),
+            ("[!CAUTION]", Self::Caution),
+            ("[!DANGER]", Self::Caution),
+        ] {
+            if let Some(rest) = trimmed
+                .get(..prefix.len())
+                .filter(|p| p.eq_ignore_ascii_case(prefix))
+                .map(|_| trimmed[prefix.len()..].trim_start())
+            {
+                return Some((kind, rest));
+            }
+        }
+        None
+    }
+
+    const fn label(self) -> &'static str {
+        match self {
+            Self::Note => "NOTE",
+            Self::Tip => "TIP",
+            Self::Important => "IMPORTANT",
+            Self::Warning => "WARNING",
+            Self::Caution => "CAUTION",
+        }
+    }
+
+    fn color(self, theme: &Theme) -> Color {
+        match self {
+            Self::Note => theme.info,
+            Self::Tip => theme.success,
+            Self::Important => theme.brand_accent,
+            Self::Warning => theme.warning,
+            Self::Caution => theme.destructive,
+        }
+    }
+
+    fn badge_prefix(self, style: OutputStyle) -> String {
+        match style {
+            OutputStyle::Emoji => match self {
+                Self::Note => "ℹ️ ".to_string(),
+                Self::Tip => "💡 ".to_string(),
+                Self::Important => "⚡ ".to_string(),
+                Self::Warning => "⚠️ ".to_string(),
+                Self::Caution => "🚨 ".to_string(),
+            },
+            OutputStyle::NerdFont => {
+                let ic = match self {
+                    Self::Note => NerdIcon::Info,
+                    Self::Tip => NerdIcon::Think,
+                    Self::Important => NerdIcon::Bolt,
+                    Self::Warning => NerdIcon::Warning,
+                    Self::Caution => NerdIcon::Error,
+                };
+                format!("{} ", nf(ic))
+            }
+            OutputStyle::Kaomoji => match self {
+                Self::Note => "(•‿•) ".to_string(),
+                Self::Tip => "(✧ω✧) ".to_string(),
+                Self::Important => "(•̀ᴗ•́) ".to_string(),
+                Self::Warning => "(⊙_⊙;) ".to_string(),
+                Self::Caution => "(×_×) ".to_string(),
+            },
+            OutputStyle::Ascii => String::new(),
+            OutputStyle::Minimal => String::new(),
+            OutputStyle::Default
+            | OutputStyle::Editorial
+            | OutputStyle::Workspace
+            | OutputStyle::Posh
+            | OutputStyle::Symbols => match self {
+                Self::Note => "◉ ".to_string(),
+                Self::Tip => "✦ ".to_string(),
+                Self::Important => "⚡ ".to_string(),
+                Self::Warning => "△ ".to_string(),
+                Self::Caution => "✗ ".to_string(),
+            },
+        }
+    }
+}
 
 /// Rich terminal Markdown parser and syntax highlighter for minicode
 pub struct MarkdownRenderer;
@@ -9,7 +109,7 @@ pub struct MarkdownRenderer;
 impl MarkdownRenderer {
     /// Renders markdown text into styled Ratatui Lines with a default width of 100 columns
     pub fn render<'a>(text: &'a str, theme: &'a Theme) -> Vec<Line<'a>> {
-        Self::render_with_width(text, theme, 100)
+        Self::render_with_style(text, theme, 100, OutputStyle::Default)
     }
 
     /// Renders markdown text into styled Ratatui Lines constrained to `max_width` columns
@@ -17,6 +117,17 @@ impl MarkdownRenderer {
         text: &'a str,
         theme: &'a Theme,
         max_width: usize,
+    ) -> Vec<Line<'a>> {
+        Self::render_with_style(text, theme, max_width, OutputStyle::Default)
+    }
+
+    /// Renders markdown text with a specific [`OutputStyle`] preset (Default, Minimal/Linear,
+    /// Editorial/Report-Skill, Workspace/Notion, Oh My Posh, Nerd Font, Symbols, Emoji, Kaomoji, ASCII).
+    pub fn render_with_style<'a>(
+        text: &'a str,
+        theme: &'a Theme,
+        max_width: usize,
+        style: OutputStyle,
     ) -> Vec<Line<'a>> {
         let max_width = max_width.max(20);
         let mut lines = Vec::new();
@@ -32,38 +143,42 @@ impl MarkdownRenderer {
             if line.trim_start().starts_with("```") {
                 if in_code_block {
                     in_code_block = false;
-                    lines.push(Line::from(vec![Span::styled(
-                        "  └────────────────────────────────",
-                        Style::default().fg(theme.border),
-                    )]));
+                    if let Some(footer) = Self::render_code_fence_close(style, max_width, theme) {
+                        lines.push(footer);
+                    }
                 } else {
                     in_code_block = true;
                     let lang = line.trim_start().strip_prefix("```").unwrap_or("").trim();
-                    let header = if lang.is_empty() {
-                        "  ┌─ code ────────────────────────".to_string()
-                    } else {
-                        format!("  ┌─ {} ────────────────────────", lang)
-                    };
-                    lines.push(Line::from(vec![Span::styled(
-                        header,
-                        Style::default().fg(theme.border),
-                    )]));
+                    lines.push(Self::render_code_fence_open(lang, style, max_width, theme));
                 }
                 i += 1;
                 continue;
             }
 
-            // Inside code block: render with syntax styling and border prefix
+            // Inside code block: render with syntax styling and style-aware gutter
             if in_code_block {
                 let clean_code = Self::normalize_status_glyphs(raw_line);
+                let gutter = match style {
+                    OutputStyle::Ascii => "  | ",
+                    OutputStyle::Posh => "  ▎ ",
+                    OutputStyle::Editorial => "│ ",
+                    _ => "  │ ",
+                };
+                let gutter_style = match style {
+                    OutputStyle::Posh => Style::default().fg(theme.brand_accent),
+                    _ => Style::default().fg(theme.border),
+                };
+                let code_style = match style {
+                    OutputStyle::Minimal | OutputStyle::Ascii => {
+                        Style::default().fg(theme.text_primary)
+                    }
+                    _ => Style::default()
+                        .fg(theme.text_primary)
+                        .bg(theme.bg_elevated),
+                };
                 lines.push(Line::from(vec![
-                    Span::styled("  │ ", Style::default().fg(theme.border)),
-                    Span::styled(
-                        clean_code,
-                        Style::default()
-                            .fg(theme.text_primary)
-                            .bg(theme.bg_elevated),
-                    ),
+                    Span::styled(gutter, gutter_style),
+                    Span::styled(clean_code, code_style),
                 ]));
                 i += 1;
                 continue;
@@ -73,6 +188,21 @@ impl MarkdownRenderer {
             if line.is_empty() {
                 lines.push(Line::from(String::new()));
                 i += 1;
+                continue;
+            }
+
+            // Blockquote / GitHub & Report-Skill Callout block (`> ...` or `> [!TIP] ...`)
+            if line.trim_start().starts_with('>') {
+                let mut j = i;
+                while j < raw_lines.len() && raw_lines[j].trim_start().starts_with('>') {
+                    j += 1;
+                }
+                lines.extend(Self::render_blockquote_block(
+                    &raw_lines[i..j],
+                    style,
+                    theme,
+                ));
+                i = j;
                 continue;
             }
 
@@ -86,50 +216,40 @@ impl MarkdownRenderer {
                     j += 1;
                 }
                 let table_lines = &raw_lines[i..j];
-                lines.extend(Self::render_table_block(table_lines, theme, max_width));
+                lines.extend(Self::render_table_block(
+                    table_lines,
+                    theme,
+                    max_width,
+                    style,
+                ));
                 i = j;
                 continue;
             }
 
-            // Headings (rendered without '#' prefix; differentiated by color & font weight/modifiers)
+            // Headings (H1..H4 styled per OutputStyle)
             if let Some(rest) = line.strip_prefix("#### ") {
-                lines.push(Self::render_heading_line(
-                    rest,
-                    Style::default().fg(theme.info).add_modifier(Modifier::BOLD),
-                    theme,
+                lines.extend(Self::render_styled_heading(
+                    4, rest, style, max_width, theme,
                 ));
             } else if let Some(rest) = line.strip_prefix("### ") {
-                lines.push(Self::render_heading_line(
-                    rest,
-                    Style::default()
-                        .fg(theme.highlight)
-                        .add_modifier(Modifier::BOLD),
-                    theme,
+                lines.extend(Self::render_styled_heading(
+                    3, rest, style, max_width, theme,
                 ));
             } else if let Some(rest) = line.strip_prefix("## ") {
-                lines.push(Self::render_heading_line(
-                    rest,
-                    Style::default()
-                        .fg(theme.brand_accent)
-                        .add_modifier(Modifier::BOLD),
-                    theme,
+                lines.extend(Self::render_styled_heading(
+                    2, rest, style, max_width, theme,
                 ));
             } else if let Some(rest) = line.strip_prefix("# ") {
-                lines.push(Self::render_heading_line(
-                    rest,
-                    Style::default()
-                        .fg(theme.brand_accent)
-                        .add_modifier(Modifier::BOLD | Modifier::UNDERLINED),
-                    theme,
+                lines.extend(Self::render_styled_heading(
+                    1, rest, style, max_width, theme,
                 ));
             } else if let Some(header_title) = Self::parse_section_header(line) {
                 // Standalone bold section header (e.g., "**Recent Commits (latest 20):**" or "**Summary:**")
-                lines.push(Line::from(vec![Span::styled(
-                    header_title,
-                    Style::default()
-                        .fg(theme.highlight)
-                        .add_modifier(Modifier::BOLD),
-                )]));
+                lines.push(Self::render_section_header_line(header_title, style, theme));
+            } else if let Some((indent, checked, rest)) = Self::parse_checklist_item(line) {
+                lines.push(Self::render_checklist_line(
+                    indent, checked, rest, style, theme,
+                ));
             } else if let Some(rest) = line
                 .strip_prefix("    - ")
                 .or_else(|| line.strip_prefix("    * "))
@@ -139,7 +259,13 @@ impl MarkdownRenderer {
                 .or_else(|| line.strip_prefix("  • "))
             {
                 // Sub-bullet list item
-                let mut spans = vec![Span::styled("  - ", Style::default().fg(theme.muted))];
+                let sub_marker = match style {
+                    OutputStyle::Minimal | OutputStyle::Symbols => "  · ",
+                    OutputStyle::Workspace | OutputStyle::Editorial => "  ◦ ",
+                    OutputStyle::Ascii => "  - ",
+                    _ => "  - ",
+                };
+                let mut spans = vec![Span::styled(sub_marker, Style::default().fg(theme.muted))];
                 spans.extend(Self::parse_inline(rest, theme));
                 lines.push(Line::from(spans));
             } else if let Some(rest) = line
@@ -147,8 +273,23 @@ impl MarkdownRenderer {
                 .or_else(|| line.strip_prefix("* "))
                 .or_else(|| line.strip_prefix("• "))
             {
-                // Bullet list item
-                let mut spans = vec![Span::styled("• ", Style::default().fg(theme.brand_accent))];
+                // Top-level bullet list item
+                let bullet = match style {
+                    OutputStyle::Minimal => "· ".to_string(),
+                    OutputStyle::Editorial | OutputStyle::Workspace | OutputStyle::Symbols => {
+                        "▸ ".to_string()
+                    }
+                    OutputStyle::Posh => "› ".to_string(),
+                    OutputStyle::NerdFont => format!("{} ", nf(NerdIcon::Rocket)),
+                    OutputStyle::Emoji => "🔹 ".to_string(),
+                    OutputStyle::Ascii => "* ".to_string(),
+                    OutputStyle::Default | OutputStyle::Kaomoji => "• ".to_string(),
+                };
+                let bullet_color = match style {
+                    OutputStyle::Minimal => theme.muted,
+                    _ => theme.brand_accent,
+                };
+                let mut spans = vec![Span::styled(bullet, Style::default().fg(bullet_color))];
                 spans.extend(Self::parse_inline(rest, theme));
                 lines.push(Line::from(spans));
             } else if let Some((num_str, rest)) = Self::parse_numbered_list(line) {
@@ -163,9 +304,15 @@ impl MarkdownRenderer {
                 lines.push(Line::from(spans));
             } else if line == "---" || line == "***" || line == "___" {
                 // Horizontal divider
-                let div_w = max_width.min(52);
+                let div_w = max_width.min(56);
+                let rule_str = match style {
+                    OutputStyle::Ascii => "-".repeat(div_w),
+                    OutputStyle::Editorial => "┈".repeat(div_w),
+                    OutputStyle::Minimal => "─".repeat(div_w.min(36)),
+                    _ => "─".repeat(div_w.min(52)),
+                };
                 lines.push(Line::from(vec![Span::styled(
-                    "─".repeat(div_w),
+                    rule_str,
                     Style::default().fg(theme.border),
                 )]));
             } else {
@@ -177,6 +324,556 @@ impl MarkdownRenderer {
         }
 
         lines
+    }
+
+    /// Renders a style-aware, width-responsive opening fence for fenced code blocks.
+    fn render_code_fence_open(
+        lang: &str,
+        style: OutputStyle,
+        max_width: usize,
+        theme: &Theme,
+    ) -> Line<'static> {
+        let label = if lang.is_empty() { "code" } else { lang };
+        let rule_cap = max_width.saturating_sub(6).clamp(16, 60);
+        let border_st = Style::default().fg(theme.border);
+        let lang_st = Style::default().fg(theme.info).add_modifier(Modifier::BOLD);
+
+        match style {
+            OutputStyle::Minimal => Line::from(vec![
+                Span::styled("  │ ", border_st),
+                Span::styled(label.to_string(), Style::default().fg(theme.muted)),
+            ]),
+            OutputStyle::Editorial => {
+                let prefix = format!("┌─ {label} ");
+                let rem = max_width
+                    .saturating_sub(UnicodeWidthStr::width(prefix.as_str()) + 1)
+                    .max(4);
+                Line::from(vec![
+                    Span::styled("┌─ ", border_st),
+                    Span::styled(label.to_string(), lang_st),
+                    Span::styled(format!(" {}┐", "─".repeat(rem)), border_st),
+                ])
+            }
+            OutputStyle::Workspace => {
+                let rem = rule_cap.saturating_sub(label.chars().count() + 4).max(6);
+                Line::from(vec![
+                    Span::styled("  ╭─ ", border_st),
+                    Span::styled(label.to_string(), lang_st),
+                    Span::styled(format!(" {}╮", "─".repeat(rem)), border_st),
+                ])
+            }
+            OutputStyle::Posh => {
+                let pill_bg = theme.bg_elevated;
+                let rem = rule_cap.saturating_sub(label.chars().count() + 5).max(6);
+                Line::from(vec![
+                    Span::raw("  "),
+                    Span::styled("\u{e0b6}", Style::default().fg(pill_bg)),
+                    Span::styled(
+                        label.to_string(),
+                        Style::default()
+                            .fg(theme.info)
+                            .bg(pill_bg)
+                            .add_modifier(Modifier::BOLD),
+                    ),
+                    Span::styled("\u{e0b4} ", Style::default().fg(pill_bg)),
+                    Span::styled("─".repeat(rem), border_st),
+                ])
+            }
+            OutputStyle::NerdFont => {
+                let ic = nf(NerdIcon::Terminal);
+                let rem = rule_cap.saturating_sub(label.chars().count() + 6).max(6);
+                Line::from(vec![
+                    Span::styled("  ╭─ ", border_st),
+                    Span::styled(format!("{ic} {label}"), lang_st),
+                    Span::styled(format!(" {}", "─".repeat(rem)), border_st),
+                ])
+            }
+            OutputStyle::Symbols => {
+                let rem = rule_cap.saturating_sub(label.chars().count() + 6).max(6);
+                Line::from(vec![
+                    Span::styled("  ┌─ ", border_st),
+                    Span::styled(format!("⌘ {label}"), lang_st),
+                    Span::styled(format!(" {}", "─".repeat(rem)), border_st),
+                ])
+            }
+            OutputStyle::Emoji => {
+                let rem = rule_cap.saturating_sub(label.chars().count() + 7).max(6);
+                Line::from(vec![
+                    Span::styled("  ╭─ ", border_st),
+                    Span::styled(format!("💻 {label}"), lang_st),
+                    Span::styled(format!(" {}", "─".repeat(rem)), border_st),
+                ])
+            }
+            OutputStyle::Kaomoji => {
+                let rem = rule_cap.saturating_sub(label.chars().count() + 10).max(6);
+                Line::from(vec![
+                    Span::styled("  ╭─ ", border_st),
+                    Span::styled(format!("(>_<) {label}"), lang_st),
+                    Span::styled(format!(" {}", "─".repeat(rem)), border_st),
+                ])
+            }
+            OutputStyle::Ascii => {
+                let rem = rule_cap.saturating_sub(label.chars().count() + 5).max(6);
+                Line::from(vec![Span::styled(
+                    format!("  +-- {label} {}", "-".repeat(rem)),
+                    border_st,
+                )])
+            }
+            OutputStyle::Default => {
+                let rem = rule_cap.saturating_sub(label.chars().count() + 4).max(12);
+                Line::from(vec![Span::styled(
+                    format!("  ┌─ {label} {}", "─".repeat(rem)),
+                    border_st,
+                )])
+            }
+        }
+    }
+
+    /// Renders the closing fence for fenced code blocks (returns `None` for open-rail styles).
+    fn render_code_fence_close(
+        style: OutputStyle,
+        max_width: usize,
+        theme: &Theme,
+    ) -> Option<Line<'static>> {
+        let rule_cap = max_width.saturating_sub(6).clamp(16, 60);
+        let border_st = Style::default().fg(theme.border);
+        match style {
+            OutputStyle::Minimal | OutputStyle::Posh => None,
+            OutputStyle::Editorial => {
+                let inner = max_width.saturating_sub(2).max(12);
+                Some(Line::from(vec![Span::styled(
+                    format!("└{}┘", "─".repeat(inner)),
+                    border_st,
+                )]))
+            }
+            OutputStyle::Workspace => Some(Line::from(vec![Span::styled(
+                format!("  ╰{}╯", "─".repeat(rule_cap)),
+                border_st,
+            )])),
+            OutputStyle::NerdFont | OutputStyle::Emoji | OutputStyle::Kaomoji => {
+                Some(Line::from(vec![Span::styled(
+                    format!("  ╰{}", "─".repeat(rule_cap)),
+                    border_st,
+                )]))
+            }
+            OutputStyle::Ascii => Some(Line::from(vec![Span::styled(
+                format!("  +{}", "-".repeat(rule_cap)),
+                border_st,
+            )])),
+            OutputStyle::Default | OutputStyle::Symbols => Some(Line::from(vec![Span::styled(
+                format!("  └{}", "─".repeat(rule_cap)),
+                border_st,
+            )])),
+        }
+    }
+
+    /// Renders a contiguous blockquote or GitHub/Report-Skill callout block (`> [!TIP] ...`).
+    fn render_blockquote_block<'a>(
+        quote_lines: &[&'a str],
+        style: OutputStyle,
+        theme: &'a Theme,
+    ) -> Vec<Line<'a>> {
+        if quote_lines.is_empty() {
+            return Vec::new();
+        }
+        let strip_gt = |l: &'a str| -> &'a str {
+            let t = l.trim_start();
+            let rest = t.strip_prefix('>').unwrap_or(t);
+            rest.strip_prefix(' ').unwrap_or(rest).trim_end()
+        };
+
+        let first_inner = strip_gt(quote_lines[0]);
+        let callout = CalloutKind::parse_tag(first_inner);
+
+        let rail = match style {
+            OutputStyle::Ascii => "> ",
+            OutputStyle::Minimal => "│ ",
+            OutputStyle::Editorial | OutputStyle::Posh => "┃ ",
+            _ => "▎ ",
+        };
+
+        let mut out = Vec::with_capacity(quote_lines.len() + 1);
+        if let Some((kind, inline_rest)) = callout {
+            let accent = kind.color(theme);
+            let rail_st = Style::default().fg(accent).add_modifier(Modifier::BOLD);
+            let prefix = kind.badge_prefix(style);
+            let mut header_spans = vec![Span::styled(rail, rail_st)];
+            match style {
+                OutputStyle::Posh => {
+                    let pill_bg = theme.bg_elevated;
+                    header_spans.push(Span::styled("\u{e0b6}", Style::default().fg(pill_bg)));
+                    header_spans.push(Span::styled(
+                        format!("{}{}", prefix, kind.label()),
+                        Style::default()
+                            .fg(accent)
+                            .bg(pill_bg)
+                            .add_modifier(Modifier::BOLD),
+                    ));
+                    header_spans.push(Span::styled("\u{e0b4}", Style::default().fg(pill_bg)));
+                }
+                OutputStyle::Ascii => {
+                    header_spans.push(Span::styled(
+                        format!("[{}]", kind.label()),
+                        Style::default().fg(accent).add_modifier(Modifier::BOLD),
+                    ));
+                }
+                _ => {
+                    header_spans.push(Span::styled(
+                        format!("{}{}", prefix, kind.label()),
+                        Style::default().fg(accent).add_modifier(Modifier::BOLD),
+                    ));
+                }
+            }
+            if !inline_rest.is_empty() {
+                header_spans.push(Span::raw(" "));
+                header_spans.extend(Self::parse_inline(inline_rest, theme));
+            }
+            out.push(Line::from(header_spans));
+
+            for &raw_q in &quote_lines[1..] {
+                let body = strip_gt(raw_q);
+                let mut spans = vec![Span::styled(rail, Style::default().fg(accent))];
+                if !body.is_empty() {
+                    spans.extend(Self::parse_inline(body, theme));
+                }
+                out.push(Line::from(spans));
+            }
+        } else {
+            let rail_st = Style::default().fg(theme.border);
+            for &raw_q in quote_lines {
+                let body = strip_gt(raw_q);
+                let mut spans = vec![Span::styled(rail, rail_st)];
+                if !body.is_empty() {
+                    for mut sp in Self::parse_inline(body, theme) {
+                        if sp.style.bg.is_none() {
+                            sp.style = sp.style.fg(theme.muted).add_modifier(Modifier::ITALIC);
+                        }
+                        spans.push(sp);
+                    }
+                }
+                out.push(Line::from(spans));
+            }
+        }
+        out
+    }
+
+    /// Parses Markdown task list items (`- [x] done`, `- [ ] todo`, with optional 2/4-space indent).
+    fn parse_checklist_item(line: &str) -> Option<(usize, bool, &str)> {
+        let indent = if line.starts_with("    ") {
+            4
+        } else if line.starts_with("  ") {
+            2
+        } else {
+            0
+        };
+        let trimmed = &line[indent..];
+        let after_bullet = trimmed
+            .strip_prefix("- ")
+            .or_else(|| trimmed.strip_prefix("* "))?;
+        if let Some(rest) = after_bullet
+            .strip_prefix("[x] ")
+            .or_else(|| after_bullet.strip_prefix("[X] "))
+        {
+            Some((indent, true, rest))
+        } else if let Some(rest) = after_bullet.strip_prefix("[ ] ") {
+            Some((indent, false, rest))
+        } else {
+            None
+        }
+    }
+
+    /// Renders a styled task checklist row.
+    fn render_checklist_line<'a>(
+        indent: usize,
+        checked: bool,
+        rest: &'a str,
+        style: OutputStyle,
+        theme: &'a Theme,
+    ) -> Line<'a> {
+        let pad = " ".repeat(indent);
+        let (marker, marker_style) = match (style, checked) {
+            (OutputStyle::Ascii, true) => (
+                "[x] ".to_string(),
+                Style::default()
+                    .fg(theme.success)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            (OutputStyle::Ascii, false) => ("[ ] ".to_string(), Style::default().fg(theme.muted)),
+            (OutputStyle::Emoji, true) => ("✅ ".to_string(), Style::default().fg(theme.success)),
+            (OutputStyle::Emoji, false) => ("⬜ ".to_string(), Style::default().fg(theme.muted)),
+            (OutputStyle::NerdFont, true) => (
+                format!("{} ", nf(NerdIcon::Check)),
+                Style::default()
+                    .fg(theme.success)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            (OutputStyle::NerdFont, false) => ("○ ".to_string(), Style::default().fg(theme.muted)),
+            (_, true) => (
+                "✓ ".to_string(),
+                Style::default()
+                    .fg(theme.success)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            (_, false) => ("○ ".to_string(), Style::default().fg(theme.muted)),
+        };
+
+        let mut spans = Vec::new();
+        if !pad.is_empty() {
+            spans.push(Span::raw(pad));
+        }
+        spans.push(Span::styled(marker, marker_style));
+        spans.extend(Self::parse_inline(rest, theme));
+        Line::from(spans)
+    }
+
+    /// Renders a standalone bold section header (`**Summary:**`) according to `OutputStyle`.
+    fn render_section_header_line(
+        header_title: String,
+        style: OutputStyle,
+        theme: &Theme,
+    ) -> Line<'static> {
+        let base_st = Style::default()
+            .fg(theme.highlight)
+            .add_modifier(Modifier::BOLD);
+        match style {
+            OutputStyle::Default => Line::from(vec![Span::styled(header_title, base_st)]),
+            OutputStyle::Symbols => Line::from(vec![
+                Span::styled("▸ ", Style::default().fg(theme.brand_accent)),
+                Span::styled(header_title, base_st),
+            ]),
+            OutputStyle::NerdFont => Line::from(vec![
+                Span::styled(
+                    format!("{} ", nf(NerdIcon::Symbol)),
+                    Style::default().fg(theme.brand_accent),
+                ),
+                Span::styled(header_title, base_st),
+            ]),
+            OutputStyle::Emoji => Line::from(vec![
+                Span::styled("🔹 ", Style::default().fg(theme.brand_accent)),
+                Span::styled(header_title, base_st),
+            ]),
+            OutputStyle::Ascii => {
+                Line::from(vec![Span::styled(format!("> {header_title}"), base_st)])
+            }
+            _ => Line::from(vec![Span::styled(header_title, base_st)]),
+        }
+    }
+
+    /// Renders Markdown headings H1–H4 according to `OutputStyle`.
+    fn render_styled_heading<'a>(
+        level: u8,
+        rest: &'a str,
+        style: OutputStyle,
+        max_width: usize,
+        theme: &'a Theme,
+    ) -> Vec<Line<'a>> {
+        let heading_style = match level {
+            1 => Style::default()
+                .fg(theme.brand_accent)
+                .add_modifier(Modifier::BOLD | Modifier::UNDERLINED),
+            2 => Style::default()
+                .fg(theme.brand_accent)
+                .add_modifier(Modifier::BOLD),
+            3 => Style::default()
+                .fg(theme.highlight)
+                .add_modifier(Modifier::BOLD),
+            _ => Style::default().fg(theme.info).add_modifier(Modifier::BOLD),
+        };
+
+        // Preserve exact Default rendering for backward compatibility with existing tests & users.
+        if style == OutputStyle::Default {
+            return vec![Self::render_heading_line(rest, heading_style, theme)];
+        }
+
+        let base_line = Self::render_heading_line(
+            rest,
+            match level {
+                1 => Style::default()
+                    .fg(theme.brand_accent)
+                    .add_modifier(Modifier::BOLD),
+                2 => Style::default()
+                    .fg(theme.brand_accent)
+                    .add_modifier(Modifier::BOLD),
+                3 => Style::default()
+                    .fg(theme.highlight)
+                    .add_modifier(Modifier::BOLD),
+                _ => Style::default().fg(theme.info).add_modifier(Modifier::BOLD),
+            },
+            theme,
+        );
+        let text_w: usize = base_line
+            .spans
+            .iter()
+            .map(|s| UnicodeWidthStr::width(s.content.as_ref()))
+            .sum();
+
+        match style {
+            OutputStyle::Minimal => {
+                let mut out = vec![base_line];
+                if level <= 2 {
+                    let rule_w = text_w.max(12).min(max_width);
+                    out.push(Line::from(vec![Span::styled(
+                        "─".repeat(rule_w),
+                        Style::default().fg(theme.border),
+                    )]));
+                }
+                out
+            }
+            OutputStyle::Editorial => match level {
+                1 => {
+                    let rule_w = text_w.max(16).min(max_width);
+                    vec![
+                        base_line,
+                        Line::from(vec![Span::styled(
+                            "═".repeat(rule_w),
+                            Style::default().fg(theme.brand_accent),
+                        )]),
+                    ]
+                }
+                2 => {
+                    let rem = max_width.saturating_sub(text_w + 1).min(36);
+                    let mut spans = base_line.spans;
+                    if rem >= 3 {
+                        spans.push(Span::styled(
+                            format!(" {}", "─".repeat(rem)),
+                            Style::default().fg(theme.border),
+                        ));
+                    }
+                    vec![Line::from(spans)]
+                }
+                3 => {
+                    let mut spans = vec![Span::styled("▸ ", Style::default().fg(theme.highlight))];
+                    spans.extend(base_line.spans);
+                    vec![Line::from(spans)]
+                }
+                _ => vec![base_line],
+            },
+            OutputStyle::Workspace => {
+                let prefix = match level {
+                    1 => "▸ ",
+                    2 => "› ",
+                    _ => "· ",
+                };
+                let mut spans = vec![Span::styled(
+                    prefix,
+                    Style::default()
+                        .fg(theme.brand_accent)
+                        .add_modifier(Modifier::BOLD),
+                )];
+                spans.extend(base_line.spans);
+                let mut out = vec![Line::from(spans)];
+                if level == 1 {
+                    let rule_w = (text_w + 2).min(max_width);
+                    out.push(Line::from(vec![Span::styled(
+                        "─".repeat(rule_w),
+                        Style::default().fg(theme.border),
+                    )]));
+                }
+                out
+            }
+            OutputStyle::Posh => {
+                let pill_bg = theme.bg_elevated;
+                let plain: String = base_line.spans.iter().map(|s| s.content.as_ref()).collect();
+                match level {
+                    1 => vec![Line::from(vec![
+                        Span::styled("\u{e0b6}", Style::default().fg(pill_bg)),
+                        Span::styled(
+                            format!(" {plain} "),
+                            Style::default()
+                                .fg(theme.brand_accent)
+                                .bg(pill_bg)
+                                .add_modifier(Modifier::BOLD),
+                        ),
+                        Span::styled("\u{e0b4}", Style::default().fg(pill_bg)),
+                    ])],
+                    2 => vec![Line::from(vec![
+                        Span::styled(
+                            format!(" {plain} "),
+                            Style::default()
+                                .fg(theme.highlight)
+                                .bg(pill_bg)
+                                .add_modifier(Modifier::BOLD),
+                        ),
+                        Span::styled("\u{e0b0}", Style::default().fg(pill_bg)),
+                    ])],
+                    _ => {
+                        let mut spans = vec![Span::styled("▎ ", Style::default().fg(theme.info))];
+                        spans.extend(base_line.spans);
+                        vec![Line::from(spans)]
+                    }
+                }
+            }
+            OutputStyle::NerdFont => {
+                let ic = match level {
+                    1 => nf(NerdIcon::Sparkle),
+                    2 => nf(NerdIcon::Symbol),
+                    3 => nf(NerdIcon::File),
+                    _ => nf(NerdIcon::Info),
+                };
+                let mut spans = vec![Span::styled(
+                    format!("{ic} "),
+                    Style::default().fg(theme.info).add_modifier(Modifier::BOLD),
+                )];
+                spans.extend(base_line.spans);
+                vec![Line::from(spans)]
+            }
+            OutputStyle::Symbols => {
+                let sym = match level {
+                    1 => "◈ ",
+                    2 => "▸ ",
+                    3 => "› ",
+                    _ => "· ",
+                };
+                let mut spans = vec![Span::styled(
+                    sym,
+                    Style::default().fg(theme.info).add_modifier(Modifier::BOLD),
+                )];
+                spans.extend(base_line.spans);
+                vec![Line::from(spans)]
+            }
+            OutputStyle::Emoji => {
+                let em = match level {
+                    1 => "📌 ",
+                    2 => "🔹 ",
+                    3 => "▸ ",
+                    _ => "· ",
+                };
+                let mut spans = vec![Span::styled(em, Style::default().fg(theme.brand_accent))];
+                spans.extend(base_line.spans);
+                vec![Line::from(spans)]
+            }
+            OutputStyle::Kaomoji => {
+                let prefix = match level {
+                    1 => "(✦‿✦) ",
+                    2 => "▸ ",
+                    _ => "› ",
+                };
+                let mut spans = vec![Span::styled(
+                    prefix,
+                    Style::default().fg(theme.info).add_modifier(Modifier::BOLD),
+                )];
+                spans.extend(base_line.spans);
+                vec![Line::from(spans)]
+            }
+            OutputStyle::Ascii => {
+                let plain: String = base_line.spans.iter().map(|s| s.content.as_ref()).collect();
+                match level {
+                    1 => vec![Line::from(vec![Span::styled(
+                        format!("== {plain} =="),
+                        heading_style.remove_modifier(Modifier::UNDERLINED),
+                    )])],
+                    2 => vec![Line::from(vec![Span::styled(
+                        format!("-- {plain} --"),
+                        heading_style,
+                    )])],
+                    _ => vec![Line::from(vec![Span::styled(
+                        format!("> {plain}"),
+                        heading_style,
+                    )])],
+                }
+            }
+            OutputStyle::Default => unreachable!(),
+        }
     }
 
     /// Normalizes wide multi-cell emojis, variation selectors, tabs, and ambiguous-width
@@ -504,12 +1201,31 @@ impl MarkdownRenderer {
         lines
     }
 
+    /// Returns true if a table cell looks like a numeric / latency / ratio / percentage metric
+    /// (used for Report-Skill style automatic right-alignment on editorial/minimal/workspace tables).
+    fn cell_looks_numeric(raw: &str) -> bool {
+        let t = raw.trim().trim_matches('*').trim_matches('`').trim();
+        if t.is_empty() || t == "-" || t == "—" {
+            return true;
+        }
+        let cleaned = t
+            .trim_start_matches(['+', '-', '$', '~', '<', '>'])
+            .trim_end_matches(['%', 's', 'k', 'M', 'K', 'B', 'm']);
+        !cleaned.is_empty()
+            && cleaned
+                .chars()
+                .all(|c| c.is_ascii_digit() || matches!(c, '.' | ',' | '/' | ':'))
+            && cleaned.chars().any(|c| c.is_ascii_digit())
+    }
+
     /// Renders a full contiguous block of markdown table rows with character-aligned columns,
-    /// box-drawing borders (┌─┬─┐, ├─┼─┤, └─┴─┘), proportional viewport fitting, and multi-line cell wrapping.
+    /// style-aware borders (full box, booktabs hairline, rounded, or ASCII), proportional viewport
+    /// fitting, auto right-aligned numeric columns, and multi-line cell wrapping.
     fn render_table_block<'a>(
         table_lines: &[&'a str],
         theme: &'a Theme,
         max_width: usize,
+        style: OutputStyle,
     ) -> Vec<Line<'a>> {
         if table_lines.is_empty() {
             return Vec::new();
@@ -560,6 +1276,7 @@ impl MarkdownRenderer {
         }
 
         let mut alignments = vec![ColAlign::Left; num_cols];
+        let mut explicit_align = vec![false; num_cols];
         if let Some(sep_row) = parsed_rows.iter().find(|r| r.is_separator) {
             for (c, cell) in sep_row.raw_cells.iter().enumerate().take(num_cols) {
                 let trimmed = cell.trim();
@@ -567,10 +1284,46 @@ impl MarkdownRenderer {
                 let ends_colon = trimmed.ends_with(':');
                 if starts_colon && ends_colon {
                     alignments[c] = ColAlign::Center;
+                    explicit_align[c] = true;
                 } else if ends_colon {
                     alignments[c] = ColAlign::Right;
-                } else {
+                    explicit_align[c] = true;
+                } else if starts_colon {
                     alignments[c] = ColAlign::Left;
+                    explicit_align[c] = true;
+                }
+            }
+        }
+
+        let first_is_header =
+            parsed_rows.len() > 1 && parsed_rows.get(1).is_some_and(|r| r.is_separator);
+
+        // Auto right-align numeric/metric columns on editorial, minimal, and workspace styles
+        if matches!(
+            style,
+            OutputStyle::Minimal | OutputStyle::Editorial | OutputStyle::Workspace
+        ) {
+            for c in 0..num_cols {
+                if explicit_align[c] {
+                    continue;
+                }
+                let mut saw_value = false;
+                let mut all_numeric = true;
+                for (row_idx, row) in parsed_rows.iter().enumerate() {
+                    if row.is_separator || (row_idx == 0 && first_is_header) {
+                        continue;
+                    }
+                    let val = row.raw_cells.get(c).map(|s| s.as_str()).unwrap_or("");
+                    if !val.trim().is_empty() {
+                        saw_value = true;
+                        if !Self::cell_looks_numeric(val) {
+                            all_numeric = false;
+                            break;
+                        }
+                    }
+                }
+                if saw_value && all_numeric {
+                    alignments[c] = ColAlign::Right;
                 }
             }
         }
@@ -597,9 +1350,14 @@ impl MarkdownRenderer {
             }
         }
 
+        let is_booktabs = matches!(style, OutputStyle::Minimal | OutputStyle::Editorial);
+
         // Constrain total table width to `max_width` so borders never wrap across terminal lines.
-        // Overhead: "┌─" (2) + (num_cols - 1) * "─┬─" (3) + "─┐" (2) = 3 * num_cols + 1
-        let border_overhead = 3 * num_cols + 1;
+        let border_overhead = if is_booktabs {
+            num_cols.saturating_sub(1) * 2
+        } else {
+            3 * num_cols + 1
+        };
         let avail_content_w = max_width.saturating_sub(border_overhead).max(num_cols * 3);
         let natural_total: usize = col_widths.iter().sum();
 
@@ -656,6 +1414,124 @@ impl MarkdownRenderer {
 
         let mut out = Vec::new();
         let border_style = Style::default().fg(theme.border);
+
+        if is_booktabs {
+            let total_w: usize = col_widths.iter().sum::<usize>() + num_cols.saturating_sub(1) * 2;
+            let rule_ch = if style == OutputStyle::Editorial {
+                "━"
+            } else {
+                "─"
+            };
+            out.push(Line::from(vec![Span::styled(
+                rule_ch.repeat(total_w),
+                border_style,
+            )]));
+
+            for (row_idx, row) in parsed_rows.iter().enumerate() {
+                if row.is_separator {
+                    out.push(Line::from(vec![Span::styled(
+                        "─".repeat(total_w),
+                        border_style,
+                    )]));
+                } else if let Some(ref cells_spans) = row_spans[row_idx] {
+                    let is_header = row_idx == 0 && first_is_header;
+                    let wrapped_cells: Vec<Vec<Vec<Span<'a>>>> = (0..num_cols)
+                        .map(|c| Self::wrap_cell_spans(&cells_spans[c], col_widths[c]))
+                        .collect();
+                    let max_sublines = wrapped_cells
+                        .iter()
+                        .map(|lines| lines.len())
+                        .max()
+                        .unwrap_or(1)
+                        .max(1);
+
+                    for sub_idx in 0..max_sublines {
+                        let mut row_line = Vec::new();
+                        for c in 0..num_cols {
+                            if c > 0 {
+                                row_line.push(Span::raw("  "));
+                            }
+                            let empty_spans: Vec<Span<'a>> = Vec::new();
+                            let spans = wrapped_cells[c].get(sub_idx).unwrap_or(&empty_spans);
+                            let visible_w: usize = spans
+                                .iter()
+                                .map(|s| UnicodeWidthStr::width(s.content.as_ref()))
+                                .sum();
+                            let pad_total = col_widths[c].saturating_sub(visible_w);
+                            let (pad_left, pad_right) = match alignments[c] {
+                                ColAlign::Right => (pad_total, 0),
+                                ColAlign::Center => {
+                                    let pl = pad_total / 2;
+                                    (pl, pad_total - pl)
+                                }
+                                ColAlign::Left => (0, pad_total),
+                            };
+                            if pad_left > 0 {
+                                row_line.push(Span::raw(" ".repeat(pad_left)));
+                            }
+                            for span in spans {
+                                if is_header {
+                                    let mut st = span.style.add_modifier(Modifier::BOLD);
+                                    if st.fg.is_none() || st.fg == Some(theme.text_primary) {
+                                        st = st.fg(theme.highlight);
+                                    }
+                                    row_line.push(Span::styled(span.content.clone(), st));
+                                } else {
+                                    row_line.push(span.clone());
+                                }
+                            }
+                            if pad_right > 0 {
+                                row_line.push(Span::raw(" ".repeat(pad_right)));
+                            }
+                        }
+                        out.push(Line::from(row_line));
+                    }
+                }
+            }
+
+            out.push(Line::from(vec![Span::styled(
+                "─".repeat(total_w),
+                border_style,
+            )]));
+            return out;
+        }
+
+        let (h_fill, tl, tm, tr, ml, mm, mr, bl, bm, br, v_left, v_mid, v_right) = match style {
+            OutputStyle::Workspace | OutputStyle::Posh => (
+                "─",
+                "╭─",
+                "─┬─",
+                "─╮",
+                "├─",
+                "─┼─",
+                "─┤",
+                "╰─",
+                "─┴─",
+                "─╯",
+                "│ ",
+                " │ ",
+                " │",
+            ),
+            OutputStyle::Ascii => (
+                "-", "+-", "-+-", "-+", "+-", "-+-", "-+", "+-", "-+-", "-+", "| ", " | ", " |",
+            ),
+            _ => (
+                "─",
+                "┌─",
+                "─┬─",
+                "─┐",
+                "├─",
+                "─┼─",
+                "─┤",
+                "└─",
+                "─┴─",
+                "─┘",
+                "│ ",
+                " │ ",
+                " │",
+            ),
+        };
+
         let build_table_border =
             |left: &'static str, mid: &'static str, right: &'static str| -> Line<'a> {
                 let mut line = Vec::with_capacity(col_widths.len() * 2 + 2);
@@ -664,23 +1540,19 @@ impl MarkdownRenderer {
                     if c > 0 {
                         line.push(Span::styled(mid, border_style));
                     }
-                    line.push(Span::styled("─".repeat(w), border_style));
+                    line.push(Span::styled(h_fill.repeat(w), border_style));
                 }
                 line.push(Span::styled(right, border_style));
                 Line::from(line)
             };
 
-        // 1. Top border: ┌───┬───┐
-        out.push(build_table_border("┌─", "─┬─", "─┐"));
+        // 1. Top border
+        out.push(build_table_border(tl, tm, tr));
 
         // 2. Render rows (with multi-line cell wrapping when a cell exceeds `col_widths[c]`)
-        let first_is_header =
-            parsed_rows.len() > 1 && parsed_rows.get(1).is_some_and(|r| r.is_separator);
-
         for (row_idx, row) in parsed_rows.iter().enumerate() {
             if row.is_separator {
-                // Divider row: ├───┼───┤
-                out.push(build_table_border("├─", "─┼─", "─┤"));
+                out.push(build_table_border(ml, mm, mr));
             } else if let Some(ref cells_spans) = row_spans[row_idx] {
                 let is_header = row_idx == 0 && first_is_header;
                 let wrapped_cells: Vec<Vec<Vec<Span<'a>>>> = (0..num_cols)
@@ -695,11 +1567,11 @@ impl MarkdownRenderer {
 
                 for sub_idx in 0..max_sublines {
                     let mut row_line = Vec::new();
-                    row_line.push(Span::styled("│ ", border_style));
+                    row_line.push(Span::styled(v_left, border_style));
 
                     for c in 0..num_cols {
                         if c > 0 {
-                            row_line.push(Span::styled(" │ ", border_style));
+                            row_line.push(Span::styled(v_mid, border_style));
                         }
 
                         let empty_spans: Vec<Span<'a>> = Vec::new();
@@ -741,14 +1613,14 @@ impl MarkdownRenderer {
                         }
                     }
 
-                    row_line.push(Span::styled(" │", border_style));
+                    row_line.push(Span::styled(v_right, border_style));
                     out.push(Line::from(row_line));
                 }
             }
         }
 
-        // 3. Bottom border: └───┴───┘
-        out.push(build_table_border("└─", "─┴─", "─┘"));
+        // 3. Bottom border
+        out.push(build_table_border(bl, bm, br));
 
         out
     }
@@ -816,6 +1688,42 @@ impl MarkdownRenderer {
                     spans.push(Span::styled(bold_content.to_string(), style));
                     rem = &rem[2 + end_idx + 2..];
                     continue;
+                }
+            }
+
+            // 2b. Strikethrough: ~~text~~
+            if rem.starts_with("~~") {
+                if let Some(end_idx) = rem[2..].find("~~") {
+                    if end_idx > 0 {
+                        let strike_content = &rem[2..2 + end_idx];
+                        flush_buf(&mut current_buf, &mut spans);
+                        spans.push(Span::styled(
+                            strike_content.to_string(),
+                            Style::default()
+                                .fg(theme.muted)
+                                .add_modifier(Modifier::CROSSED_OUT),
+                        ));
+                        rem = &rem[2 + end_idx + 2..];
+                        continue;
+                    }
+                }
+            }
+
+            // 2c. Italic: *text* (non-empty, not starting with whitespace or '*')
+            if rem.starts_with('*') && !rem.starts_with("**") && !rem.starts_with("* ") {
+                if let Some(end_idx) = rem[1..].find('*') {
+                    let italic_content = &rem[1..1 + end_idx];
+                    if !italic_content.is_empty() && !italic_content.ends_with(' ') {
+                        flush_buf(&mut current_buf, &mut spans);
+                        spans.push(Span::styled(
+                            italic_content.to_string(),
+                            Style::default()
+                                .fg(theme.text_primary)
+                                .add_modifier(Modifier::ITALIC),
+                        ));
+                        rem = &rem[1 + end_idx + 1..];
+                        continue;
+                    }
                 }
             }
 
@@ -1242,5 +2150,76 @@ mod tests {
         assert_eq!(lines[1].spans[0].style.fg, Some(theme.brand_accent));
         assert_eq!(lines[2].spans[0].style.fg, Some(theme.highlight));
         assert_eq!(lines[3].spans[0].style.fg, Some(theme.info));
+    }
+
+    #[test]
+    fn test_markdown_callouts_checklists_and_all_output_styles() {
+        let theme = Theme::default();
+        let doc = "\
+# Report Title
+## Performance Metrics
+> [!TIP] Zero regressions — all 231 tests passed.
+> Regular quote line.
+- [x] Fix Nerd Font fallback
+- [ ] Publish release ~~draft~~ *v0.5.75*
+```rust
+let ok = true;
+```
+| Metric | Value |
+| --- | --- |
+| Latency | 142ms |";
+
+        let styles = [
+            OutputStyle::Default,
+            OutputStyle::Minimal,
+            OutputStyle::Editorial,
+            OutputStyle::Workspace,
+            OutputStyle::Posh,
+            OutputStyle::NerdFont,
+            OutputStyle::Symbols,
+            OutputStyle::Emoji,
+            OutputStyle::Kaomoji,
+            OutputStyle::Ascii,
+        ];
+
+        for st in styles {
+            let lines = MarkdownRenderer::render_with_style(doc, &theme, 80, st);
+            assert!(!lines.is_empty(), "Empty output for style {st:?}");
+            let full: String = lines
+                .iter()
+                .map(|l| {
+                    l.spans
+                        .iter()
+                        .map(|s| s.content.as_ref())
+                        .collect::<String>()
+                })
+                .collect::<Vec<_>>()
+                .join("\n");
+            assert!(
+                full.contains("TIP") && full.contains("Zero regressions"),
+                "Expected callout rendering for {st:?}, got:\n{full}"
+            );
+            assert!(
+                full.contains("Fix Nerd Font fallback") && full.contains("Publish release"),
+                "Expected checklist rendering for {st:?}, got:\n{full}"
+            );
+            assert!(
+                full.contains("Latency") && full.contains("142ms"),
+                "Expected table rendering for {st:?}, got:\n{full}"
+            );
+            if st == OutputStyle::Ascii {
+                assert!(full.contains("[x]") && full.contains("[ ]") && full.contains("+--"));
+            }
+            if st == OutputStyle::Minimal || st == OutputStyle::Editorial {
+                // Booktabs tables omit vertical box-table walls and column junctions
+                assert!(
+                    !full.contains("─┬─") && full.contains("Latency  142ms"),
+                    "Booktabs style {st:?} should omit box table walls and auto-align numeric cells:\n{full}"
+                );
+            }
+            if st == OutputStyle::Workspace {
+                assert!(full.contains("╭─") && full.contains("╰─"));
+            }
+        }
     }
 }

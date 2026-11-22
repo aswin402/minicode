@@ -581,6 +581,8 @@ impl<'a> App<'a> {
                             show_thought_tokens: self.config.ui.show_thought_tokens,
                             tool_card_style: self.config.ui.tool_card_style_enum(),
                             tool_icon_style: self.config.ui.tool_icon_style_enum(),
+                            output_frame_style: self.config.ui.output_frame_style_enum(),
+                            output_style: self.config.ui.output_style_enum(),
                         };
                         self.timeline.render(frame, chunks[0], &timeline_ctx);
 
@@ -2920,5 +2922,36 @@ mod tests {
         let reloaded3 = Config::load(Some(temp_dir.path()), None).expect("reload config 3");
         assert_eq!(reloaded3.ui.tool_card_style, "rounded_card");
         assert_eq!(reloaded3.ui.tool_icon_style, "symbols");
+
+        // 7. Output Frame (16) & Output Style (17) selection + disk persistence
+        app.open_theme_modal(Some(crate::ui::modals::ThemeModalTab::OutputFrameStyles));
+        app.handle_modal_key(
+            KeyEvent::new(KeyCode::Down, KeyModifiers::NONE),
+            &control_tx,
+        )
+        .await;
+        app.handle_modal_key(
+            KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+            &control_tx,
+        )
+        .await;
+        assert_eq!(app.config.ui.output_frame_style, "open_rounded");
+
+        app.open_theme_modal(Some(crate::ui::modals::ThemeModalTab::OutputStyles));
+        app.handle_modal_key(
+            KeyEvent::new(KeyCode::Down, KeyModifiers::NONE),
+            &control_tx,
+        )
+        .await;
+        app.handle_modal_key(
+            KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+            &control_tx,
+        )
+        .await;
+        assert_eq!(app.config.ui.output_style, "minimal");
+
+        let reloaded4 = Config::load(Some(temp_dir.path()), None).expect("reload config 4");
+        assert_eq!(reloaded4.ui.output_frame_style, "open_rounded");
+        assert_eq!(reloaded4.ui.output_style, "minimal");
     }
 }

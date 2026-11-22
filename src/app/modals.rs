@@ -644,6 +644,8 @@ impl<'a> App<'a> {
                 ref mut activity_hint_style_selected_index,
                 ref mut tool_card_style_selected_index,
                 ref mut tool_icon_style_selected_index,
+                ref mut output_frame_style_selected_index,
+                ref mut output_style_selected_index,
                 ref mut visibility_selected_index,
                 ref mut active_theme_id,
                 ref mut active_animation_id,
@@ -777,6 +779,14 @@ impl<'a> App<'a> {
                         *tool_icon_style_selected_index =
                             tool_icon_style_selected_index.saturating_sub(1);
                     }
+                    crate::ui::modals::ThemeModalTab::OutputFrameStyles => {
+                        *output_frame_style_selected_index =
+                            output_frame_style_selected_index.saturating_sub(1);
+                    }
+                    crate::ui::modals::ThemeModalTab::OutputStyles => {
+                        *output_style_selected_index =
+                            output_style_selected_index.saturating_sub(1);
+                    }
                     crate::ui::modals::ThemeModalTab::Visibility => {
                         *visibility_selected_index = visibility_selected_index.saturating_sub(1);
                     }
@@ -873,6 +883,19 @@ impl<'a> App<'a> {
                         let total = crate::ui::modals::theme_select::TOOL_ICON_STYLE_OPTIONS.len();
                         if *tool_icon_style_selected_index + 1 < total {
                             *tool_icon_style_selected_index += 1;
+                        }
+                    }
+                    crate::ui::modals::ThemeModalTab::OutputFrameStyles => {
+                        let total =
+                            crate::ui::modals::theme_select::OUTPUT_FRAME_STYLE_OPTIONS.len();
+                        if *output_frame_style_selected_index + 1 < total {
+                            *output_frame_style_selected_index += 1;
+                        }
+                    }
+                    crate::ui::modals::ThemeModalTab::OutputStyles => {
+                        let total = crate::ui::modals::theme_select::OUTPUT_STYLE_OPTIONS.len();
+                        if *output_style_selected_index + 1 < total {
+                            *output_style_selected_index += 1;
                         }
                     }
                     crate::ui::modals::ThemeModalTab::Visibility => {
@@ -1321,6 +1344,53 @@ impl<'a> App<'a> {
                                     format!("Switched to \"{chosen_name}\"."),
                                     Some(chosen_id),
                                     Some("tool_icon_style_preview".to_string()),
+                                );
+                            }
+                        }
+                        crate::ui::modals::ThemeModalTab::OutputFrameStyles => {
+                            let options =
+                                crate::ui::modals::theme_select::OUTPUT_FRAME_STYLE_OPTIONS;
+                            if !options.is_empty()
+                                && *output_frame_style_selected_index < options.len()
+                            {
+                                let chosen = &options[*output_frame_style_selected_index];
+                                let chosen_id = chosen.id.to_string();
+                                let chosen_name = chosen.name.to_string();
+
+                                self.config.ui.output_frame_style = chosen_id.clone();
+                                *ui_prefs = self.config.ui.clone();
+
+                                let _ = self.config.save(Some(&self.workspace_root));
+                                let _ = self.config.save(None);
+
+                                self.toasts.push(
+                                    crate::ui::ToastKind::Success,
+                                    "Output Frame Style Updated",
+                                    format!("Switched to \"{chosen_name}\"."),
+                                    Some(chosen_id),
+                                    Some("output_frame_style_preview".to_string()),
+                                );
+                            }
+                        }
+                        crate::ui::modals::ThemeModalTab::OutputStyles => {
+                            let options = crate::ui::modals::theme_select::OUTPUT_STYLE_OPTIONS;
+                            if !options.is_empty() && *output_style_selected_index < options.len() {
+                                let chosen = &options[*output_style_selected_index];
+                                let chosen_id = chosen.id.to_string();
+                                let chosen_name = chosen.name.to_string();
+
+                                self.config.ui.output_style = chosen_id.clone();
+                                *ui_prefs = self.config.ui.clone();
+
+                                let _ = self.config.save(Some(&self.workspace_root));
+                                let _ = self.config.save(None);
+
+                                self.toasts.push(
+                                    crate::ui::ToastKind::Success,
+                                    "Output Style Updated",
+                                    format!("Switched to \"{chosen_name}\"."),
+                                    Some(chosen_id),
+                                    Some("output_style_preview".to_string()),
                                 );
                             }
                         }

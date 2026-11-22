@@ -104,6 +104,8 @@ pub enum ThemeModalTab {
     ActivityHintStyles,
     ToolCardStyles,
     ToolIconStyles,
+    OutputFrameStyles,
+    OutputStyles,
     Visibility,
 }
 
@@ -126,6 +128,8 @@ impl ThemeModalTab {
             ThemeModalTab::ActivityHintStyles,
             ThemeModalTab::ToolCardStyles,
             ThemeModalTab::ToolIconStyles,
+            ThemeModalTab::OutputFrameStyles,
+            ThemeModalTab::OutputStyles,
             ThemeModalTab::Visibility,
         ]
     }
@@ -148,7 +152,9 @@ impl ThemeModalTab {
             ThemeModalTab::ActivityHintStyles => "13. Timer & Hint",
             ThemeModalTab::ToolCardStyles => "14. Tool Cards",
             ThemeModalTab::ToolIconStyles => "15. Tool Icons",
-            ThemeModalTab::Visibility => "16. Show / Hide",
+            ThemeModalTab::OutputFrameStyles => "16. Output Frame",
+            ThemeModalTab::OutputStyles => "17. Output Style",
+            ThemeModalTab::Visibility => "18. Show / Hide",
         }
     }
 
@@ -214,6 +220,14 @@ impl ThemeModalTab {
             ThemeModalTab::ToolIconStyles => (
                 "Agent Tool Call & Thought Icon Packs",
                 "Choose icon set for inline tool calls & thoughts (Minimal, Unicode ⎇ ❯ ◎, ASCII, Emoji, Kaomoji, Nerd Font)",
+            ),
+            ThemeModalTab::OutputFrameStyles => (
+                "Assistant Output Frame & Top Divider Styles",
+                "Frame or separate minicode responses (open rounded ╭─ minicode ─╮, full/short/medium rules, Oh My Posh, Nerd Font, ASCII)",
+            ),
+            ThemeModalTab::OutputStyles => (
+                "Assistant Output & Markdown Presentation Styles",
+                "Style headings, callouts (> [!TIP]), checklists, code blocks & tables (Default, Linear/Vercel, Report-Skill, Notion, Posh, Nerd, Emoji, ASCII)",
             ),
             ThemeModalTab::Visibility => (
                 "Show / Hide TUI Elements & Inline Thought Tokens",
@@ -283,6 +297,8 @@ pub enum ModalState {
         activity_hint_style_selected_index: usize,
         tool_card_style_selected_index: usize,
         tool_icon_style_selected_index: usize,
+        output_frame_style_selected_index: usize,
+        output_style_selected_index: usize,
         visibility_selected_index: usize,
         active_theme_id: String,
         active_animation_id: String,
@@ -820,6 +836,8 @@ impl ModalState {
             activity_hint_style_selected_index: 0,
             tool_card_style_selected_index: 0,
             tool_icon_style_selected_index: 0,
+            output_frame_style_selected_index: 0,
+            output_style_selected_index: 0,
             visibility_selected_index: 0,
             active_theme_id: active_theme_id.to_string(),
             active_animation_id: active_animation_id.to_string(),
@@ -861,6 +879,8 @@ impl ModalState {
             ref mut activity_hint_style_selected_index,
             ref mut tool_card_style_selected_index,
             ref mut tool_icon_style_selected_index,
+            ref mut output_frame_style_selected_index,
+            ref mut output_style_selected_index,
             ref mut active_menu_style,
             ref mut ui_prefs,
             ..
@@ -903,6 +923,16 @@ impl ModalState {
             *tool_icon_style_selected_index = theme_select::TOOL_ICON_STYLE_OPTIONS
                 .iter()
                 .position(|s| s.id == active_tool_icon)
+                .unwrap_or(0);
+            let active_output_frame = ui.output_frame_style_enum().as_str();
+            *output_frame_style_selected_index = theme_select::OUTPUT_FRAME_STYLE_OPTIONS
+                .iter()
+                .position(|s| s.id == active_output_frame)
+                .unwrap_or(0);
+            let active_output_style = ui.output_style_enum().as_str();
+            *output_style_selected_index = theme_select::OUTPUT_STYLE_OPTIONS
+                .iter()
+                .position(|s| s.id == active_output_style)
                 .unwrap_or(0);
             *ui_prefs = ui.clone();
         }
@@ -1409,6 +1439,8 @@ impl ModalState {
                 activity_hint_style_selected_index,
                 tool_card_style_selected_index,
                 tool_icon_style_selected_index,
+                output_frame_style_selected_index,
+                output_style_selected_index,
                 visibility_selected_index,
                 active_theme_id,
                 active_animation_id,
@@ -1436,6 +1468,8 @@ impl ModalState {
                     activity_hint_styles: theme_select::ACTIVITY_HINT_STYLE_OPTIONS,
                     tool_card_styles: theme_select::TOOL_CARD_STYLE_OPTIONS,
                     tool_icon_styles: theme_select::TOOL_ICON_STYLE_OPTIONS,
+                    output_frame_styles: theme_select::OUTPUT_FRAME_STYLE_OPTIONS,
+                    output_styles: theme_select::OUTPUT_STYLE_OPTIONS,
                     active_tab: *active_tab,
                     theme_selected_index: *theme_selected_index,
                     animation_selected_index: *animation_selected_index,
@@ -1453,6 +1487,8 @@ impl ModalState {
                     activity_hint_style_selected_index: *activity_hint_style_selected_index,
                     tool_card_style_selected_index: *tool_card_style_selected_index,
                     tool_icon_style_selected_index: *tool_icon_style_selected_index,
+                    output_frame_style_selected_index: *output_frame_style_selected_index,
+                    output_style_selected_index: *output_style_selected_index,
                     visibility_selected_index: *visibility_selected_index,
                     active_theme_id,
                     active_animation_id,

@@ -56,6 +56,8 @@ pub type ModeBarStyleOption = StylePreviewOption;
 pub type ActivityHintStyleOption = StylePreviewOption;
 pub type ToolCardStyleOption = StylePreviewOption;
 pub type ToolIconStyleOption = StylePreviewOption;
+pub type OutputFrameStyleOption = StylePreviewOption;
+pub type OutputStyleOption = StylePreviewOption;
 
 #[derive(Debug, Clone, Copy)]
 pub struct VisibilityToggleOption {
@@ -739,6 +741,201 @@ pub static TOOL_ICON_STYLE_OPTIONS: &[ToolIconStyleOption] = &[
         id: "none",
         name: "7. No Icons (Pure Typography)",
         description: "Zero leading bullets or symbols — clean pure text headers",
+        preview: &[],
+    },
+];
+
+pub static OUTPUT_FRAME_STYLE_OPTIONS: &[OutputFrameStyleOption] = &[
+    OutputFrameStyleOption {
+        id: "none",
+        name: "None (Clean Stream / Default)",
+        description: "No top divider or frame — seamless borderless prose stream",
+        preview: &[],
+    },
+    OutputFrameStyleOption {
+        id: "open_rounded",
+        name: "Open Rounded Frame (╭─ ✦ minicode ─╮ / ╰──╯)",
+        description: "Open-sided rounded top & bottom brackets with clean indented body (spotless copy-paste)",
+        preview: &[],
+    },
+    OutputFrameStyleOption {
+        id: "open_rounded_minimal",
+        name: "Open Rounded Minimal (╭────╮ / ╰────╯)",
+        description: "Label-free open-sided rounded top & bottom brackets around indented output",
+        preview: &[],
+    },
+    OutputFrameStyleOption {
+        id: "open_rounded_nerd",
+        name: "Open Rounded + Nerd Font Icon",
+        description: "Open-sided rounded frame with auto-detecting Nerd Font badge (zero-box fallback)",
+        preview: &[],
+    },
+    OutputFrameStyleOption {
+        id: "open_rounded_emoji",
+        name: "Open Rounded + Emoji (╭─ ✨ minicode ─╮)",
+        description: "Open-sided rounded top & bottom brackets with expressive sparkle badge",
+        preview: &[],
+    },
+    OutputFrameStyleOption {
+        id: "open_square",
+        name: "Open Square Architectural (┌─ minicode ─┐)",
+        description: "Crisp 90-degree open-sided top & bottom architectural brackets",
+        preview: &[],
+    },
+    OutputFrameStyleOption {
+        id: "open_double",
+        name: "Open Double Bracket (╔═ minicode ═╗)",
+        description: "Bold double-ruled open-sided top & bottom response frame",
+        preview: &[],
+    },
+    OutputFrameStyleOption {
+        id: "open_top_only",
+        name: "Open Top Cap Only (╭─ ✦ minicode ─╮)",
+        description: "Rounded open top header bracket with open bottom — airy stream separation",
+        preview: &[],
+    },
+    OutputFrameStyleOption {
+        id: "full_card",
+        name: "Full Rounded Card (╭──╮ / │ … │ / ╰──╯)",
+        description: "Complete 4-sided enclosed rounded card container around each response",
+        preview: &[],
+    },
+    OutputFrameStyleOption {
+        id: "left_rail",
+        name: "Left Accent Spine (┃ ✦ minicode)",
+        description: "Linear/Notion-style continuous left vertical rail with zero horizontal clutter",
+        preview: &[],
+    },
+    OutputFrameStyleOption {
+        id: "full_rule",
+        name: "Full Hairline Rule (──────────────)",
+        description: "Clean full-width single horizontal hairline separating each response",
+        preview: &[],
+    },
+    OutputFrameStyleOption {
+        id: "medium_rule",
+        name: "Medium Balanced Rule (──────────)",
+        description: "Half-width centered-proportion horizontal hairline above each response",
+        preview: &[],
+    },
+    OutputFrameStyleOption {
+        id: "short_rule",
+        name: "Minimal Short Rule (──────)",
+        description: "Quiet 14-column minimalist divider hairline above each response",
+        preview: &[],
+    },
+    OutputFrameStyleOption {
+        id: "labeled_rule",
+        name: "Labeled Hairline (── minicode ─────)",
+        description: "Minimalist inline 'minicode' label embedded in a full-width top hairline",
+        preview: &[],
+    },
+    OutputFrameStyleOption {
+        id: "gradient_rule",
+        name: "Gradient Fade Rule (━━━━───┈┈┈)",
+        description: "Smooth theme-accent to border color gradient hairline above each response",
+        preview: &[],
+    },
+    OutputFrameStyleOption {
+        id: "posh_pill",
+        name: "Oh My Posh: Capsule Pill (✦ minicode ──)",
+        description: "Rounded Oh My Posh capsule header badge with trailing hairline rule",
+        preview: &[],
+    },
+    OutputFrameStyleOption {
+        id: "posh_powerline",
+        name: "Oh My Posh: Powerline Ribbon ( minicode  ─)",
+        description: "Angled Powerline header ribbon with trailing hairline rule",
+        preview: &[],
+    },
+    OutputFrameStyleOption {
+        id: "dashed_rule",
+        name: "Dashed Hairline Rule (╌╌╌╌╌╌╌╌╌╌)",
+        description: "Subtle full-width dashed horizontal separator above each response",
+        preview: &[],
+    },
+    OutputFrameStyleOption {
+        id: "dotted_rule",
+        name: "Editorial Dotted Rule (┈┈┈┈┈┈┈┈┈┈)",
+        description: "Ultra-light Report-Skill dotted hairline above each response",
+        preview: &[],
+    },
+    OutputFrameStyleOption {
+        id: "ascii_frame",
+        name: "ASCII Open Frame (+-- minicode ---+)",
+        description: "Pure 7-bit ASCII open-sided top & bottom response frame for max portability",
+        preview: &[],
+    },
+];
+
+pub static OUTPUT_STYLE_OPTIONS: &[OutputStyleOption] = &[
+    OutputStyleOption {
+        id: "default",
+        name: "Default (Aura Current + Callouts)",
+        description:
+            "Current minicode Markdown styling upgraded with > [!TIP] callouts & checklists",
+        preview: &[],
+    },
+    OutputStyleOption {
+        id: "minimal",
+        name: "Minimal (Linear / Vercel Editorial)",
+        description:
+            "Borderless left-rail code blocks, booktabs hairline tables, auto right-aligned metrics",
+        preview: &[],
+    },
+    OutputStyleOption {
+        id: "editorial",
+        name: "Editorial Report (Report-Skill)",
+        description:
+            "Double-underlined H1, hairline H2, thick callout strips, booktabs numeric tables",
+        preview: &[],
+    },
+    OutputStyleOption {
+        id: "workspace",
+        name: "Workspace Doc (Notion / README)",
+        description:
+            "Rounded code cards, rounded tables, roadmap checklists & structured H1–H3 ladder",
+        preview: &[],
+    },
+    OutputStyleOption {
+        id: "posh",
+        name: "Oh My Posh (Pills & Powerline)",
+        description:
+            "Capsule H1 pills, powerline H2 banners, capsule code tags & tinted callout pills",
+        preview: &[],
+    },
+    OutputStyleOption {
+        id: "nerdfont",
+        name: "Nerd Font Icons (Auto Zero-Box)",
+        description:
+            "Nerd Font Codicons on headings, code blocks, callouts & checklists (zero-box fallback)",
+        preview: &[],
+    },
+    OutputStyleOption {
+        id: "symbols",
+        name: "Unicode Technical Symbols (◈ ▸ ⌘ ✦)",
+        description:
+            "Universal 1-cell Unicode glyphs across headings, code headers, callouts & bullets",
+        preview: &[],
+    },
+    OutputStyleOption {
+        id: "emoji",
+        name: "Emoji Expressive (📌 💻 💡 ⚠️ ✅)",
+        description:
+            "Full-color emojis on headings, code headers, callouts & completion checklists",
+        preview: &[],
+    },
+    OutputStyleOption {
+        id: "kaomoji",
+        name: "Kaomoji Playful ((✦‿✦) (✧ω✧))",
+        description:
+            "Friendly kaomoji expressions on headings & callouts with clean code and tables",
+        preview: &[],
+    },
+    OutputStyleOption {
+        id: "ascii",
+        name: "ASCII Classic (=== / +---+ / [x])",
+        description: "Strict 7-bit ASCII headings, tables, code fences, callouts & checklists",
         preview: &[],
     },
 ];
@@ -1458,6 +1655,8 @@ pub struct ThemeSelectContext<'a> {
     pub activity_hint_styles: &'a [ActivityHintStyleOption],
     pub tool_card_styles: &'a [ToolCardStyleOption],
     pub tool_icon_styles: &'a [ToolIconStyleOption],
+    pub output_frame_styles: &'a [OutputFrameStyleOption],
+    pub output_styles: &'a [OutputStyleOption],
     pub active_tab: crate::ui::modals::ThemeModalTab,
     pub theme_selected_index: usize,
     pub animation_selected_index: usize,
@@ -1475,6 +1674,8 @@ pub struct ThemeSelectContext<'a> {
     pub activity_hint_style_selected_index: usize,
     pub tool_card_style_selected_index: usize,
     pub tool_icon_style_selected_index: usize,
+    pub output_frame_style_selected_index: usize,
+    pub output_style_selected_index: usize,
     pub visibility_selected_index: usize,
     pub active_theme_id: &'a str,
     pub active_animation_id: &'a str,
@@ -1513,6 +1714,8 @@ pub fn render_theme_select(
         activity_hint_styles,
         tool_card_styles,
         tool_icon_styles,
+        output_frame_styles,
+        output_styles,
         active_tab,
         theme_selected_index,
         animation_selected_index,
@@ -1530,6 +1733,8 @@ pub fn render_theme_select(
         activity_hint_style_selected_index,
         tool_card_style_selected_index,
         tool_icon_style_selected_index,
+        output_frame_style_selected_index,
+        output_style_selected_index,
         visibility_selected_index,
         active_theme_id,
         active_animation_id,
@@ -1662,6 +1867,8 @@ pub fn render_theme_select(
             ("  modes ", ui_prefs.mode_bar_style.as_str()),
             ("  tools ", ui_prefs.tool_card_style.as_str()),
             ("  icons ", ui_prefs.tool_icon_style.as_str()),
+            ("  frame ", ui_prefs.output_frame_style.as_str()),
+            ("  out   ", ui_prefs.output_style.as_str()),
             ("  hint  ", ui_prefs.activity_hint_style.as_str()),
             ("  todo  ", active_todo_style),
             ("  toast ", active_toast_style),
@@ -1739,6 +1946,12 @@ pub fn render_theme_select(
         }
         crate::ui::modals::ThemeModalTab::ToolIconStyles => {
             (tool_icon_styles.len(), tool_icon_style_selected_index)
+        }
+        crate::ui::modals::ThemeModalTab::OutputFrameStyles => {
+            (output_frame_styles.len(), output_frame_style_selected_index)
+        }
+        crate::ui::modals::ThemeModalTab::OutputStyles => {
+            (output_styles.len(), output_style_selected_index)
         }
         crate::ui::modals::ThemeModalTab::Visibility => {
             (VISIBILITY_TOGGLE_OPTIONS.len(), visibility_selected_index)
@@ -2354,7 +2567,7 @@ pub fn render_theme_select(
                 let mut out = Vec::new();
                 if line1.is_empty() && line2.is_empty() {
                     out.push(Line::from(Span::styled(
-                        "(all status bar segments hidden — enable in 16. Show / Hide)",
+                        "(all status bar segments hidden — enable in 18. Show / Hide)",
                         Style::default().fg(theme.muted),
                     )));
                 } else {
@@ -2419,7 +2632,7 @@ pub fn render_theme_select(
                     );
                     if meter.is_empty() {
                         spans.push(Span::styled(
-                            "(hidden — enable in 16. Show / Hide)",
+                            "(hidden — enable in 18. Show / Hide)",
                             Style::default().fg(theme.muted),
                         ));
                     } else {
@@ -2601,6 +2814,55 @@ pub fn render_theme_select(
                 right_w,
                 theme,
                 Some(&live_icon_preview),
+            );
+        }
+        crate::ui::modals::ThemeModalTab::OutputFrameStyles => {
+            let preview_w = right_w.saturating_sub(6).max(40);
+            let active_out = ui_prefs.output_style_enum();
+            let live_frame_preview = |style_id: &str| -> Vec<Line<'static>> {
+                let fs = crate::config::OutputFrameStyle::from_str_loose(style_id);
+                crate::ui::view::output_frames::render_output_frame_preview(
+                    fs, active_out, preview_w, theme,
+                )
+            };
+            render_style_preview_list(
+                &mut content_lines,
+                &mut preview_title,
+                &mut preview_lines,
+                output_frame_styles,
+                output_frame_style_selected_index,
+                ui_prefs.output_frame_style_enum().as_str(),
+                38,
+                list_max_visible,
+                right_w,
+                theme,
+                Some(&live_frame_preview),
+            );
+        }
+        crate::ui::modals::ThemeModalTab::OutputStyles => {
+            let preview_w = right_w.saturating_sub(6).max(40);
+            let active_frame = ui_prefs.output_frame_style_enum();
+            let live_output_preview = |style_id: &str| -> Vec<Line<'static>> {
+                let os = crate::config::OutputStyle::from_str_loose(style_id);
+                crate::ui::view::output_frames::render_output_style_preview(
+                    os,
+                    active_frame,
+                    preview_w,
+                    theme,
+                )
+            };
+            render_style_preview_list(
+                &mut content_lines,
+                &mut preview_title,
+                &mut preview_lines,
+                output_styles,
+                output_style_selected_index,
+                ui_prefs.output_style_enum().as_str(),
+                36,
+                list_max_visible,
+                right_w,
+                theme,
+                Some(&live_output_preview),
             );
         }
         crate::ui::modals::ThemeModalTab::Visibility => {
@@ -2804,12 +3066,12 @@ pub fn render_theme_select(
             let (badge, msg) = if crate::ui::icons::use_raw_nerd_font_pua() {
                 (
                     "    Nerd Font: ",
-                    "Native Codicon PUA glyphs active (toggle in 16. Show / Hide).",
+                    "Native Codicon PUA glyphs active (toggle in 18. Show / Hide).",
                 )
             } else {
                 (
                     "    Auto-Fallback: ",
-                    "No Nerd Font in terminal — using zero-box Unicode icons (set FiraMono Nerd Font or toggle 'Force Nerd Font PUA' in 16. Show / Hide).",
+                    "No Nerd Font in terminal — using zero-box Unicode icons (set FiraMono Nerd Font or toggle 'Force Nerd Font PUA' in 18. Show / Hide).",
                 )
             };
             content_lines.push(Line::from(vec![
@@ -3042,6 +3304,8 @@ mod tests {
                 activity_hint_styles: ACTIVITY_HINT_STYLE_OPTIONS,
                 tool_card_styles: TOOL_CARD_STYLE_OPTIONS,
                 tool_icon_styles: TOOL_ICON_STYLE_OPTIONS,
+                output_frame_styles: OUTPUT_FRAME_STYLE_OPTIONS,
+                output_styles: OUTPUT_STYLE_OPTIONS,
                 active_tab: tab,
                 theme_selected_index: 0,
                 animation_selected_index: 0,
@@ -3059,6 +3323,8 @@ mod tests {
                 activity_hint_style_selected_index: 0,
                 tool_card_style_selected_index: 0,
                 tool_icon_style_selected_index: 0,
+                output_frame_style_selected_index: 0,
+                output_style_selected_index: 0,
                 visibility_selected_index: 0,
                 active_theme_id: "auto",
                 active_animation_id: "dual_pillars",
@@ -3092,7 +3358,9 @@ mod tests {
             assert!(rendered.contains("8. Menu Styles"));
             assert!(rendered.contains("14. Tool Cards"));
             assert!(rendered.contains("15. Tool Icons"));
-            assert!(rendered.contains("16. Show / Hide"));
+            assert!(rendered.contains("16. Output Frame"));
+            assert!(rendered.contains("17. Output Style"));
+            assert!(rendered.contains("18. Show / Hide"));
             assert!(rendered.contains("Live Preview:"));
         }
     }

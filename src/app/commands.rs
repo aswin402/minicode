@@ -634,6 +634,87 @@ impl<'a> App<'a> {
             return Ok(CommandAction::Continue);
         }
 
+        if prompt_lower == "/output-frame"
+            || prompt_lower.starts_with("/output-frame ")
+            || prompt_lower == "/output-divider"
+            || prompt_lower.starts_with("/output-divider ")
+        {
+            let arg = prompt_trimmed
+                .strip_prefix("/output-frame")
+                .or_else(|| prompt_trimmed.strip_prefix("/output-divider"))
+                .unwrap_or("")
+                .trim();
+            if arg.is_empty() {
+                self.open_theme_modal(Some(crate::ui::modals::ThemeModalTab::OutputFrameStyles));
+            } else {
+                let lower = arg.to_ascii_lowercase().replace('-', "_");
+                if let Some(opt) = crate::ui::modals::theme_select::OUTPUT_FRAME_STYLE_OPTIONS
+                    .iter()
+                    .find(|o| o.id == lower || o.name.to_ascii_lowercase().contains(&lower))
+                {
+                    self.config.ui.output_frame_style = opt.id.to_string();
+                    let _ = self.config.save(Some(&self.workspace_root));
+                    let _ = self.config.save(None);
+                    self.toasts.push(
+                        crate::ui::ToastKind::Success,
+                        "Output Frame Style Updated",
+                        format!("Switched to \"{}\".", opt.name),
+                        Some(opt.id.to_string()),
+                        Some("output_frame_style_preview".to_string()),
+                    );
+                } else {
+                    let valid_ids = crate::ui::modals::theme_select::OUTPUT_FRAME_STYLE_OPTIONS
+                        .iter()
+                        .map(|o| o.id)
+                        .collect::<Vec<_>>()
+                        .join(", ");
+                    self.add_timeline_status(format!(
+                        "! Unknown output frame style '{}'. Available: {}",
+                        arg, valid_ids
+                    ));
+                }
+            }
+            return Ok(CommandAction::Continue);
+        }
+
+        if prompt_lower == "/output-style" || prompt_lower.starts_with("/output-style ") {
+            let arg = prompt_trimmed
+                .strip_prefix("/output-style")
+                .unwrap_or("")
+                .trim();
+            if arg.is_empty() {
+                self.open_theme_modal(Some(crate::ui::modals::ThemeModalTab::OutputStyles));
+            } else {
+                let lower = arg.to_ascii_lowercase().replace('-', "_");
+                if let Some(opt) = crate::ui::modals::theme_select::OUTPUT_STYLE_OPTIONS
+                    .iter()
+                    .find(|o| o.id == lower || o.name.to_ascii_lowercase().contains(&lower))
+                {
+                    self.config.ui.output_style = opt.id.to_string();
+                    let _ = self.config.save(Some(&self.workspace_root));
+                    let _ = self.config.save(None);
+                    self.toasts.push(
+                        crate::ui::ToastKind::Success,
+                        "Output Style Updated",
+                        format!("Switched to \"{}\".", opt.name),
+                        Some(opt.id.to_string()),
+                        Some("output_style_preview".to_string()),
+                    );
+                } else {
+                    let valid_ids = crate::ui::modals::theme_select::OUTPUT_STYLE_OPTIONS
+                        .iter()
+                        .map(|o| o.id)
+                        .collect::<Vec<_>>()
+                        .join(", ");
+                    self.add_timeline_status(format!(
+                        "! Unknown output style '{}'. Available: {}",
+                        arg, valid_ids
+                    ));
+                }
+            }
+            return Ok(CommandAction::Continue);
+        }
+
         if prompt_lower == "/tool-icons" || prompt_lower.starts_with("/tool-icons ") {
             let arg = prompt_trimmed
                 .strip_prefix("/tool-icons")
