@@ -58,6 +58,8 @@ pub type ToolCardStyleOption = StylePreviewOption;
 pub type ToolIconStyleOption = StylePreviewOption;
 pub type OutputFrameStyleOption = StylePreviewOption;
 pub type OutputStyleOption = StylePreviewOption;
+pub type OutputBadgeStyleOption = StylePreviewOption;
+pub type TurnSummaryStyleOption = StylePreviewOption;
 
 #[derive(Debug, Clone, Copy)]
 pub struct VisibilityToggleOption {
@@ -940,6 +942,191 @@ pub static OUTPUT_STYLE_OPTIONS: &[OutputStyleOption] = &[
     },
 ];
 
+pub static OUTPUT_BADGE_STYLE_OPTIONS: &[OutputBadgeStyleOption] = &[
+    OutputBadgeStyleOption {
+        id: "sparkle",
+        name: "Sparkle (`✦` Default)",
+        description: "Crisp 1-cell Unicode sparkle `✦` before `minicode` (zero-box universal)",
+        preview: &[],
+    },
+    OutputBadgeStyleOption {
+        id: "diamond",
+        name: "Unicode Diamond (`◈`)",
+        description: "Clean architectural 1-cell diamond `◈` before `minicode`",
+        preview: &[],
+    },
+    OutputBadgeStyleOption {
+        id: "bot_symbol",
+        name: "Geometric Bot (`❖`)",
+        description: "Minimal geometric 1-cell assistant marker `❖` before `minicode`",
+        preview: &[],
+    },
+    OutputBadgeStyleOption {
+        id: "bolt",
+        name: "Technical Bolt (`⚡`)",
+        description: "High-energy lightning badge `⚡` before `minicode`",
+        preview: &[],
+    },
+    OutputBadgeStyleOption {
+        id: "nerdfont",
+        name: "Nerd Font Bot Icon (Auto Zero-Box)",
+        description:
+            "Auto-detecting Nerd Font Codicon robot (zero-box `❖` fallback if no Nerd Font)",
+        preview: &[],
+    },
+    OutputBadgeStyleOption {
+        id: "nerdfont_sparkle",
+        name: "Nerd Font Sparkle (Auto Zero-Box)",
+        description:
+            "Auto-detecting Nerd Font sparkle icon (zero-box `★` fallback if no Nerd Font)",
+        preview: &[],
+    },
+    OutputBadgeStyleOption {
+        id: "emoji_sparkle",
+        name: "Emoji Sparkle (`✨`)",
+        description: "Expressive sparkle emoji `✨` before `minicode`",
+        preview: &[],
+    },
+    OutputBadgeStyleOption {
+        id: "emoji_robot",
+        name: "Emoji Robot (`🤖`)",
+        description: "Expressive robot emoji `🤖` before `minicode`",
+        preview: &[],
+    },
+    OutputBadgeStyleOption {
+        id: "emoji_paw",
+        name: "Emoji Paw (`🐾` Catppuccin Style)",
+        description: "Cute paw-print emoji `🐾` before `minicode`",
+        preview: &[],
+    },
+    OutputBadgeStyleOption {
+        id: "emoji_rocket",
+        name: "Emoji Rocket (`🚀`)",
+        description: "Launch rocket emoji `🚀` before `minicode`",
+        preview: &[],
+    },
+    OutputBadgeStyleOption {
+        id: "ascii",
+        name: "ASCII Chevron (`>`)",
+        description: "Strict 7-bit ASCII prompt chevron `>` before `minicode`",
+        preview: &[],
+    },
+    OutputBadgeStyleOption {
+        id: "ascii_star",
+        name: "ASCII Asterisk (`*`)",
+        description: "Strict 7-bit ASCII star `*` before `minicode`",
+        preview: &[],
+    },
+    OutputBadgeStyleOption {
+        id: "kaomoji",
+        name: "Kaomoji Smile (`(•‿•)`)",
+        description: "Friendly calm static kaomoji `(•‿•)` before `minicode`",
+        preview: &[],
+    },
+    OutputBadgeStyleOption {
+        id: "kaomoji_animated",
+        name: "Animated Kaomoji (`(•‿•)` ↔ `(✧‿✧)`)",
+        description:
+            "Live blinking & smiling kaomoji while streaming; rests warmly on `(•‿•)` when idle",
+        preview: &[],
+    },
+    OutputBadgeStyleOption {
+        id: "kaomoji_cat",
+        name: "Animated Cat Kaomoji (`(=^･ω･^=)`)",
+        description:
+            "Playful animated blinking cat kaomoji while streaming; rests gently when idle",
+        preview: &[],
+    },
+    OutputBadgeStyleOption {
+        id: "sparkle_animated",
+        name: "Animated Sparkle Pulse (`✦` `✧` `✶` `✷`)",
+        description: "Subtle 1-cell pulsing Unicode star animation while streaming",
+        preview: &[],
+    },
+    OutputBadgeStyleOption {
+        id: "none",
+        name: "None (Pure `minicode` Text)",
+        description: "Zero leading badge icon — pure clean `minicode` typography",
+        preview: &[],
+    },
+];
+
+pub static TURN_SUMMARY_STYLE_OPTIONS: &[TurnSummaryStyleOption] = &[
+    TurnSummaryStyleOption {
+        id: "minimal",
+        name: "Minimal Quiet (`12.4k tokens · 18.4s` Default)",
+        description: "Subtle muted token count and total turn time with clean breathing room",
+        preview: &[],
+    },
+    TurnSummaryStyleOption {
+        id: "compact",
+        name: "Compact Ultra-Tight (`12.4k · 18.4s`)",
+        description: "Ultra-dense numeric readout for minimal visual footprint",
+        preview: &[],
+    },
+    TurnSummaryStyleOption {
+        id: "detailed",
+        name: "Detailed Accent (`tokens 12.4k · time 18.4s`)",
+        description: "Explicit labeled metrics with bold semantic theme accents",
+        preview: &[],
+    },
+    TurnSummaryStyleOption {
+        id: "symbols",
+        name: "Unicode Symbols (`◈ 12.4k tok · ◷ 18.4s`)",
+        description: "Universal 1-cell technical icons for tokens, elapsed time, tools & KV",
+        preview: &[],
+    },
+    TurnSummaryStyleOption {
+        id: "nerdfont",
+        name: "Nerd Font Icons (Auto Zero-Box)",
+        description:
+            "Auto-detecting Nerd Font Codicons for tokens, clock & tools (zero-box fallback)",
+        preview: &[],
+    },
+    TurnSummaryStyleOption {
+        id: "posh_pill",
+        name: "Oh My Posh: Capsule Pills (`◈ 12.4k tok`)",
+        description: "Rounded Oh My Posh tinted capsule pills for each turn metric",
+        preview: &[],
+    },
+    TurnSummaryStyleOption {
+        id: "posh_powerline",
+        name: "Oh My Posh: Powerline Ribbon (` 12.4k tok `)",
+        description: "Angled Powerline telemetry segments at the end of each task turn",
+        preview: &[],
+    },
+    TurnSummaryStyleOption {
+        id: "brackets",
+        name: "CLI Brackets (`[12.4k tok | 18.4s]`)",
+        description: "Developer terminal bracket readout with color-coded metrics",
+        preview: &[],
+    },
+    TurnSummaryStyleOption {
+        id: "emoji",
+        name: "Emoji Expressive (`🪙 12.4k tok · ⏱ 18.4s`)",
+        description: "Full-color emojis for tokens, time, tools, KV cache & cost",
+        preview: &[],
+    },
+    TurnSummaryStyleOption {
+        id: "kaomoji",
+        name: "Kaomoji Friendly (`(•‿•) 12.4k tok · 18.4s`)",
+        description: "Friendly kaomoji sign-off beside total turn tokens and elapsed time",
+        preview: &[],
+    },
+    TurnSummaryStyleOption {
+        id: "dotted",
+        name: "Editorial Dotted (`· 12.4k tokens · 18.4s ·`)",
+        description: "Quiet publication-style dotted end-of-turn telemetry line",
+        preview: &[],
+    },
+    TurnSummaryStyleOption {
+        id: "ascii",
+        name: "ASCII Classic (`12.4k tok | 18.4s`)",
+        description: "Pure 7-bit ASCII pipe-separated metrics for maximum portability",
+        preview: &[],
+    },
+];
+
 pub static VISIBILITY_TOGGLE_OPTIONS: &[VisibilityToggleOption] = &[
     VisibilityToggleOption {
         id: "thought_tokens",
@@ -1025,6 +1212,48 @@ pub static VISIBILITY_TOGGLE_OPTIONS: &[VisibilityToggleOption] = &[
         name: "Force Nerd Font PUA Glyphs",
         description: "Force raw Nerd Font Codicons (OFF = auto-detect & zero-box Unicode fallback)",
     },
+    VisibilityToggleOption {
+        id: "turn_summary",
+        group: "TurnEnd",
+        name: "Turn Summary Footer",
+        description: "Show end-of-turn summary footer (tokens & time) below completed tasks",
+    },
+    VisibilityToggleOption {
+        id: "turn_tokens",
+        group: "TurnEnd",
+        name: "Turn Total Tokens",
+        description: "Show total tokens consumed by the completed task turn ('12.4k tokens')",
+    },
+    VisibilityToggleOption {
+        id: "turn_duration",
+        group: "TurnEnd",
+        name: "Turn Total Time",
+        description: "Show total wall-clock elapsed time taken by the completed task ('18.4s')",
+    },
+    VisibilityToggleOption {
+        id: "turn_tools",
+        group: "TurnEnd",
+        name: "Turn Tool Calls Count",
+        description: "Show how many tool calls ran during the task turn ('4 tools')",
+    },
+    VisibilityToggleOption {
+        id: "turn_cost",
+        group: "TurnEnd",
+        name: "Turn Cost ($ USD)",
+        description: "Show estimated USD spend for that single task turn ('$0.014')",
+    },
+    VisibilityToggleOption {
+        id: "turn_model",
+        group: "TurnEnd",
+        name: "Turn Model Name",
+        description: "Show the model name inside the end-of-turn summary footer",
+    },
+    VisibilityToggleOption {
+        id: "turn_kv_cache",
+        group: "TurnEnd",
+        name: "Turn KV Cache %",
+        description: "Show turn-level prompt KV cache hit rate ('kv 92%') in the summary footer",
+    },
 ];
 
 pub fn visibility_toggle_is_enabled(id: &str, ui: &crate::config::UiConfig) -> bool {
@@ -1043,6 +1272,13 @@ pub fn visibility_toggle_is_enabled(id: &str, ui: &crate::config::UiConfig) -> b
         "status_badges" => ui.show_status_badges,
         "interrupt_hint" => ui.show_interrupt_hint,
         "nerd_font_pua" => ui.nerd_font_pua,
+        "turn_summary" => ui.show_turn_summary,
+        "turn_tokens" => ui.show_turn_tokens,
+        "turn_duration" => ui.show_turn_duration,
+        "turn_tools" => ui.show_turn_tools,
+        "turn_cost" => ui.show_turn_cost,
+        "turn_model" => ui.show_turn_model,
+        "turn_kv_cache" => ui.show_turn_kv_cache,
         _ => true,
     }
 }
@@ -1066,6 +1302,13 @@ pub fn toggle_visibility_option(
         "status_badges" => (&mut ui.show_status_badges, "MCP / Swarm / Tasks Badges"),
         "interrupt_hint" => (&mut ui.show_interrupt_hint, "Timer & Interrupt Hint"),
         "nerd_font_pua" => (&mut ui.nerd_font_pua, "Force Nerd Font PUA Glyphs"),
+        "turn_summary" => (&mut ui.show_turn_summary, "Turn Summary Footer"),
+        "turn_tokens" => (&mut ui.show_turn_tokens, "Turn Total Tokens"),
+        "turn_duration" => (&mut ui.show_turn_duration, "Turn Total Time"),
+        "turn_tools" => (&mut ui.show_turn_tools, "Turn Tool Calls Count"),
+        "turn_cost" => (&mut ui.show_turn_cost, "Turn Cost ($ USD)"),
+        "turn_model" => (&mut ui.show_turn_model, "Turn Model Name"),
+        "turn_kv_cache" => (&mut ui.show_turn_kv_cache, "Turn KV Cache %"),
         _ => return None,
     };
     *field.0 = !*field.0;
@@ -1657,6 +1900,8 @@ pub struct ThemeSelectContext<'a> {
     pub tool_icon_styles: &'a [ToolIconStyleOption],
     pub output_frame_styles: &'a [OutputFrameStyleOption],
     pub output_styles: &'a [OutputStyleOption],
+    pub output_badge_styles: &'a [OutputBadgeStyleOption],
+    pub turn_summary_styles: &'a [TurnSummaryStyleOption],
     pub active_tab: crate::ui::modals::ThemeModalTab,
     pub theme_selected_index: usize,
     pub animation_selected_index: usize,
@@ -1676,6 +1921,8 @@ pub struct ThemeSelectContext<'a> {
     pub tool_icon_style_selected_index: usize,
     pub output_frame_style_selected_index: usize,
     pub output_style_selected_index: usize,
+    pub output_badge_style_selected_index: usize,
+    pub turn_summary_style_selected_index: usize,
     pub visibility_selected_index: usize,
     pub active_theme_id: &'a str,
     pub active_animation_id: &'a str,
@@ -1716,6 +1963,8 @@ pub fn render_theme_select(
         tool_icon_styles,
         output_frame_styles,
         output_styles,
+        output_badge_styles,
+        turn_summary_styles,
         active_tab,
         theme_selected_index,
         animation_selected_index,
@@ -1735,6 +1984,8 @@ pub fn render_theme_select(
         tool_icon_style_selected_index,
         output_frame_style_selected_index,
         output_style_selected_index,
+        output_badge_style_selected_index,
+        turn_summary_style_selected_index,
         visibility_selected_index,
         active_theme_id,
         active_animation_id,
@@ -1869,6 +2120,8 @@ pub fn render_theme_select(
             ("  icons ", ui_prefs.tool_icon_style.as_str()),
             ("  frame ", ui_prefs.output_frame_style.as_str()),
             ("  out   ", ui_prefs.output_style.as_str()),
+            ("  badge ", ui_prefs.output_badge_style.as_str()),
+            ("  turn  ", ui_prefs.turn_summary_style.as_str()),
             ("  hint  ", ui_prefs.activity_hint_style.as_str()),
             ("  todo  ", active_todo_style),
             ("  toast ", active_toast_style),
@@ -1952,6 +2205,12 @@ pub fn render_theme_select(
         }
         crate::ui::modals::ThemeModalTab::OutputStyles => {
             (output_styles.len(), output_style_selected_index)
+        }
+        crate::ui::modals::ThemeModalTab::OutputBadgeStyles => {
+            (output_badge_styles.len(), output_badge_style_selected_index)
+        }
+        crate::ui::modals::ThemeModalTab::TurnSummaryStyles => {
+            (turn_summary_styles.len(), turn_summary_style_selected_index)
         }
         crate::ui::modals::ThemeModalTab::Visibility => {
             (VISIBILITY_TOGGLE_OPTIONS.len(), visibility_selected_index)
@@ -2567,7 +2826,7 @@ pub fn render_theme_select(
                 let mut out = Vec::new();
                 if line1.is_empty() && line2.is_empty() {
                     out.push(Line::from(Span::styled(
-                        "(all status bar segments hidden — enable in 18. Show / Hide)",
+                        "(all status bar segments hidden — enable in 20. Show / Hide)",
                         Style::default().fg(theme.muted),
                     )));
                 } else {
@@ -2632,7 +2891,7 @@ pub fn render_theme_select(
                     );
                     if meter.is_empty() {
                         spans.push(Span::styled(
-                            "(hidden — enable in 18. Show / Hide)",
+                            "(hidden — enable in 20. Show / Hide)",
                             Style::default().fg(theme.muted),
                         ));
                     } else {
@@ -2819,10 +3078,17 @@ pub fn render_theme_select(
         crate::ui::modals::ThemeModalTab::OutputFrameStyles => {
             let preview_w = right_w.saturating_sub(6).max(40);
             let active_out = ui_prefs.output_style_enum();
+            let active_badge = ui_prefs.output_badge_style_enum();
+            let anim_frame = (preview_clock_millis() / 320) as usize;
             let live_frame_preview = |style_id: &str| -> Vec<Line<'static>> {
                 let fs = crate::config::OutputFrameStyle::from_str_loose(style_id);
                 crate::ui::view::output_frames::render_output_frame_preview(
-                    fs, active_out, preview_w, theme,
+                    fs,
+                    active_out,
+                    active_badge,
+                    anim_frame,
+                    preview_w,
+                    theme,
                 )
             };
             render_style_preview_list(
@@ -2842,11 +3108,14 @@ pub fn render_theme_select(
         crate::ui::modals::ThemeModalTab::OutputStyles => {
             let preview_w = right_w.saturating_sub(6).max(40);
             let active_frame = ui_prefs.output_frame_style_enum();
+            let active_badge = ui_prefs.output_badge_style_enum();
             let live_output_preview = |style_id: &str| -> Vec<Line<'static>> {
                 let os = crate::config::OutputStyle::from_str_loose(style_id);
                 crate::ui::view::output_frames::render_output_style_preview(
                     os,
                     active_frame,
+                    active_badge,
+                    0,
                     preview_w,
                     theme,
                 )
@@ -2863,6 +3132,90 @@ pub fn render_theme_select(
                 right_w,
                 theme,
                 Some(&live_output_preview),
+            );
+        }
+        crate::ui::modals::ThemeModalTab::OutputBadgeStyles => {
+            let preview_w = right_w.saturating_sub(6).max(40);
+            let active_frame = ui_prefs.output_frame_style_enum();
+            let anim_frame = (preview_clock_millis() / 320) as usize;
+            let live_badge_preview = |style_id: &str| -> Vec<Line<'static>> {
+                let bs = crate::config::OutputBadgeStyle::from_str_loose(style_id);
+                crate::ui::view::output_frames::render_output_badge_preview(
+                    bs,
+                    active_frame,
+                    anim_frame,
+                    preview_w,
+                    theme,
+                )
+            };
+            render_style_preview_list(
+                &mut content_lines,
+                &mut preview_title,
+                &mut preview_lines,
+                output_badge_styles,
+                output_badge_style_selected_index,
+                ui_prefs.output_badge_style_enum().as_str(),
+                36,
+                list_max_visible,
+                right_w,
+                theme,
+                Some(&live_badge_preview),
+            );
+        }
+        crate::ui::modals::ThemeModalTab::TurnSummaryStyles => {
+            let active_pos = ui_prefs.turn_summary_position_enum();
+            let mut pos_spans: Vec<Span<'static>> = vec![Span::styled(
+                "  Placement [p]: ",
+                Style::default()
+                    .fg(theme.brand_accent)
+                    .add_modifier(Modifier::BOLD),
+            )];
+            for pos in crate::config::TurnSummaryPosition::all() {
+                let is_cur = *pos == active_pos;
+                let lbl = format!(" {} ", pos.label());
+                if is_cur {
+                    pos_spans.push(Span::styled(
+                        lbl,
+                        Style::default()
+                            .fg(theme.bg_primary)
+                            .bg(theme.brand_accent)
+                            .add_modifier(Modifier::BOLD),
+                    ));
+                } else {
+                    pos_spans.push(Span::styled(lbl, Style::default().fg(theme.muted)));
+                }
+                pos_spans.push(Span::raw(" "));
+            }
+            content_lines.push(Line::from(pos_spans));
+            content_lines.push(Line::from(""));
+
+            let preview_w = right_w.saturating_sub(6).max(40);
+            let active_frame = ui_prefs.output_frame_style_enum();
+            let active_badge = ui_prefs.output_badge_style_enum();
+            let base_summary_cfg = ui_prefs.turn_summary_config();
+            let live_summary_preview = |style_id: &str| -> Vec<Line<'static>> {
+                let mut cfg = base_summary_cfg;
+                cfg.style = crate::config::TurnSummaryStyle::from_str_loose(style_id);
+                crate::ui::view::output_frames::render_turn_summary_preview(
+                    cfg,
+                    active_frame,
+                    active_badge,
+                    preview_w,
+                    theme,
+                )
+            };
+            render_style_preview_list(
+                &mut content_lines,
+                &mut preview_title,
+                &mut preview_lines,
+                turn_summary_styles,
+                turn_summary_style_selected_index,
+                ui_prefs.turn_summary_style_enum().as_str(),
+                38,
+                list_max_visible.saturating_sub(2).max(4),
+                right_w,
+                theme,
+                Some(&live_summary_preview),
             );
         }
         crate::ui::modals::ThemeModalTab::Visibility => {
@@ -3066,12 +3419,12 @@ pub fn render_theme_select(
             let (badge, msg) = if crate::ui::icons::use_raw_nerd_font_pua() {
                 (
                     "    Nerd Font: ",
-                    "Native Codicon PUA glyphs active (toggle in 18. Show / Hide).",
+                    "Native Codicon PUA glyphs active (toggle in 20. Show / Hide).",
                 )
             } else {
                 (
                     "    Auto-Fallback: ",
-                    "No Nerd Font in terminal — using zero-box Unicode icons (set FiraMono Nerd Font or toggle 'Force Nerd Font PUA' in 18. Show / Hide).",
+                    "No Nerd Font in terminal — using zero-box Unicode icons (set FiraMono Nerd Font or toggle 'Force Nerd Font PUA' in 20. Show / Hide).",
                 )
             };
             content_lines.push(Line::from(vec![
@@ -3111,6 +3464,15 @@ pub fn render_theme_select(
         ));
         footer_spans.push(Span::styled(
             "component   ",
+            Style::default().fg(theme.muted),
+        ));
+    } else if active_tab == crate::ui::modals::ThemeModalTab::TurnSummaryStyles {
+        footer_spans.push(Span::styled(
+            "p/[ ] ",
+            Style::default().fg(theme.brand_accent),
+        ));
+        footer_spans.push(Span::styled(
+            "placement   ",
             Style::default().fg(theme.muted),
         ));
     }
@@ -3306,6 +3668,8 @@ mod tests {
                 tool_icon_styles: TOOL_ICON_STYLE_OPTIONS,
                 output_frame_styles: OUTPUT_FRAME_STYLE_OPTIONS,
                 output_styles: OUTPUT_STYLE_OPTIONS,
+                output_badge_styles: OUTPUT_BADGE_STYLE_OPTIONS,
+                turn_summary_styles: TURN_SUMMARY_STYLE_OPTIONS,
                 active_tab: tab,
                 theme_selected_index: 0,
                 animation_selected_index: 0,
@@ -3325,6 +3689,8 @@ mod tests {
                 tool_icon_style_selected_index: 0,
                 output_frame_style_selected_index: 0,
                 output_style_selected_index: 0,
+                output_badge_style_selected_index: 0,
+                turn_summary_style_selected_index: 0,
                 visibility_selected_index: 0,
                 active_theme_id: "auto",
                 active_animation_id: "dual_pillars",
@@ -3360,7 +3726,9 @@ mod tests {
             assert!(rendered.contains("15. Tool Icons"));
             assert!(rendered.contains("16. Output Frame"));
             assert!(rendered.contains("17. Output Style"));
-            assert!(rendered.contains("18. Show / Hide"));
+            assert!(rendered.contains("18. Output Badge"));
+            assert!(rendered.contains("19. Turn Summary"));
+            assert!(rendered.contains("20. Show / Hide"));
             assert!(rendered.contains("Live Preview:"));
         }
     }

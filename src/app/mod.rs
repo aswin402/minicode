@@ -82,6 +82,7 @@ pub struct App<'a> {
     pub notifier: crate::ui::SystemNotifier,
     last_bg_task_count: usize,
     turn_tool_steps: usize,
+    turn_estimated_tokens: usize,
     handling_live_steering: bool,
     last_pool_version: u64,
     last_minipub_states:
@@ -208,6 +209,7 @@ impl<'a> App<'a> {
             notifier: crate::ui::SystemNotifier::new(),
             last_bg_task_count: initial_bg_tasks,
             turn_tool_steps: 0,
+            turn_estimated_tokens: 0,
             handling_live_steering: false,
             last_pool_version: initial_pool_version,
             last_minipub_states: initial_minipub_states,
@@ -250,6 +252,8 @@ impl<'a> App<'a> {
     pub fn hydrate_session(&mut self, events: &[AgentEvent]) {
         self.modal = ModalState::None;
         self.modal_history.clear();
+        let mut hydrated_turn_tools: usize = 0;
+        let mut hydrated_turn_model = self.config.provider.model.clone();
         for event in events {
             match event {
                 AgentEvent::UserPrompt { prompt, .. } => {
@@ -258,8 +262,16 @@ impl<'a> App<'a> {
                         self.input_dock.history.seed_prompt(prompt);
                     }
                 }
-                AgentEvent::TurnStart { context_tokens, .. } => {
+                AgentEvent::TurnStart {
+                    context_tokens,
+                    model,
+                    ..
+                } => {
                     self.saw_turn_context_update = false;
+                    hydrated_turn_tools = 0;
+                    if !model.trim().is_empty() {
+                        hydrated_turn_model = model.clone();
+                    }
                     if *context_tokens > 0 {
                         self.last_turn_tokens = *context_tokens;
                     }
@@ -283,6 +295,7 @@ impl<'a> App<'a> {
                     duration_ms,
                     ..
                 } => {
+                    hydrated_turn_tools = hydrated_turn_tools.saturating_add(1);
                     self.timeline
                         .finish_tool_call(tool, *success, output.clone(), *duration_ms);
                 }
@@ -298,6 +311,25 @@ impl<'a> App<'a> {
                         }
                         self.cumulative_tokens =
                             self.cumulative_tokens.saturating_add(*total_tokens_used);
+                        let prompt_toks = (*total_tokens_used * 3) / 4;
+                        let comp_toks = *total_tokens_used / 4;
+                        let turn_cost =
+                            crate::agent::pricing::ModelPricing::calculate_cost_with_custom(
+                                &self.config.provider.default,
+                                &hydrated_turn_model,
+                                prompt_toks,
+                                comp_toks,
+                                self.config.provider.prompt_cost_per_m,
+                                self.config.provider.completion_cost_per_m,
+                            );
+                        self.timeline.add_turn_summary(
+                            *total_tokens_used,
+                            *cached_prompt_tokens,
+                            0.0,
+                            hydrated_turn_tools,
+                            turn_cost,
+                            hydrated_turn_model.clone(),
+                        );
                     }
                     if *cached_prompt_tokens > 0 {
                         self.last_turn_cached_tokens = *cached_prompt_tokens;
@@ -583,6 +615,8 @@ impl<'a> App<'a> {
                             tool_icon_style: self.config.ui.tool_icon_style_enum(),
                             output_frame_style: self.config.ui.output_frame_style_enum(),
                             output_style: self.config.ui.output_style_enum(),
+                            output_badge_style: self.config.ui.output_badge_style_enum(),
+                            turn_summary: self.config.ui.turn_summary_config(),
                         };
                         self.timeline.render(frame, chunks[0], &timeline_ctx);
 
@@ -952,6 +986,10 @@ impl<'a> App<'a> {
                                 self.is_working = true;
                                 self.saw_turn_context_update = false;
                                 self.turn_tool_steps = 0;
+                                self.turn_estimated_tokens = 0;
+                                if self.work_start.is_none() {
+                                    self.work_start = Some(Instant::now());
+                                }
                                 if self.active_plan.as_ref().is_some_and(|p| {
                                     p.total_tasks > 0 && p.completed_tasks >= p.total_tasks
                                 }) && !crate::context::memory::working_memory::WorkingMemory::new(
@@ -975,6 +1013,7 @@ impl<'a> App<'a> {
                                 self.timeline.append_thought_delta(&delta);
                                 let delta_tokens = delta.len().div_ceil(4);
                                 self.last_turn_tokens = self.last_turn_tokens.saturating_add(delta_tokens);
+                                self.turn_estimated_tokens = self.turn_estimated_tokens.saturating_add(delta_tokens);
                                 if !matches!(
                                     self.current_activity,
                                     Some(crate::ui::AgentActivity::ThinkingAfter { .. })
@@ -993,6 +1032,7 @@ impl<'a> App<'a> {
                                 // Real-time incremental context token tick during streaming
                                 let delta_tokens = delta.len().div_ceil(4);
                                 self.last_turn_tokens = self.last_turn_tokens.saturating_add(delta_tokens);
+                                self.turn_estimated_tokens = self.turn_estimated_tokens.saturating_add(delta_tokens);
                                 if self.timeline.in_thought_mode {
                                     if !matches!(
                                         self.current_activity,
@@ -1028,6 +1068,7 @@ impl<'a> App<'a> {
                                     });
                                 let output_tokens = output.len() / 4;
                                 self.last_turn_tokens = self.last_turn_tokens.saturating_add(output_tokens);
+                                self.turn_estimated_tokens = self.turn_estimated_tokens.saturating_add(output_tokens);
                                 self.timeline
                                     .finish_tool_call(&tool, success, output, duration_ms);
                             }
@@ -1070,6 +1111,26 @@ impl<'a> App<'a> {
                                     );
                                 self.total_cost_usd += turn_cost;
                                 self.timeline.finalize_open_entries_on_turn_end();
+                                let turn_tokens = if total_tokens_used > 0 {
+                                    total_tokens_used
+                                } else {
+                                    self.turn_estimated_tokens
+                                };
+                                let elapsed_secs = self
+                                    .work_start
+                                    .or(self.timeline.turn_start)
+                                    .map(|t| t.elapsed().as_secs_f64())
+                                    .unwrap_or(0.0);
+                                if turn_tokens > 0 || elapsed_secs >= 0.05 {
+                                    self.timeline.add_turn_summary(
+                                        turn_tokens,
+                                        cached_prompt_tokens,
+                                        elapsed_secs,
+                                        self.turn_tool_steps,
+                                        turn_cost,
+                                        self.config.provider.model.clone(),
+                                    );
+                                }
                                 if status == crate::constants::TURN_STATUS_ITERATION_LIMIT {
                                     self.timeline.add_status(
                                         "⏸ Turn paused: reached tool iteration limit. Type 'continue' to resume."
@@ -1080,6 +1141,7 @@ impl<'a> App<'a> {
                                 self.handling_live_steering = false;
                                 self.current_activity = None;
                                 self.work_start = None;
+                                self.turn_estimated_tokens = 0;
                                 self.cancel_token = None;
                             }
                             AgentEvent::GitCommit {
@@ -2782,8 +2844,12 @@ mod tests {
         app.open_theme_modal(Some(crate::ui::modals::ThemeModalTab::ActivityStyles));
         assert!(app.modal.has_live_animation());
 
-        // Timer & Hint and Visibility tabs also animate live previews
+        // Timer & Hint, Output Frame/Badge, and Visibility tabs also animate live previews
         app.open_theme_modal(Some(crate::ui::modals::ThemeModalTab::ActivityHintStyles));
+        assert!(app.modal.has_live_animation());
+        app.open_theme_modal(Some(crate::ui::modals::ThemeModalTab::OutputBadgeStyles));
+        assert!(app.modal.has_live_animation());
+        app.open_theme_modal(Some(crate::ui::modals::ThemeModalTab::OutputFrameStyles));
         assert!(app.modal.has_live_animation());
         app.open_theme_modal(Some(crate::ui::modals::ThemeModalTab::Visibility));
         assert!(app.modal.has_live_animation());
@@ -2953,5 +3019,44 @@ mod tests {
         let reloaded4 = Config::load(Some(temp_dir.path()), None).expect("reload config 4");
         assert_eq!(reloaded4.ui.output_frame_style, "open_rounded");
         assert_eq!(reloaded4.ui.output_style, "minimal");
+
+        // 8. Output Badge (18) & Turn Summary (19, including 'p' placement cycling) + disk persistence
+        app.open_theme_modal(Some(crate::ui::modals::ThemeModalTab::OutputBadgeStyles));
+        app.handle_modal_key(
+            KeyEvent::new(KeyCode::Down, KeyModifiers::NONE),
+            &control_tx,
+        )
+        .await;
+        app.handle_modal_key(
+            KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+            &control_tx,
+        )
+        .await;
+        assert_eq!(app.config.ui.output_badge_style, "diamond");
+
+        app.open_theme_modal(Some(crate::ui::modals::ThemeModalTab::TurnSummaryStyles));
+        // Press 'p' to cycle placement from bottom_right -> bottom_left
+        app.handle_modal_key(
+            KeyEvent::new(KeyCode::Char('p'), KeyModifiers::NONE),
+            &control_tx,
+        )
+        .await;
+        assert_eq!(app.config.ui.turn_summary_position, "bottom_left");
+        app.handle_modal_key(
+            KeyEvent::new(KeyCode::Down, KeyModifiers::NONE),
+            &control_tx,
+        )
+        .await;
+        app.handle_modal_key(
+            KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+            &control_tx,
+        )
+        .await;
+        assert_eq!(app.config.ui.turn_summary_style, "compact");
+
+        let reloaded5 = Config::load(Some(temp_dir.path()), None).expect("reload config 5");
+        assert_eq!(reloaded5.ui.output_badge_style, "diamond");
+        assert_eq!(reloaded5.ui.turn_summary_position, "bottom_left");
+        assert_eq!(reloaded5.ui.turn_summary_style, "compact");
     }
 }

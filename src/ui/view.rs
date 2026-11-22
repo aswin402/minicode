@@ -138,6 +138,14 @@ pub enum TimelineEntry {
         files: Vec<String>,
     },
     SystemStatus(String),
+    TurnSummary {
+        tokens_used: usize,
+        cached_tokens: usize,
+        duration_secs: f64,
+        tool_calls: usize,
+        cost_usd: f64,
+        model: String,
+    },
     TurnSeparator,
 }
 
@@ -418,6 +426,8 @@ pub struct TimelineContext<'a> {
     pub tool_icon_style: crate::config::ToolIconStyle,
     pub output_frame_style: crate::config::OutputFrameStyle,
     pub output_style: crate::config::OutputStyle,
+    pub output_badge_style: crate::config::OutputBadgeStyle,
+    pub turn_summary: crate::config::TurnSummaryConfig,
 }
 
 impl Default for TimelineView {
@@ -680,6 +690,27 @@ impl TimelineView {
         self.close_open_thought_blocks(elapsed_secs);
         self.thought_start = None;
         self.in_thought_mode = false;
+    }
+
+    /// Appends a completed turn's telemetry summary footer (total turn tokens, elapsed time,
+    /// tool calls, cost, model) below the assistant output.
+    pub fn add_turn_summary(
+        &mut self,
+        tokens_used: usize,
+        cached_tokens: usize,
+        duration_secs: f64,
+        tool_calls: usize,
+        cost_usd: f64,
+        model: String,
+    ) {
+        self.entries.push(TimelineEntry::TurnSummary {
+            tokens_used,
+            cached_tokens,
+            duration_secs,
+            tool_calls,
+            cost_usd,
+            model,
+        });
     }
 
     pub const OPEN_THOUGHT_TAGS: &'static [&'static str] = &[
@@ -1301,16 +1332,39 @@ impl TimelineView {
         h.finish()
     }
 
-    fn entry_content_key(entry: &TimelineEntry, is_working: bool, spinner_tick: u64) -> u64 {
+    fn entry_content_key(
+        entry: &TimelineEntry,
+        is_working: bool,
+        spinner_tick: u64,
+        animate_badge: bool,
+    ) -> u64 {
         let mut h = std::collections::hash_map::DefaultHasher::new();
         std::mem::discriminant(entry).hash(&mut h);
         match entry {
             TimelineEntry::TurnSeparator => {}
+            TimelineEntry::TurnSummary {
+                tokens_used,
+                cached_tokens,
+                duration_secs,
+                tool_calls,
+                cost_usd,
+                model,
+            } => {
+                tokens_used.hash(&mut h);
+                cached_tokens.hash(&mut h);
+                ((duration_secs * 100.0).round() as u64).hash(&mut h);
+                tool_calls.hash(&mut h);
+                ((cost_usd * 10_000.0).round() as u64).hash(&mut h);
+                model.hash(&mut h);
+            }
             TimelineEntry::UserPrompt(p) | TimelineEntry::SystemStatus(p) => {
                 Self::hash_str_edges(&mut h, p);
             }
             TimelineEntry::AssistantMarkdown(text) => {
                 Self::hash_str_edges(&mut h, text);
+                if animate_badge {
+                    (spinner_tick / 3).hash(&mut h);
+                }
             }
             TimelineEntry::ThoughtBlock {
                 text,
@@ -1548,6 +1602,7 @@ impl TimelineView {
         entry: &TimelineEntry,
         area_width: u16,
         usable_width: usize,
+        badge_anim_frame: usize,
         ctx: &TimelineContext,
     ) -> RenderedCell {
         let theme = ctx.theme;
@@ -1563,6 +1618,29 @@ impl TimelineView {
                     Span::styled("─".repeat(divider_w), Style::default().fg(theme.border)),
                 ]));
                 lines.push(Line::from(String::new()));
+            }
+            TimelineEntry::TurnSummary {
+                tokens_used,
+                cached_tokens,
+                duration_secs,
+                tool_calls,
+                cost_usd,
+                model,
+            } => {
+                let metrics = output_frames::TurnSummaryMetrics {
+                    tokens_used: *tokens_used,
+                    cached_tokens: *cached_tokens,
+                    duration_secs: *duration_secs,
+                    tool_calls: *tool_calls,
+                    cost_usd: *cost_usd,
+                    model: model.as_str(),
+                };
+                lines.extend(output_frames::render_turn_summary_lines(
+                    &metrics,
+                    usable_width,
+                    ctx.turn_summary,
+                    theme,
+                ));
             }
             TimelineEntry::UserPrompt(prompt) => {
                 prompt_anchor = Some(Arc::from(prompt.as_str()));
@@ -1668,6 +1746,8 @@ impl TimelineView {
                     usable_width,
                     ctx.output_frame_style,
                     ctx.output_style,
+                    ctx.output_badge_style,
+                    badge_anim_frame,
                     theme,
                 ));
             }
@@ -1854,12 +1934,15 @@ impl TimelineView {
             ctx.tool_icon_style,
             ctx.output_frame_style,
             ctx.output_style,
+            ctx.output_badge_style,
+            ctx.turn_summary,
             crate::ui::icons::use_raw_nerd_font_pua(),
         )
             .hash(&mut layout_hasher);
         let layout_key = layout_hasher.finish();
 
         let spinner_tick = ctx.working_millis / crate::constants::SPINNER_FRAME_MS;
+        let last_idx = self.entries.len().saturating_sub(1);
 
         let mut cache = self.render_cache.borrow_mut();
         if cache.layout_key != layout_key {
@@ -1875,10 +1958,27 @@ impl TimelineView {
 
         // Update existing entries only when their $O(1)$ content/animation key changed
         for idx in 0..cache.entry_keys.len() {
-            let key = Self::entry_content_key(&self.entries[idx], ctx.is_working, spinner_tick);
+            let animate_badge =
+                ctx.is_working && ctx.output_badge_style.is_animated() && idx == last_idx;
+            let badge_frame = if animate_badge {
+                (spinner_tick / 3) as usize
+            } else {
+                0
+            };
+            let key = Self::entry_content_key(
+                &self.entries[idx],
+                ctx.is_working,
+                spinner_tick,
+                animate_badge,
+            );
             if cache.entry_keys[idx] != key {
-                let cell =
-                    Self::compile_entry_cell(&self.entries[idx], area.width, usable_width, ctx);
+                let cell = Self::compile_entry_cell(
+                    &self.entries[idx],
+                    area.width,
+                    usable_width,
+                    badge_frame,
+                    ctx,
+                );
                 cache.cells.set(idx, cell);
                 cache.entry_keys[idx] = key;
             }
@@ -1886,8 +1986,26 @@ impl TimelineView {
 
         // Append newly added entries into the `SumTree` in $O(\log N)$ time
         for idx in cache.entry_keys.len()..self.entries.len() {
-            let key = Self::entry_content_key(&self.entries[idx], ctx.is_working, spinner_tick);
-            let cell = Self::compile_entry_cell(&self.entries[idx], area.width, usable_width, ctx);
+            let animate_badge =
+                ctx.is_working && ctx.output_badge_style.is_animated() && idx == last_idx;
+            let badge_frame = if animate_badge {
+                (spinner_tick / 3) as usize
+            } else {
+                0
+            };
+            let key = Self::entry_content_key(
+                &self.entries[idx],
+                ctx.is_working,
+                spinner_tick,
+                animate_badge,
+            );
+            let cell = Self::compile_entry_cell(
+                &self.entries[idx],
+                area.width,
+                usable_width,
+                badge_frame,
+                ctx,
+            );
             cache.cells.push(cell);
             cache.entry_keys.push(key);
         }

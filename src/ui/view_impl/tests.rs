@@ -163,6 +163,8 @@ fn test_paragraph_rendering_alignment() {
         tool_icon_style: crate::config::ToolIconStyle::default(),
         output_frame_style: crate::config::OutputFrameStyle::default(),
         output_style: crate::config::OutputStyle::default(),
+        output_badge_style: crate::config::OutputBadgeStyle::default(),
+        turn_summary: crate::config::TurnSummaryConfig::default(),
     };
 
     // Render with auto_scroll=true (which will scroll down)
@@ -571,6 +573,8 @@ fn test_wide_table_and_scroll_alignment_in_timeline_render() {
                     tool_icon_style: crate::config::ToolIconStyle::default(),
                     output_frame_style: crate::config::OutputFrameStyle::default(),
                     output_style: crate::config::OutputStyle::default(),
+                    output_badge_style: crate::config::OutputBadgeStyle::default(),
+                    turn_summary: crate::config::TurnSummaryConfig::default(),
                 };
                 view.render(frame, area, &ctx);
             })
@@ -627,6 +631,8 @@ fn test_clicking_bottom_line_does_not_show_back_to_bottom_pill() {
                 tool_icon_style: crate::config::ToolIconStyle::default(),
                 output_frame_style: crate::config::OutputFrameStyle::default(),
                 output_style: crate::config::OutputStyle::default(),
+                output_badge_style: crate::config::OutputBadgeStyle::default(),
+                turn_summary: crate::config::TurnSummaryConfig::default(),
             };
             v.render(frame, area, &ctx);
         })
@@ -694,6 +700,8 @@ fn test_long_pasted_user_prompt_shows_full_lines_and_sticky_header_wraps_full_wo
                 tool_icon_style: crate::config::ToolIconStyle::default(),
                 output_frame_style: crate::config::OutputFrameStyle::default(),
                 output_style: crate::config::OutputStyle::default(),
+                output_badge_style: crate::config::OutputBadgeStyle::default(),
+                turn_summary: crate::config::TurnSummaryConfig::default(),
             };
             view.render(frame, area, &ctx);
         })
@@ -731,6 +739,8 @@ fn test_long_pasted_user_prompt_shows_full_lines_and_sticky_header_wraps_full_wo
                 tool_icon_style: crate::config::ToolIconStyle::default(),
                 output_frame_style: crate::config::OutputFrameStyle::default(),
                 output_style: crate::config::OutputStyle::default(),
+                output_badge_style: crate::config::OutputBadgeStyle::default(),
+                turn_summary: crate::config::TurnSummaryConfig::default(),
             };
             view.render(frame, area, &ctx);
         })
@@ -933,6 +943,8 @@ fn test_minitest65_git_commit_timeline_entry_and_toast_short_hash_rendering() {
                 tool_icon_style: crate::config::ToolIconStyle::default(),
                 output_frame_style: crate::config::OutputFrameStyle::default(),
                 output_style: crate::config::OutputStyle::default(),
+                output_badge_style: crate::config::OutputBadgeStyle::default(),
+                turn_summary: crate::config::TurnSummaryConfig::default(),
             };
             view.render(frame, frame.area(), &ctx);
         })
@@ -1029,6 +1041,8 @@ fn test_thought_blocks_freeze_on_tool_and_stream_transitions_never_all_ticking()
                     tool_icon_style: crate::config::ToolIconStyle::default(),
                     output_frame_style: crate::config::OutputFrameStyle::default(),
                     output_style: crate::config::OutputStyle::default(),
+                    output_badge_style: crate::config::OutputBadgeStyle::default(),
+                    turn_summary: crate::config::TurnSummaryConfig::default(),
                 };
                 view.render(frame, frame.area(), &ctx);
             })
@@ -1151,6 +1165,8 @@ fn test_thought_block_inline_token_usage_toggle_and_cache_invalidation() {
                 tool_icon_style: crate::config::ToolIconStyle::default(),
                 output_frame_style: crate::config::OutputFrameStyle::default(),
                 output_style: crate::config::OutputStyle::default(),
+                output_badge_style: crate::config::OutputBadgeStyle::default(),
+                turn_summary: crate::config::TurnSummaryConfig::default(),
             };
             view.render(frame, frame.area(), &ctx);
         })
@@ -1224,6 +1240,8 @@ fn test_tool_card_styles_and_icon_packs_render_and_invalidate_cache() {
                     tool_icon_style: icon,
                     output_frame_style: crate::config::OutputFrameStyle::default(),
                     output_style: crate::config::OutputStyle::default(),
+                    output_badge_style: crate::config::OutputBadgeStyle::default(),
+                    turn_summary: crate::config::TurnSummaryConfig::default(),
                 };
                 view.render(frame, frame.area(), &ctx);
             })
@@ -1344,6 +1362,8 @@ fn test_output_frame_styles_and_output_styles_render_and_invalidate_cache() {
                 tool_icon_style: crate::config::ToolIconStyle::default(),
                 output_frame_style: frame_st,
                 output_style: out_st,
+                output_badge_style: crate::config::OutputBadgeStyle::default(),
+                turn_summary: crate::config::TurnSummaryConfig::default(),
             };
             view.render(frame, frame.area(), &ctx);
         })
@@ -1451,4 +1471,267 @@ fn test_output_frame_styles_and_output_styles_render_and_invalidate_cache() {
         ascii.contains("+- minicode ") && ascii.contains("[x] Ship v0.5.75"),
         "AsciiFrame + Ascii style unexpected:\n{ascii}"
     );
+}
+
+#[test]
+fn test_output_badge_styles_animated_kaomoji_and_turn_summary_footer() {
+    use crate::config::{
+        OutputBadgeStyle, OutputFrameStyle, OutputStyle, TurnSummaryConfig, TurnSummaryPosition,
+        TurnSummaryStyle,
+    };
+    use ratatui::backend::TestBackend;
+    use ratatui::Terminal;
+
+    let theme = Theme::aura_dark();
+    let ws = std::path::PathBuf::from("/tmp/ws");
+    let mut view = TimelineView::new();
+    view.entries.push(TimelineEntry::AssistantMarkdown(
+        "All tests pass cleanly.".to_string(),
+    ));
+    view.add_turn_summary(
+        12_480,
+        11_200,
+        18.4,
+        4,
+        0.014,
+        "minimax/MiniMax-M3.1-Flash".to_string(),
+    );
+
+    let mut terminal = Terminal::new(TestBackend::new(84, 16)).unwrap();
+    let render_with = |term: &mut Terminal<TestBackend>,
+                       is_working: bool,
+                       millis: u64,
+                       badge: OutputBadgeStyle,
+                       summary: TurnSummaryConfig|
+     -> String {
+        term.draw(|frame| {
+            let ctx = TimelineContext {
+                theme: &theme,
+                is_working,
+                working_millis: millis,
+                current_activity: None,
+                spinner_style: crate::ui::animation::SpinnerStyle::default(),
+                workspace: &ws,
+                provider: "minimax",
+                model: "MiniMax-M3.1-Flash",
+                show_thought_tokens: false,
+                tool_card_style: crate::config::ToolCardStyle::default(),
+                tool_icon_style: crate::config::ToolIconStyle::default(),
+                output_frame_style: OutputFrameStyle::OpenRounded,
+                output_style: OutputStyle::Default,
+                output_badge_style: badge,
+                turn_summary: summary,
+            };
+            view.render(frame, frame.area(), &ctx);
+        })
+        .unwrap();
+        let buf = term.backend().buffer();
+        let mut out = String::new();
+        for y in 0..buf.area.height {
+            for x in 0..buf.area.width {
+                out.push_str(buf[(x, y)].symbol());
+            }
+            out.push('\n');
+        }
+        out
+    };
+
+    // 1. Default BottomRight TurnSummary shows tokens & duration right-aligned with breathing space
+    let default_screen = render_with(
+        &mut terminal,
+        false,
+        0,
+        OutputBadgeStyle::EmojiPaw,
+        TurnSummaryConfig::default(),
+    );
+    assert!(
+        default_screen.contains("╭─ 🐾")
+            && default_screen.contains("minicode ")
+            && default_screen.contains("12.5k tokens · 18.4s"),
+        "Expected paw badge + default BottomRight turn summary:\n{default_screen}"
+    );
+    let summary_line = default_screen
+        .lines()
+        .find(|l| l.contains("12.5k tokens · 18.4s"))
+        .expect("summary line");
+    let leading_spaces = summary_line.chars().take_while(|c| *c == ' ').count();
+    assert!(
+        leading_spaces >= 40,
+        "BottomRight summary should be right-aligned (leading_spaces={leading_spaces}): {summary_line:?}"
+    );
+
+    // 2. Verify all OutputBadgeStyle variants (including NerdFont auto-fallback & forced PUA, ASCII, Animated Kaomoji)
+    for badge in [
+        OutputBadgeStyle::Sparkle,
+        OutputBadgeStyle::Diamond,
+        OutputBadgeStyle::BotSymbol,
+        OutputBadgeStyle::Bolt,
+        OutputBadgeStyle::NerdFont,
+        OutputBadgeStyle::NerdFontSparkle,
+        OutputBadgeStyle::EmojiSparkle,
+        OutputBadgeStyle::EmojiRobot,
+        OutputBadgeStyle::EmojiPaw,
+        OutputBadgeStyle::EmojiRocket,
+        OutputBadgeStyle::Ascii,
+        OutputBadgeStyle::AsciiStar,
+        OutputBadgeStyle::Kaomoji,
+        OutputBadgeStyle::KaomojiAnimated,
+        OutputBadgeStyle::KaomojiCat,
+        OutputBadgeStyle::SparkleAnimated,
+        OutputBadgeStyle::None,
+    ] {
+        let s = render_with(&mut terminal, false, 0, badge, TurnSummaryConfig::default());
+        assert!(
+            s.contains("minicode"),
+            "Badge {:?} missing title:\n{s}",
+            badge
+        );
+    }
+
+    // Animated Kaomoji progresses frames while streaming on the active entry
+    let mut streaming_view = TimelineView::new();
+    streaming_view
+        .entries
+        .push(TimelineEntry::AssistantMarkdown("Streaming...".to_string()));
+    let mut render_stream = |millis: u64| -> String {
+        terminal
+            .draw(|frame| {
+                let ctx = TimelineContext {
+                    theme: &theme,
+                    is_working: true,
+                    working_millis: millis,
+                    current_activity: None,
+                    spinner_style: crate::ui::animation::SpinnerStyle::default(),
+                    workspace: &ws,
+                    provider: "minimax",
+                    model: "MiniMax-M3.1-Flash",
+                    show_thought_tokens: false,
+                    tool_card_style: crate::config::ToolCardStyle::default(),
+                    tool_icon_style: crate::config::ToolIconStyle::default(),
+                    output_frame_style: OutputFrameStyle::OpenRounded,
+                    output_style: OutputStyle::Default,
+                    output_badge_style: OutputBadgeStyle::KaomojiAnimated,
+                    turn_summary: TurnSummaryConfig::default(),
+                };
+                streaming_view.render(frame, frame.area(), &ctx);
+            })
+            .unwrap();
+        let buf = terminal.backend().buffer();
+        let mut out = String::new();
+        for y in 0..buf.area.height {
+            for x in 0..buf.area.width {
+                out.push_str(buf[(x, y)].symbol());
+            }
+            out.push('\n');
+        }
+        out
+    };
+    let f0 = render_stream(0);
+    let f_wink = render_stream(960);
+    assert!(
+        f0.contains("(•‿•) minicode") && f_wink != f0,
+        "Animated Kaomoji should transition frames while streaming:\nf0={f0}\nf_wink={f_wink}"
+    );
+
+    // 3. Verify all TurnSummaryStyle & TurnSummaryPosition combinations + granular field toggles
+    let rich_cfg = TurnSummaryConfig {
+        style: TurnSummaryStyle::Symbols,
+        position: TurnSummaryPosition::BottomLeft,
+        enabled: true,
+        show_tokens: true,
+        show_duration: true,
+        show_tools: true,
+        show_cost: true,
+        show_model: true,
+        show_kv_cache: true,
+    };
+    let rich_left = render_with(&mut terminal, false, 0, OutputBadgeStyle::Sparkle, rich_cfg);
+    assert!(
+        rich_left.contains("◈ 12.5k tok")
+            && rich_left.contains("◷ 18.4s")
+            && rich_left.contains("⚙ 4 tools")
+            && rich_left.contains("kv 90%")
+            && rich_left.contains("$0.014")
+            && rich_left.contains("MiniMax-M3.1-Flash"),
+        "Rich TurnSummary missing toggled fields:\n{rich_left}"
+    );
+
+    for pos in TurnSummaryPosition::all() {
+        let mut cfg = rich_cfg;
+        cfg.position = *pos;
+        let s = render_with(&mut terminal, false, 0, OutputBadgeStyle::Sparkle, cfg);
+        if *pos == TurnSummaryPosition::Hidden {
+            assert!(
+                !s.contains("12.5k tok"),
+                "Hidden position must omit summary:\n{s}"
+            );
+        } else {
+            assert!(
+                s.contains("12.5k tok"),
+                "Position {:?} must display summary:\n{s}",
+                pos
+            );
+        }
+    }
+
+    for st in [
+        TurnSummaryStyle::Minimal,
+        TurnSummaryStyle::Compact,
+        TurnSummaryStyle::Detailed,
+        TurnSummaryStyle::Symbols,
+        TurnSummaryStyle::NerdFont,
+        TurnSummaryStyle::PoshPill,
+        TurnSummaryStyle::PoshPowerline,
+        TurnSummaryStyle::Brackets,
+        TurnSummaryStyle::Emoji,
+        TurnSummaryStyle::Kaomoji,
+        TurnSummaryStyle::Dotted,
+        TurnSummaryStyle::Ascii,
+    ] {
+        let mut cfg = TurnSummaryConfig::default();
+        cfg.style = st;
+        let s = render_with(&mut terminal, false, 0, OutputBadgeStyle::Sparkle, cfg);
+        assert!(
+            s.contains("18.4s"),
+            "TurnSummaryStyle {:?} missing elapsed time:\n{s}",
+            st
+        );
+    }
+
+    // 4. Verify NerdFont badge & TurnSummary respect auto-fallback vs forced PUA
+    crate::ui::icons::set_nerd_font_pua_override(None);
+    let nf_auto = render_with(
+        &mut terminal,
+        false,
+        0,
+        OutputBadgeStyle::NerdFont,
+        TurnSummaryConfig {
+            style: TurnSummaryStyle::NerdFont,
+            ..Default::default()
+        },
+    );
+    assert!(
+        nf_auto.contains("❖ minicode")
+            && nf_auto.contains("⌘ 12.5k tok")
+            && nf_auto.contains("◷ 18.4s"),
+        "NerdFont auto-fallback unexpected:\n{nf_auto}"
+    );
+    crate::ui::icons::set_nerd_font_pua_override(Some(true));
+    let nf_pua = render_with(
+        &mut terminal,
+        false,
+        0,
+        OutputBadgeStyle::NerdFont,
+        TurnSummaryConfig {
+            style: TurnSummaryStyle::NerdFont,
+            ..Default::default()
+        },
+    );
+    assert!(
+        nf_pua.contains("\u{eb08} minicode")
+            && nf_pua.contains("\u{f2db} 12.5k tok")
+            && nf_pua.contains("\u{ea82} 18.4s"),
+        "NerdFont forced PUA unexpected:\n{nf_pua}"
+    );
+    crate::ui::icons::set_nerd_font_pua_override(None);
 }

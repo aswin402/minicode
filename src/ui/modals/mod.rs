@@ -106,6 +106,8 @@ pub enum ThemeModalTab {
     ToolIconStyles,
     OutputFrameStyles,
     OutputStyles,
+    OutputBadgeStyles,
+    TurnSummaryStyles,
     Visibility,
 }
 
@@ -130,6 +132,8 @@ impl ThemeModalTab {
             ThemeModalTab::ToolIconStyles,
             ThemeModalTab::OutputFrameStyles,
             ThemeModalTab::OutputStyles,
+            ThemeModalTab::OutputBadgeStyles,
+            ThemeModalTab::TurnSummaryStyles,
             ThemeModalTab::Visibility,
         ]
     }
@@ -154,7 +158,9 @@ impl ThemeModalTab {
             ThemeModalTab::ToolIconStyles => "15. Tool Icons",
             ThemeModalTab::OutputFrameStyles => "16. Output Frame",
             ThemeModalTab::OutputStyles => "17. Output Style",
-            ThemeModalTab::Visibility => "18. Show / Hide",
+            ThemeModalTab::OutputBadgeStyles => "18. Output Badge",
+            ThemeModalTab::TurnSummaryStyles => "19. Turn Summary",
+            ThemeModalTab::Visibility => "20. Show / Hide",
         }
     }
 
@@ -229,6 +235,14 @@ impl ThemeModalTab {
                 "Assistant Output & Markdown Presentation Styles",
                 "Style headings, callouts (> [!TIP]), checklists, code blocks & tables (Default, Linear/Vercel, Report-Skill, Notion, Posh, Nerd, Emoji, ASCII)",
             ),
+            ThemeModalTab::OutputBadgeStyles => (
+                "Output Header Badge & Icon Styles",
+                "Customize the leading icon before 'minicode' (✦, Symbols, Nerd Font, Emoji, ASCII, Static & Animated Kaomoji, Pulse)",
+            ),
+            ThemeModalTab::TurnSummaryStyles => (
+                "End-of-Turn Summary Footer (Tokens & Duration)",
+                "Style total turn tokens & duration below responses (press 'p' to change placement; toggle fields in 20. Show / Hide)",
+            ),
             ThemeModalTab::Visibility => (
                 "Show / Hide TUI Elements & Inline Thought Tokens",
                 "Toggle individual status elements, KV cache, mode badges, interrupt hint, and thought tokens",
@@ -299,6 +313,8 @@ pub enum ModalState {
         tool_icon_style_selected_index: usize,
         output_frame_style_selected_index: usize,
         output_style_selected_index: usize,
+        output_badge_style_selected_index: usize,
+        turn_summary_style_selected_index: usize,
         visibility_selected_index: usize,
         active_theme_id: String,
         active_animation_id: String,
@@ -402,6 +418,8 @@ impl ModalState {
                 ThemeModalTab::Animations
                     | ThemeModalTab::ActivityStyles
                     | ThemeModalTab::ActivityHintStyles
+                    | ThemeModalTab::OutputFrameStyles
+                    | ThemeModalTab::OutputBadgeStyles
                     | ThemeModalTab::Visibility
             ),
             ModalState::ModelSelect { loading: true, .. } => true,
@@ -838,6 +856,8 @@ impl ModalState {
             tool_icon_style_selected_index: 0,
             output_frame_style_selected_index: 0,
             output_style_selected_index: 0,
+            output_badge_style_selected_index: 0,
+            turn_summary_style_selected_index: 0,
             visibility_selected_index: 0,
             active_theme_id: active_theme_id.to_string(),
             active_animation_id: active_animation_id.to_string(),
@@ -881,6 +901,8 @@ impl ModalState {
             ref mut tool_icon_style_selected_index,
             ref mut output_frame_style_selected_index,
             ref mut output_style_selected_index,
+            ref mut output_badge_style_selected_index,
+            ref mut turn_summary_style_selected_index,
             ref mut active_menu_style,
             ref mut ui_prefs,
             ..
@@ -933,6 +955,16 @@ impl ModalState {
             *output_style_selected_index = theme_select::OUTPUT_STYLE_OPTIONS
                 .iter()
                 .position(|s| s.id == active_output_style)
+                .unwrap_or(0);
+            let active_output_badge = ui.output_badge_style_enum().as_str();
+            *output_badge_style_selected_index = theme_select::OUTPUT_BADGE_STYLE_OPTIONS
+                .iter()
+                .position(|s| s.id == active_output_badge)
+                .unwrap_or(0);
+            let active_turn_summary = ui.turn_summary_style_enum().as_str();
+            *turn_summary_style_selected_index = theme_select::TURN_SUMMARY_STYLE_OPTIONS
+                .iter()
+                .position(|s| s.id == active_turn_summary)
                 .unwrap_or(0);
             *ui_prefs = ui.clone();
         }
@@ -1441,6 +1473,8 @@ impl ModalState {
                 tool_icon_style_selected_index,
                 output_frame_style_selected_index,
                 output_style_selected_index,
+                output_badge_style_selected_index,
+                turn_summary_style_selected_index,
                 visibility_selected_index,
                 active_theme_id,
                 active_animation_id,
@@ -1470,6 +1504,8 @@ impl ModalState {
                     tool_icon_styles: theme_select::TOOL_ICON_STYLE_OPTIONS,
                     output_frame_styles: theme_select::OUTPUT_FRAME_STYLE_OPTIONS,
                     output_styles: theme_select::OUTPUT_STYLE_OPTIONS,
+                    output_badge_styles: theme_select::OUTPUT_BADGE_STYLE_OPTIONS,
+                    turn_summary_styles: theme_select::TURN_SUMMARY_STYLE_OPTIONS,
                     active_tab: *active_tab,
                     theme_selected_index: *theme_selected_index,
                     animation_selected_index: *animation_selected_index,
@@ -1489,6 +1525,8 @@ impl ModalState {
                     tool_icon_style_selected_index: *tool_icon_style_selected_index,
                     output_frame_style_selected_index: *output_frame_style_selected_index,
                     output_style_selected_index: *output_style_selected_index,
+                    output_badge_style_selected_index: *output_badge_style_selected_index,
+                    turn_summary_style_selected_index: *turn_summary_style_selected_index,
                     visibility_selected_index: *visibility_selected_index,
                     active_theme_id,
                     active_animation_id,

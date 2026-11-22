@@ -715,6 +715,103 @@ impl<'a> App<'a> {
             return Ok(CommandAction::Continue);
         }
 
+        if prompt_lower == "/output-badge" || prompt_lower.starts_with("/output-badge ") {
+            let arg = prompt_trimmed
+                .strip_prefix("/output-badge")
+                .unwrap_or("")
+                .trim();
+            if arg.is_empty() {
+                self.open_theme_modal(Some(crate::ui::modals::ThemeModalTab::OutputBadgeStyles));
+            } else {
+                let lower = arg.to_ascii_lowercase().replace('-', "_");
+                if let Some(opt) = crate::ui::modals::theme_select::OUTPUT_BADGE_STYLE_OPTIONS
+                    .iter()
+                    .find(|o| o.id == lower || o.name.to_ascii_lowercase().contains(&lower))
+                {
+                    self.config.ui.output_badge_style = opt.id.to_string();
+                    let _ = self.config.save(Some(&self.workspace_root));
+                    let _ = self.config.save(None);
+                    self.toasts.push(
+                        crate::ui::ToastKind::Success,
+                        "Output Badge Updated",
+                        format!("Switched to \"{}\".", opt.name),
+                        Some(opt.id.to_string()),
+                        Some("output_badge_style_preview".to_string()),
+                    );
+                } else {
+                    let valid_ids = crate::ui::modals::theme_select::OUTPUT_BADGE_STYLE_OPTIONS
+                        .iter()
+                        .map(|o| o.id)
+                        .collect::<Vec<_>>()
+                        .join(", ");
+                    self.add_timeline_status(format!(
+                        "! Unknown output badge '{}'. Available: {}",
+                        arg, valid_ids
+                    ));
+                }
+            }
+            return Ok(CommandAction::Continue);
+        }
+
+        if prompt_lower == "/turn-summary" || prompt_lower.starts_with("/turn-summary ") {
+            let arg = prompt_trimmed
+                .strip_prefix("/turn-summary")
+                .unwrap_or("")
+                .trim();
+            if arg.is_empty() {
+                self.open_theme_modal(Some(crate::ui::modals::ThemeModalTab::TurnSummaryStyles));
+            } else {
+                let lower = arg.to_ascii_lowercase().replace('-', "_");
+                let matched_pos = crate::config::TurnSummaryPosition::all()
+                    .iter()
+                    .copied()
+                    .find(|p| p.as_str() == lower);
+                if let Some(pos) = matched_pos {
+                    self.config.ui.turn_summary_position = pos.as_str().to_string();
+                    let _ = self.config.save(Some(&self.workspace_root));
+                    let _ = self.config.save(None);
+                    self.toasts.push(
+                        crate::ui::ToastKind::Success,
+                        "Turn Summary Placement Updated",
+                        format!("Moved end-of-turn summary to \"{}\".", pos.label()),
+                        Some(pos.as_str().to_string()),
+                        Some("turn_summary_position_preview".to_string()),
+                    );
+                } else if let Some(opt) =
+                    crate::ui::modals::theme_select::TURN_SUMMARY_STYLE_OPTIONS
+                        .iter()
+                        .find(|o| o.id == lower || o.name.to_ascii_lowercase().contains(&lower))
+                {
+                    self.config.ui.turn_summary_style = opt.id.to_string();
+                    let _ = self.config.save(Some(&self.workspace_root));
+                    let _ = self.config.save(None);
+                    self.toasts.push(
+                        crate::ui::ToastKind::Success,
+                        "Turn Summary Style Updated",
+                        format!("Switched to \"{}\".", opt.name),
+                        Some(opt.id.to_string()),
+                        Some("turn_summary_style_preview".to_string()),
+                    );
+                } else {
+                    let valid_styles = crate::ui::modals::theme_select::TURN_SUMMARY_STYLE_OPTIONS
+                        .iter()
+                        .map(|o| o.id)
+                        .collect::<Vec<_>>()
+                        .join(", ");
+                    let valid_pos = crate::config::TurnSummaryPosition::all()
+                        .iter()
+                        .map(|p| p.as_str())
+                        .collect::<Vec<_>>()
+                        .join(", ");
+                    self.add_timeline_status(format!(
+                        "! Unknown turn summary option '{}'. Styles: {} | Positions: {}",
+                        arg, valid_styles, valid_pos
+                    ));
+                }
+            }
+            return Ok(CommandAction::Continue);
+        }
+
         if prompt_lower == "/tool-icons" || prompt_lower.starts_with("/tool-icons ") {
             let arg = prompt_trimmed
                 .strip_prefix("/tool-icons")

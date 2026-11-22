@@ -116,6 +116,9 @@ pub struct RawUiConfig {
     pub tool_icon_style: Option<String>,
     pub output_frame_style: Option<String>,
     pub output_style: Option<String>,
+    pub output_badge_style: Option<String>,
+    pub turn_summary_style: Option<String>,
+    pub turn_summary_position: Option<String>,
     pub max_width: Option<usize>,
     pub show_cost: Option<bool>,
     pub show_ponytail_badge: Option<bool>,
@@ -130,6 +133,13 @@ pub struct RawUiConfig {
     pub show_status_badges: Option<bool>,
     pub show_interrupt_hint: Option<bool>,
     pub show_thought_tokens: Option<bool>,
+    pub show_turn_summary: Option<bool>,
+    pub show_turn_tokens: Option<bool>,
+    pub show_turn_duration: Option<bool>,
+    pub show_turn_tools: Option<bool>,
+    pub show_turn_cost: Option<bool>,
+    pub show_turn_model: Option<bool>,
+    pub show_turn_kv_cache: Option<bool>,
     pub nerd_font_pua: Option<bool>,
 }
 
@@ -958,6 +968,15 @@ impl Config {
         if let Some(output_style) = other.ui.output_style {
             self.ui.output_style = output_style;
         }
+        if let Some(output_badge_style) = other.ui.output_badge_style {
+            self.ui.output_badge_style = output_badge_style;
+        }
+        if let Some(turn_summary_style) = other.ui.turn_summary_style {
+            self.ui.turn_summary_style = turn_summary_style;
+        }
+        if let Some(turn_summary_position) = other.ui.turn_summary_position {
+            self.ui.turn_summary_position = turn_summary_position;
+        }
         if let Some(max_width) = other.ui.max_width {
             self.ui.max_width = max_width;
         }
@@ -999,6 +1018,27 @@ impl Config {
         }
         if let Some(v) = other.ui.show_thought_tokens {
             self.ui.show_thought_tokens = v;
+        }
+        if let Some(v) = other.ui.show_turn_summary {
+            self.ui.show_turn_summary = v;
+        }
+        if let Some(v) = other.ui.show_turn_tokens {
+            self.ui.show_turn_tokens = v;
+        }
+        if let Some(v) = other.ui.show_turn_duration {
+            self.ui.show_turn_duration = v;
+        }
+        if let Some(v) = other.ui.show_turn_tools {
+            self.ui.show_turn_tools = v;
+        }
+        if let Some(v) = other.ui.show_turn_cost {
+            self.ui.show_turn_cost = v;
+        }
+        if let Some(v) = other.ui.show_turn_model {
+            self.ui.show_turn_model = v;
+        }
+        if let Some(v) = other.ui.show_turn_kv_cache {
+            self.ui.show_turn_kv_cache = v;
         }
         if let Some(v) = other.ui.nerd_font_pua {
             self.ui.nerd_font_pua = v;
@@ -1237,6 +1277,15 @@ impl Config {
         if let Some(ref output_style) = global.ui.output_style {
             self.ui.output_style = output_style.clone();
         }
+        if let Some(ref output_badge_style) = global.ui.output_badge_style {
+            self.ui.output_badge_style = output_badge_style.clone();
+        }
+        if let Some(ref turn_summary_style) = global.ui.turn_summary_style {
+            self.ui.turn_summary_style = turn_summary_style.clone();
+        }
+        if let Some(ref turn_summary_position) = global.ui.turn_summary_position {
+            self.ui.turn_summary_position = turn_summary_position.clone();
+        }
         if let Some(show_cost) = global.ui.show_cost {
             self.ui.show_cost = show_cost;
         }
@@ -1275,6 +1324,27 @@ impl Config {
         }
         if let Some(v) = global.ui.show_thought_tokens {
             self.ui.show_thought_tokens = v;
+        }
+        if let Some(v) = global.ui.show_turn_summary {
+            self.ui.show_turn_summary = v;
+        }
+        if let Some(v) = global.ui.show_turn_tokens {
+            self.ui.show_turn_tokens = v;
+        }
+        if let Some(v) = global.ui.show_turn_duration {
+            self.ui.show_turn_duration = v;
+        }
+        if let Some(v) = global.ui.show_turn_tools {
+            self.ui.show_turn_tools = v;
+        }
+        if let Some(v) = global.ui.show_turn_cost {
+            self.ui.show_turn_cost = v;
+        }
+        if let Some(v) = global.ui.show_turn_model {
+            self.ui.show_turn_model = v;
+        }
+        if let Some(v) = global.ui.show_turn_kv_cache {
+            self.ui.show_turn_kv_cache = v;
         }
         if let Some(v) = global.ui.nerd_font_pua {
             self.ui.nerd_font_pua = v;

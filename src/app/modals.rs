@@ -646,6 +646,8 @@ impl<'a> App<'a> {
                 ref mut tool_icon_style_selected_index,
                 ref mut output_frame_style_selected_index,
                 ref mut output_style_selected_index,
+                ref mut output_badge_style_selected_index,
+                ref mut turn_summary_style_selected_index,
                 ref mut visibility_selected_index,
                 ref mut active_theme_id,
                 ref mut active_animation_id,
@@ -724,6 +726,38 @@ impl<'a> App<'a> {
                     *status_bar_style_selected_index =
                         opts.iter().position(|o| o.id == active_id).unwrap_or(0);
                 }
+                KeyCode::Char('p') | KeyCode::Char('P') | KeyCode::Char(']')
+                    if *active_tab == crate::ui::modals::ThemeModalTab::TurnSummaryStyles =>
+                {
+                    let next_pos = self.config.ui.turn_summary_position_enum().next();
+                    self.config.ui.turn_summary_position = next_pos.as_str().to_string();
+                    *ui_prefs = self.config.ui.clone();
+                    let _ = self.config.save(Some(&self.workspace_root));
+                    let _ = self.config.save(None);
+                    self.toasts.push(
+                        crate::ui::ToastKind::Success,
+                        "Turn Summary Placement Updated",
+                        format!("Moved end-of-turn summary to \"{}\".", next_pos.label()),
+                        Some(next_pos.as_str().to_string()),
+                        Some("turn_summary_position_preview".to_string()),
+                    );
+                }
+                KeyCode::Char('[')
+                    if *active_tab == crate::ui::modals::ThemeModalTab::TurnSummaryStyles =>
+                {
+                    let prev_pos = self.config.ui.turn_summary_position_enum().prev();
+                    self.config.ui.turn_summary_position = prev_pos.as_str().to_string();
+                    *ui_prefs = self.config.ui.clone();
+                    let _ = self.config.save(Some(&self.workspace_root));
+                    let _ = self.config.save(None);
+                    self.toasts.push(
+                        crate::ui::ToastKind::Success,
+                        "Turn Summary Placement Updated",
+                        format!("Moved end-of-turn summary to \"{}\".", prev_pos.label()),
+                        Some(prev_pos.as_str().to_string()),
+                        Some("turn_summary_position_preview".to_string()),
+                    );
+                }
                 KeyCode::Up | KeyCode::Char('k') => match *active_tab {
                     crate::ui::modals::ThemeModalTab::Themes => {
                         *theme_selected_index = theme_selected_index.saturating_sub(1);
@@ -786,6 +820,14 @@ impl<'a> App<'a> {
                     crate::ui::modals::ThemeModalTab::OutputStyles => {
                         *output_style_selected_index =
                             output_style_selected_index.saturating_sub(1);
+                    }
+                    crate::ui::modals::ThemeModalTab::OutputBadgeStyles => {
+                        *output_badge_style_selected_index =
+                            output_badge_style_selected_index.saturating_sub(1);
+                    }
+                    crate::ui::modals::ThemeModalTab::TurnSummaryStyles => {
+                        *turn_summary_style_selected_index =
+                            turn_summary_style_selected_index.saturating_sub(1);
                     }
                     crate::ui::modals::ThemeModalTab::Visibility => {
                         *visibility_selected_index = visibility_selected_index.saturating_sub(1);
@@ -896,6 +938,20 @@ impl<'a> App<'a> {
                         let total = crate::ui::modals::theme_select::OUTPUT_STYLE_OPTIONS.len();
                         if *output_style_selected_index + 1 < total {
                             *output_style_selected_index += 1;
+                        }
+                    }
+                    crate::ui::modals::ThemeModalTab::OutputBadgeStyles => {
+                        let total =
+                            crate::ui::modals::theme_select::OUTPUT_BADGE_STYLE_OPTIONS.len();
+                        if *output_badge_style_selected_index + 1 < total {
+                            *output_badge_style_selected_index += 1;
+                        }
+                    }
+                    crate::ui::modals::ThemeModalTab::TurnSummaryStyles => {
+                        let total =
+                            crate::ui::modals::theme_select::TURN_SUMMARY_STYLE_OPTIONS.len();
+                        if *turn_summary_style_selected_index + 1 < total {
+                            *turn_summary_style_selected_index += 1;
                         }
                     }
                     crate::ui::modals::ThemeModalTab::Visibility => {
@@ -1391,6 +1447,56 @@ impl<'a> App<'a> {
                                     format!("Switched to \"{chosen_name}\"."),
                                     Some(chosen_id),
                                     Some("output_style_preview".to_string()),
+                                );
+                            }
+                        }
+                        crate::ui::modals::ThemeModalTab::OutputBadgeStyles => {
+                            let options =
+                                crate::ui::modals::theme_select::OUTPUT_BADGE_STYLE_OPTIONS;
+                            if !options.is_empty()
+                                && *output_badge_style_selected_index < options.len()
+                            {
+                                let chosen = &options[*output_badge_style_selected_index];
+                                let chosen_id = chosen.id.to_string();
+                                let chosen_name = chosen.name.to_string();
+
+                                self.config.ui.output_badge_style = chosen_id.clone();
+                                *ui_prefs = self.config.ui.clone();
+
+                                let _ = self.config.save(Some(&self.workspace_root));
+                                let _ = self.config.save(None);
+
+                                self.toasts.push(
+                                    crate::ui::ToastKind::Success,
+                                    "Output Badge Updated",
+                                    format!("Switched to \"{chosen_name}\"."),
+                                    Some(chosen_id),
+                                    Some("output_badge_style_preview".to_string()),
+                                );
+                            }
+                        }
+                        crate::ui::modals::ThemeModalTab::TurnSummaryStyles => {
+                            let options =
+                                crate::ui::modals::theme_select::TURN_SUMMARY_STYLE_OPTIONS;
+                            if !options.is_empty()
+                                && *turn_summary_style_selected_index < options.len()
+                            {
+                                let chosen = &options[*turn_summary_style_selected_index];
+                                let chosen_id = chosen.id.to_string();
+                                let chosen_name = chosen.name.to_string();
+
+                                self.config.ui.turn_summary_style = chosen_id.clone();
+                                *ui_prefs = self.config.ui.clone();
+
+                                let _ = self.config.save(Some(&self.workspace_root));
+                                let _ = self.config.save(None);
+
+                                self.toasts.push(
+                                    crate::ui::ToastKind::Success,
+                                    "Turn Summary Style Updated",
+                                    format!("Switched to \"{chosen_name}\"."),
+                                    Some(chosen_id),
+                                    Some("turn_summary_style_preview".to_string()),
                                 );
                             }
                         }

@@ -1871,6 +1871,290 @@ impl OutputStyle {
     }
 }
 
+/// Leading badge / icon rendered inside Assistant Output frame headers (`╭─ <badge> minicode ───╮`,
+/// `<badge> minicode ──`, `┃ <badge> minicode`, etc.).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum OutputBadgeStyle {
+    /// Clean 1-cell Unicode sparkle `✦` (Default)
+    #[default]
+    Sparkle,
+    /// Architectural Unicode diamond `◈`
+    Diamond,
+    /// Geometric assistant badge `❖`
+    BotSymbol,
+    /// Technical lightning bolt `⚡`
+    Bolt,
+    /// Auto-detecting Nerd Font Codicon robot (`\u{eb08}`, zero-box `❖` fallback)
+    NerdFont,
+    /// Auto-detecting Nerd Font Codicon sparkle (`\u{eb65}`, zero-box `★` fallback)
+    NerdFontSparkle,
+    /// Expressive sparkle emoji `✨`
+    EmojiSparkle,
+    /// Expressive robot emoji `🤖`
+    EmojiRobot,
+    /// Expressive paw emoji `🐾`
+    EmojiPaw,
+    /// Expressive rocket emoji `🚀`
+    EmojiRocket,
+    /// Pure 7-bit ASCII chevron `>`
+    Ascii,
+    /// Pure 7-bit ASCII asterisk `*`
+    AsciiStar,
+    /// Static friendly Kaomoji `(•‿•)`
+    Kaomoji,
+    /// Animated blinking/smiling Kaomoji `(•‿•)` → `(•_•)` → `(^‿^)` → `(✧‿✧)`
+    KaomojiAnimated,
+    /// Animated cat Kaomoji `(=^･ω･^=)` → `(=^･ｪ･^=)` → `(=^-ω-^=)`
+    KaomojiCat,
+    /// Animated 1-cell Unicode sparkle pulse `✦` → `✧` → `✶` → `✷`
+    SparkleAnimated,
+    /// Pure typography — no leading icon before `minicode`
+    None,
+}
+
+#[allow(dead_code)]
+impl OutputBadgeStyle {
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Sparkle => "sparkle",
+            Self::Diamond => "diamond",
+            Self::BotSymbol => "bot_symbol",
+            Self::Bolt => "bolt",
+            Self::NerdFont => "nerdfont",
+            Self::NerdFontSparkle => "nerdfont_sparkle",
+            Self::EmojiSparkle => "emoji_sparkle",
+            Self::EmojiRobot => "emoji_robot",
+            Self::EmojiPaw => "emoji_paw",
+            Self::EmojiRocket => "emoji_rocket",
+            Self::Ascii => "ascii",
+            Self::AsciiStar => "ascii_star",
+            Self::Kaomoji => "kaomoji",
+            Self::KaomojiAnimated => "kaomoji_animated",
+            Self::KaomojiCat => "kaomoji_cat",
+            Self::SparkleAnimated => "sparkle_animated",
+            Self::None => "none",
+        }
+    }
+
+    #[must_use]
+    pub const fn is_animated(self) -> bool {
+        matches!(
+            self,
+            Self::KaomojiAnimated | Self::KaomojiCat | Self::SparkleAnimated
+        )
+    }
+
+    #[must_use]
+    pub fn from_str_loose(s: &str) -> Self {
+        match s.trim().to_lowercase().replace('-', "_").as_str() {
+            "diamond" | "symbols" | "symbol" => Self::Diamond,
+            "bot_symbol" | "bot" | "geometric" => Self::BotSymbol,
+            "bolt" | "lightning" => Self::Bolt,
+            "nerdfont" | "nerd" | "nf" | "nerd_bot" => Self::NerdFont,
+            "nerdfont_sparkle" | "nerd_sparkle" | "nf_sparkle" => Self::NerdFontSparkle,
+            "emoji_sparkle" | "emoji" => Self::EmojiSparkle,
+            "emoji_robot" | "robot" => Self::EmojiRobot,
+            "emoji_paw" | "paw" | "catppuccin" => Self::EmojiPaw,
+            "emoji_rocket" | "rocket" => Self::EmojiRocket,
+            "ascii" | "chevron" | "plain" => Self::Ascii,
+            "ascii_star" | "star" => Self::AsciiStar,
+            "kaomoji" | "kamoji" => Self::Kaomoji,
+            "kaomoji_animated" | "animated_kaomoji" | "animated_kamoji" | "kamoji_animated" => {
+                Self::KaomojiAnimated
+            }
+            "kaomoji_cat" | "cat_kaomoji" | "cat" => Self::KaomojiCat,
+            "sparkle_animated" | "animated_sparkle" | "pulse" => Self::SparkleAnimated,
+            "none" | "off" | "hidden" => Self::None,
+            _ => Self::Sparkle,
+        }
+    }
+}
+
+/// Placement / alignment for the end-of-turn task telemetry summary footer (tokens + total turn time).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum TurnSummaryPosition {
+    /// Flush bottom-right below the turn output with a clean breathing spacer (Default)
+    #[default]
+    BottomRight,
+    /// Left-aligned below the turn output with a clean breathing spacer
+    BottomLeft,
+    /// Centered below the turn output with a clean breathing spacer
+    BottomCenter,
+    /// Embedded on the right side of a subtle bottom hairline (`──────────── 12.4k tok · 18.4s ──`)
+    BottomRuleRight,
+    /// Embedded on the left side of a subtle bottom hairline (`── 12.4k tok · 18.4s ────────────`)
+    BottomRuleLeft,
+    /// Hide the end-of-turn summary footer completely
+    Hidden,
+}
+
+#[allow(dead_code)]
+impl TurnSummaryPosition {
+    pub const fn all() -> &'static [Self] {
+        &[
+            Self::BottomRight,
+            Self::BottomLeft,
+            Self::BottomCenter,
+            Self::BottomRuleRight,
+            Self::BottomRuleLeft,
+            Self::Hidden,
+        ]
+    }
+
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::BottomRight => "bottom_right",
+            Self::BottomLeft => "bottom_left",
+            Self::BottomCenter => "bottom_center",
+            Self::BottomRuleRight => "bottom_rule_right",
+            Self::BottomRuleLeft => "bottom_rule_left",
+            Self::Hidden => "hidden",
+        }
+    }
+
+    #[must_use]
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::BottomRight => "Bottom Right",
+            Self::BottomLeft => "Bottom Left",
+            Self::BottomCenter => "Bottom Center",
+            Self::BottomRuleRight => "Bottom Rule (Right)",
+            Self::BottomRuleLeft => "Bottom Rule (Left)",
+            Self::Hidden => "Hidden",
+        }
+    }
+
+    #[must_use]
+    pub fn next(self) -> Self {
+        let all = Self::all();
+        let idx = all.iter().position(|p| *p == self).unwrap_or(0);
+        all[(idx + 1) % all.len()]
+    }
+
+    #[must_use]
+    pub fn prev(self) -> Self {
+        let all = Self::all();
+        let idx = all.iter().position(|p| *p == self).unwrap_or(0);
+        all[(idx + all.len() - 1) % all.len()]
+    }
+
+    #[must_use]
+    pub fn from_str_loose(s: &str) -> Self {
+        match s.trim().to_lowercase().replace('-', "_").as_str() {
+            "bottom_left" | "left" => Self::BottomLeft,
+            "bottom_center" | "center" | "middle" => Self::BottomCenter,
+            "bottom_rule_right" | "rule_right" | "inline_right" => Self::BottomRuleRight,
+            "bottom_rule_left" | "rule_left" | "inline_left" => Self::BottomRuleLeft,
+            "hidden" | "hide" | "off" | "none" => Self::Hidden,
+            _ => Self::BottomRight,
+        }
+    }
+}
+
+/// Visual formatting style for the end-of-turn task telemetry summary footer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum TurnSummaryStyle {
+    /// Clean quiet muted readout (`12.4k tokens · 18.4s`) (Default)
+    #[default]
+    Minimal,
+    /// Ultra-dense compact readout (`12.4k · 18.4s`)
+    Compact,
+    /// Explicit labeled breakdown (`tokens 12.4k · time 18.4s`)
+    Detailed,
+    /// Universal 1-cell Unicode symbols (`◈ 12.4k tok · ◷ 18.4s`)
+    Symbols,
+    /// Auto-detecting Nerd Font Codicons (`<nf:Chip> 12.4k tok · <nf:Clock> 18.4s`)
+    NerdFont,
+    /// Oh My Posh rounded capsule pills (`◈ 12.4k tok ◷ 18.4s`)
+    PoshPill,
+    /// Oh My Posh angled powerline ribbon (` ◈ 12.4k tok  ◷ 18.4s `)
+    PoshPowerline,
+    /// Developer CLI brackets (`[12.4k tok | 18.4s]`)
+    Brackets,
+    /// Expressive Emoji readout (`🪙 12.4k tok · ⏱ 18.4s`)
+    Emoji,
+    /// Friendly Kaomoji suffix (`(•‿•) 12.4k tok · 18.4s`)
+    Kaomoji,
+    /// Editorial dotted wrapper (`· 12.4k tokens · 18.4s ·`)
+    Dotted,
+    /// Pure 7-bit ASCII (`12.4k tok | 18.4s`)
+    Ascii,
+}
+
+#[allow(dead_code)]
+impl TurnSummaryStyle {
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Minimal => "minimal",
+            Self::Compact => "compact",
+            Self::Detailed => "detailed",
+            Self::Symbols => "symbols",
+            Self::NerdFont => "nerdfont",
+            Self::PoshPill => "posh_pill",
+            Self::PoshPowerline => "posh_powerline",
+            Self::Brackets => "brackets",
+            Self::Emoji => "emoji",
+            Self::Kaomoji => "kaomoji",
+            Self::Dotted => "dotted",
+            Self::Ascii => "ascii",
+        }
+    }
+
+    #[must_use]
+    pub fn from_str_loose(s: &str) -> Self {
+        match s.trim().to_lowercase().replace('-', "_").as_str() {
+            "compact" | "dense" | "short" => Self::Compact,
+            "detailed" | "full" | "verbose" => Self::Detailed,
+            "symbols" | "unicode" | "technical" => Self::Symbols,
+            "nerdfont" | "nerd" | "nf" => Self::NerdFont,
+            "posh_pill" | "pill" | "pills" | "posh" => Self::PoshPill,
+            "posh_powerline" | "powerline" | "ribbon" => Self::PoshPowerline,
+            "brackets" | "bracket" | "cli" => Self::Brackets,
+            "emoji" | "emojis" => Self::Emoji,
+            "kaomoji" | "kamoji" => Self::Kaomoji,
+            "dotted" | "dots" => Self::Dotted,
+            "ascii" | "plain" => Self::Ascii,
+            _ => Self::Minimal,
+        }
+    }
+}
+
+/// Snapshot of turn-summary rendering settings passed into [`crate::ui::view::TimelineContext`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct TurnSummaryConfig {
+    pub style: TurnSummaryStyle,
+    pub position: TurnSummaryPosition,
+    pub enabled: bool,
+    pub show_tokens: bool,
+    pub show_duration: bool,
+    pub show_tools: bool,
+    pub show_cost: bool,
+    pub show_model: bool,
+    pub show_kv_cache: bool,
+}
+
+impl Default for TurnSummaryConfig {
+    fn default() -> Self {
+        Self {
+            style: TurnSummaryStyle::Minimal,
+            position: TurnSummaryPosition::BottomRight,
+            enabled: true,
+            show_tokens: true,
+            show_duration: true,
+            show_tools: false,
+            show_cost: false,
+            show_model: false,
+            show_kv_cache: false,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct UiConfig {
     #[serde(default = "default_theme")]
@@ -1939,6 +2223,15 @@ pub struct UiConfig {
     #[serde(default = "default_output_style")]
     pub output_style: String,
 
+    #[serde(default = "default_output_badge_style")]
+    pub output_badge_style: String,
+
+    #[serde(default = "default_turn_summary_style")]
+    pub turn_summary_style: String,
+
+    #[serde(default = "default_turn_summary_position")]
+    pub turn_summary_position: String,
+
     #[serde(default)]
     pub plain: bool,
 
@@ -1983,6 +2276,27 @@ pub struct UiConfig {
 
     #[serde(default)]
     pub show_thought_tokens: bool,
+
+    #[serde(default = "default_true")]
+    pub show_turn_summary: bool,
+
+    #[serde(default = "default_true")]
+    pub show_turn_tokens: bool,
+
+    #[serde(default = "default_true")]
+    pub show_turn_duration: bool,
+
+    #[serde(default)]
+    pub show_turn_tools: bool,
+
+    #[serde(default)]
+    pub show_turn_cost: bool,
+
+    #[serde(default)]
+    pub show_turn_model: bool,
+
+    #[serde(default)]
+    pub show_turn_kv_cache: bool,
 
     /// Force raw Nerd Font Private Use Area (PUA) Codicon glyphs (`true`) instead of auto-detecting
     /// terminal Nerd Font support with zero-box standard Unicode fallback (`false`, default).
@@ -2109,6 +2423,36 @@ impl UiConfig {
     pub fn output_style_enum(&self) -> OutputStyle {
         OutputStyle::from_str_loose(&self.output_style)
     }
+
+    #[must_use]
+    pub fn output_badge_style_enum(&self) -> OutputBadgeStyle {
+        OutputBadgeStyle::from_str_loose(&self.output_badge_style)
+    }
+
+    #[must_use]
+    pub fn turn_summary_style_enum(&self) -> TurnSummaryStyle {
+        TurnSummaryStyle::from_str_loose(&self.turn_summary_style)
+    }
+
+    #[must_use]
+    pub fn turn_summary_position_enum(&self) -> TurnSummaryPosition {
+        TurnSummaryPosition::from_str_loose(&self.turn_summary_position)
+    }
+
+    #[must_use]
+    pub fn turn_summary_config(&self) -> TurnSummaryConfig {
+        TurnSummaryConfig {
+            style: self.turn_summary_style_enum(),
+            position: self.turn_summary_position_enum(),
+            enabled: self.show_turn_summary,
+            show_tokens: self.show_turn_tokens,
+            show_duration: self.show_turn_duration,
+            show_tools: self.show_turn_tools,
+            show_cost: self.show_turn_cost,
+            show_model: self.show_turn_model,
+            show_kv_cache: self.show_turn_kv_cache,
+        }
+    }
 }
 
 impl Default for UiConfig {
@@ -2136,6 +2480,9 @@ impl Default for UiConfig {
             tool_icon_style: default_tool_icon_style(),
             output_frame_style: default_output_frame_style(),
             output_style: default_output_style(),
+            output_badge_style: default_output_badge_style(),
+            turn_summary_style: default_turn_summary_style(),
+            turn_summary_position: default_turn_summary_position(),
             plain: false,
             max_width: default_max_width(),
             show_cost: false,
@@ -2151,6 +2498,13 @@ impl Default for UiConfig {
             show_status_badges: true,
             show_interrupt_hint: true,
             show_thought_tokens: false,
+            show_turn_summary: true,
+            show_turn_tokens: true,
+            show_turn_duration: true,
+            show_turn_tools: false,
+            show_turn_cost: false,
+            show_turn_model: false,
+            show_turn_kv_cache: false,
             nerd_font_pua: false,
         }
     }
@@ -2226,6 +2580,18 @@ fn default_output_frame_style() -> String {
 
 fn default_output_style() -> String {
     "default".to_string()
+}
+
+fn default_output_badge_style() -> String {
+    "sparkle".to_string()
+}
+
+fn default_turn_summary_style() -> String {
+    "minimal".to_string()
+}
+
+fn default_turn_summary_position() -> String {
+    "bottom_right".to_string()
 }
 
 fn default_max_width() -> usize {
