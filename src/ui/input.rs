@@ -1923,7 +1923,7 @@ impl<'a> InputDock<'a> {
 
         let hint_text = spec.key_hints[usize::from(trigger.kind.is_explicit())];
         let mut title_spans = vec![Span::styled(
-            trigger.kind.badge_for(self.menu_style),
+            trigger.kind.badge_for_dynamic(self.menu_style),
             Style::default()
                 .fg(theme.brand_accent)
                 .add_modifier(Modifier::BOLD),
@@ -2023,7 +2023,8 @@ impl<'a> InputDock<'a> {
 
         let spec = self.menu_style.spec();
         let mode_idx = spec.border_mode as usize;
-        let (palette_title, unsel_prefix, sel_prefix) = spec.palette_chrome;
+        let (_, unsel_prefix, sel_prefix) = spec.palette_chrome;
+        let palette_title = self.menu_style.palette_title_dynamic();
         let row_prefixes = [unsel_prefix, sel_prefix];
 
         let matches = self.matching_palette_commands();

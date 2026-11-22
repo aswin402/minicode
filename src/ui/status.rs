@@ -399,7 +399,10 @@ impl StatusWidgets {
                 ContextMeterStyle::NerdIcons | ContextMeterStyle::NerdBar => {
                     push_sep(&mut spans, &mut has_prev, " • ");
                     spans.push(Span::styled(
-                        "\u{eace} ", // cod-database (zero PUA collision)
+                        format!(
+                            "{} ",
+                            crate::ui::icons::nf(crate::ui::icons::NerdIcon::Database)
+                        ),
                         Style::default().fg(kv_color(hit_pct)),
                     ));
                     spans.push(Span::styled(
@@ -646,7 +649,13 @@ impl StatusWidgets {
                 }
                 ContextMeterStyle::NerdIcons => {
                     push_sep(&mut spans, &mut has_prev, " • ");
-                    spans.push(Span::styled("\u{f2db} ", Style::default().fg(used_color)));
+                    spans.push(Span::styled(
+                        format!(
+                            "{} ",
+                            crate::ui::icons::nf(crate::ui::icons::NerdIcon::Chip)
+                        ),
+                        Style::default().fg(used_color),
+                    ));
                     spans.push(Span::styled(
                         format!("{} ", pie_glyph(ratio)),
                         Style::default().fg(used_color).add_modifier(Modifier::BOLD),
@@ -661,7 +670,13 @@ impl StatusWidgets {
                     let width = 8usize;
                     let filled = ((ratio * width as f64).round() as usize).min(width);
                     let empty = width.saturating_sub(filled);
-                    spans.push(Span::styled("\u{f2db} ", Style::default().fg(used_color)));
+                    spans.push(Span::styled(
+                        format!(
+                            "{} ",
+                            crate::ui::icons::nf(crate::ui::icons::NerdIcon::Chip)
+                        ),
+                        Style::default().fg(used_color),
+                    ));
                     spans.push(Span::styled("[", Style::default().fg(theme.border)));
                     if filled > 0 {
                         spans.push(Span::styled(
@@ -785,6 +800,7 @@ impl StatusWidgets {
             color: ratatui::style::Color,
         }
 
+        use crate::ui::icons::{nf, NerdIcon};
         let mut items: Vec<BadgeItem> = Vec::with_capacity(3);
         if show_ponytail {
             items.push(BadgeItem {
@@ -807,7 +823,7 @@ impl StatusWidgets {
                 emoji: "✨",
                 kaomoji: "(✧_✧)",
                 ascii: "*",
-                nf_icon: "\u{eb25}", // cod-rocket (zero PUA collision)
+                nf_icon: nf(NerdIcon::Rocket),
                 active: ponytail_active,
                 color: theme.brand_accent,
             });
@@ -833,7 +849,7 @@ impl StatusWidgets {
                 emoji: "🔥",
                 kaomoji: "(ง•_•)ง",
                 ascii: "#",
-                nf_icon: "\u{eaf2}", // cod-flame (zero PUA collision)
+                nf_icon: nf(NerdIcon::Flame),
                 active: caveman_active,
                 color: theme.warning,
             });
@@ -847,7 +863,7 @@ impl StatusWidgets {
                 emoji: "⚡",
                 kaomoji: "(•‿•)",
                 ascii: ">",
-                nf_icon: "\u{ea61}", // cod-lightbulb/zap (zero PUA collision)
+                nf_icon: nf(NerdIcon::Bolt),
                 active: streaming_active,
                 color: theme.success,
             });
@@ -1298,6 +1314,7 @@ impl StatusWidgets {
             optional: bool,
         }
 
+        use crate::ui::icons::{nf, NerdIcon};
         let mut planned: Vec<StatusSeg> = Vec::with_capacity(8);
 
         if display.show_status_model {
@@ -1307,7 +1324,7 @@ impl StatusWidgets {
                 icon: Some("◈"),
                 emoji: Some("🧠"),
                 kaomoji: Some("(◈_◈)"),
-                nf_icon: Some("\u{f2db}"), // fa-microchip (zero collision)
+                nf_icon: Some(nf(NerdIcon::Chip)),
                 pure_prefix: None,
                 text: model_display,
                 accent: theme.warning,
@@ -1322,7 +1339,7 @@ impl StatusWidgets {
                 icon: Some("⚡"),
                 emoji: Some("⚡"),
                 kaomoji: Some("(ง°_°)ง"),
-                nf_icon: Some("\u{f0e7}"), // fa-bolt (zero collision)
+                nf_icon: Some(nf(NerdIcon::Bolt)),
                 pure_prefix: None,
                 text: level_label.to_string(),
                 accent: level_color,
@@ -1337,7 +1354,7 @@ impl StatusWidgets {
                 icon: Some("⌂"),
                 emoji: Some("📁"),
                 kaomoji: Some("(◉_◉)"),
-                nf_icon: Some("\u{ea83}"), // cod-folder (zero collision)
+                nf_icon: Some(nf(NerdIcon::Folder)),
                 pure_prefix: None,
                 text: fitted_path,
                 accent: theme.info,
@@ -1373,7 +1390,7 @@ impl StatusWidgets {
                 icon: Some("⎇"),
                 emoji: Some("🌿"),
                 kaomoji: Some("(•‿•)"),
-                nf_icon: Some("\u{ea68}"), // cod-git-branch (zero collision)
+                nf_icon: Some(nf(NerdIcon::GitBranch)),
                 pure_prefix: Some("on "),
                 text: seg,
                 accent: theme.success,
@@ -1391,7 +1408,7 @@ impl StatusWidgets {
                 icon: Some("⊕"),
                 emoji: Some("🔌"),
                 kaomoji: Some("(°_°)"),
-                nf_icon: Some("\u{eb50}"), // cod-server (zero collision)
+                nf_icon: Some(nf(NerdIcon::Server)),
                 pure_prefix: None,
                 text: seg,
                 accent: theme.brand_accent,
@@ -1409,7 +1426,7 @@ impl StatusWidgets {
                 icon: Some("❖"),
                 emoji: Some("🤖"),
                 kaomoji: Some("(◉_◉)⊃"),
-                nf_icon: Some("\u{eb08}"), // cod-hubot (zero collision)
+                nf_icon: Some(nf(NerdIcon::Bot)),
                 pure_prefix: None,
                 text: seg,
                 accent: theme.info,
@@ -1436,7 +1453,7 @@ impl StatusWidgets {
                 icon: Some("⚙"),
                 emoji: Some("⚙"),
                 kaomoji: Some("(ง•_•)ง"),
-                nf_icon: Some("\u{eaa6}"), // cod-checklist (zero collision)
+                nf_icon: Some(nf(NerdIcon::Checklist)),
                 pure_prefix: None,
                 text: badge_text,
                 accent: task_color,
@@ -1451,7 +1468,7 @@ impl StatusWidgets {
                 icon: Some("◎"),
                 emoji: Some("🌐"),
                 kaomoji: Some("( °o°)"),
-                nf_icon: Some("\u{eb01}"), // cod-globe (zero collision)
+                nf_icon: Some(nf(NerdIcon::Globe)),
                 pure_prefix: None,
                 text: web.to_string(),
                 accent: theme.brand_accent,
@@ -2176,7 +2193,8 @@ mod tests {
             spans.into_iter().map(|s| s.content.into_owned()).collect()
         };
 
-        // Mix NerdPowerline (Model) + PoshPure (Path) + NerdBubbles (Git) on a single bar!
+        // 1. Default auto-fallback (no Nerd Font detected): zero PUA boxes!
+        crate::ui::icons::set_nerd_font_pua_override(None);
         let mixed_opts = StatusDisplayOptions {
             status_bar_style: StatusBarStyle::Classic,
             status_model_style: Some(StatusBarStyle::NerdPowerline),
@@ -2186,6 +2204,50 @@ mod tests {
             status_badges_style: Some(StatusBarStyle::NerdIcons),
             ..Default::default()
         };
+        let fallback_txt = join_spans(StatusWidgets::render_status_left_spans_with_bg(
+            &theme,
+            theme.bg_primary,
+            "minimax",
+            "MiniMax-M3.1-Flash",
+            "medium",
+            "~/programming/minitest82",
+            Some("main"),
+            2,
+            0,
+            (0, 0.0, 0.0),
+            None,
+            150,
+            &mixed_opts,
+        ));
+        assert!(
+            fallback_txt.contains("⌘ minimax/MiniMax-M3.1-Flash")
+                && fallback_txt.contains("\u{e0b6}⎇ main\u{e0b4}")
+                && fallback_txt.contains("⊕ mcp:2"),
+            "Auto-fallback must emit zero-box Unicode icons on non-NF terminals: {fallback_txt}"
+        );
+
+        let fallback_modes = join_spans(StatusWidgets::render_mode_bar_spans_with_bg(
+            &theme,
+            theme.bg_primary,
+            true,
+            "full",
+            true,
+            "full",
+            true,
+            ModeBarStyle::NerdBubbles,
+            true,
+            true,
+            true,
+        ));
+        assert!(
+            fallback_modes.contains("\u{e0b6}➤ ponytail·full\u{e0b4}")
+                && fallback_modes.contains("✶ caveman·full")
+                && fallback_modes.contains("⚡ stream"),
+            "Auto-fallback NerdBubbles mode strip must avoid PUA boxes: {fallback_modes}"
+        );
+
+        // 2. When Nerd Font PUA is explicitly enabled, emits collision-free Codicons
+        crate::ui::icons::set_nerd_font_pua_override(Some(true));
         let spans = StatusWidgets::render_status_left_spans_with_bg(
             &theme,
             theme.bg_primary,
@@ -2292,9 +2354,10 @@ mod tests {
         assert!(
             nf_modes.contains("\u{e0b6}\u{eb25} ponytail·full\u{e0b4}")
                 && nf_modes.contains("\u{eaf2} caveman·full")
-                && nf_modes.contains("\u{ea61} stream"),
+                && nf_modes.contains("\u{f0e7} stream"),
             "NerdBubbles mode strip unexpected: {nf_modes}"
         );
+        crate::ui::icons::set_nerd_font_pua_override(None);
 
         let sym_modes = join_spans(StatusWidgets::render_mode_bar_spans_with_bg(
             &theme,

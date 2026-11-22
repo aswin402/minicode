@@ -1809,6 +1809,11 @@ pub struct UiConfig {
 
     #[serde(default)]
     pub show_thought_tokens: bool,
+
+    /// Force raw Nerd Font Private Use Area (PUA) Codicon glyphs (`true`) instead of auto-detecting
+    /// terminal Nerd Font support with zero-box standard Unicode fallback (`false`, default).
+    #[serde(default)]
+    pub nerd_font_pua: bool,
 }
 
 impl UiConfig {
@@ -1960,6 +1965,7 @@ impl Default for UiConfig {
             show_status_badges: true,
             show_interrupt_hint: true,
             show_thought_tokens: false,
+            nerd_font_pua: false,
         }
     }
 }

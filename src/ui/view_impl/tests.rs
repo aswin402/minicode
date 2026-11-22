@@ -1266,6 +1266,20 @@ fn test_tool_card_styles_and_icon_packs_render_and_invalidate_cache() {
         kaomoji_blk.contains("(ง°_°)ง") && kaomoji_blk.contains("(•‿•)"),
         "Classic + Kaomoji unexpected:\n{kaomoji_blk}"
     );
+    // Default auto-fallback NerdFont renders zero-box Unicode icons (`❯`, `◎`, `✓`)
+    crate::ui::icons::set_nerd_font_pua_override(None);
+    let nf_fallback = render_combo(
+        &mut terminal,
+        ToolCardStyle::PoshBubbles,
+        ToolIconStyle::NerdFont,
+    );
+    assert!(
+        nf_fallback.contains("❯") && nf_fallback.contains("◎") && nf_fallback.contains("✓"),
+        "PoshBubbles + NerdFont auto-fallback unexpected:\n{nf_fallback}"
+    );
+
+    // Forced raw Nerd Font PUA renders native Codicons
+    crate::ui::icons::set_nerd_font_pua_override(Some(true));
     let nf_blk = render_combo(
         &mut terminal,
         ToolCardStyle::PoshBubbles,
@@ -1275,4 +1289,5 @@ fn test_tool_card_styles_and_icon_packs_render_and_invalidate_cache() {
         nf_blk.contains("\u{ea85}") && nf_blk.contains("\u{eb01}") && nf_blk.contains("\u{eab2}"),
         "PoshBubbles + NerdFont Codicons unexpected:\n{nf_blk}"
     );
+    crate::ui::icons::set_nerd_font_pua_override(None);
 }

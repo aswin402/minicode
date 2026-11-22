@@ -588,6 +588,22 @@ impl TriggerKind {
     }
 
     #[must_use]
+    pub fn badge_for_dynamic(&self, style: MenuStyle) -> String {
+        if style == MenuStyle::NerdFont {
+            use crate::ui::icons::{nf, NerdIcon};
+            let (icon, label) = match self {
+                Self::AtMention => (nf(NerdIcon::GitBranch), "Mentions"),
+                Self::SymbolMention => (nf(NerdIcon::Symbol), "Symbols"),
+                Self::SkillMention => (nf(NerdIcon::Think), "Skills"),
+                Self::SlashArg { .. } => (nf(NerdIcon::Gear), "Arguments"),
+                Self::PromptFlow { .. } => (nf(NerdIcon::Sparkle), "Suggestions"),
+            };
+            return format!(" {icon} {label} ");
+        }
+        self.badge_for(style).to_string()
+    }
+
+    #[must_use]
     pub const fn badge(&self) -> &'static str {
         self.badge_for(MenuStyle::Minimal)
     }
@@ -881,39 +897,29 @@ pub static MENU_STYLE_SPECS: [MenuStyleSpec; MENU_STYLE_COUNT] = [
         style: MenuStyle::NerdFont,
         id: "nerdfont",
         name: "8. Nerd Font Codicons (Nerd Font)",
-        description: "Collision-free Nerd Font Codicon icons per item category (requires Nerd Font)",
+        description: "Nerd Font Codicons with automatic zero-box Unicode fallback on standard fonts",
         aliases: &["nerd", "nf", "codicons", "nerd_font"],
         border_mode: MenuBorderMode::Rounded,
         trigger_badges: [
-            " \u{ea68} Mentions ",
-            " \u{ea8b} Symbols ",
-            " \u{ea61} Skills ",
-            " \u{eaf8} Arguments ",
-            " \u{eb65} Suggestions ",
+            " ⎇ Mentions ",
+            " ƒ Symbols ",
+            " ✦ Skills ",
+            " ⏣ Arguments ",
+            " ★ Suggestions ",
         ],
         key_hints: [
             "[Tab/→] Complete  [Alt+1..3] Pick  [Enter] Send  [Esc] Close ",
             "[Tab/Enter] Insert  [↑/↓] Select  [⇧Tab] Filter  [Esc] Close ",
         ],
         row_prefixes: ["   ", " ❯ "],
-        kind_prefixes: [
-            "\u{eb65} ",
-            "\u{ea82} ",
-            "\u{ea8b} ",
-            "\u{ea7b} ",
-            "\u{ea85} ",
-            "\u{eaa6} ",
-            "\u{ea61} ",
-            "\u{eaf8} ",
-            "\u{eb3f} ",
-        ],
+        kind_prefixes: ["★ ", "◷ ", "ƒ ", "◩ ", "❯ ", "⎇ ", "✦ ", "⏣ ", "◩ "],
         detail_wrap: ("· ", ""),
-        palette_chrome: (" \u{ea85} Commands ", "   ", " ❯ "),
+        palette_chrome: (" ❯ Commands ", "   ", " ❯ "),
         preview: &[
-            "╭ \u{ea68} Mentions [Tab/Enter] Insert  [⇧Tab] Filter ──────────────╮",
-            "│ ❯ \u{ea8b} @InputDock               · struct · src/ui/input.rs:L1 │",
-            "│   \u{ea7b} @src/ui/intellisense.rs                    · rs · file │",
-            "│   \u{eb3f} @assets/hero.png               · png · 1440x900 · 48KB │",
+            "╭ ⎇ Mentions [Tab/Enter] Insert  [⇧Tab] Filter ──────────────╮",
+            "│ ❯ ƒ @InputDock               · struct · src/ui/input.rs:L1 │",
+            "│   ◩ @src/ui/intellisense.rs                    · rs · file │",
+            "│   ◩ @assets/hero.png               · png · 1440x900 · 48KB │",
             "╰────────────────────────────────────────────────────────────╯",
         ],
     },
@@ -965,6 +971,41 @@ impl MenuStyle {
     pub const fn as_str(self) -> &'static str {
         self.spec().id
     }
+
+    #[must_use]
+    pub fn palette_title_dynamic(self) -> String {
+        if self == Self::NerdFont {
+            format!(
+                " {} Commands ",
+                crate::ui::icons::nf(crate::ui::icons::NerdIcon::Terminal)
+            )
+        } else {
+            self.spec().palette_chrome.0.to_string()
+        }
+    }
+
+    #[must_use]
+    pub fn live_preview_lines(self) -> Vec<String> {
+        if self == Self::NerdFont {
+            use crate::ui::icons::{nf, NerdIcon};
+            let br = nf(NerdIcon::GitBranch);
+            let sym = nf(NerdIcon::Symbol);
+            let file = nf(NerdIcon::File);
+            let img = nf(NerdIcon::Image);
+            return vec![
+                format!("╭ {br} Mentions [Tab/Enter] Insert  [⇧Tab] Filter ──────────────╮"),
+                format!("│ ❯ {sym} @InputDock               · struct · src/ui/input.rs:L1 │"),
+                format!("│   {file} @src/ui/intellisense.rs                    · rs · file │"),
+                format!("│   {img} @assets/hero.png               · png · 1440x900 · 48KB │"),
+                "╰────────────────────────────────────────────────────────────╯".to_string(),
+            ];
+        }
+        self.spec()
+            .preview
+            .iter()
+            .map(|s| (*s).to_string())
+            .collect()
+    }
 }
 
 /// Active trigger token span on the current cursor row.
@@ -991,6 +1032,21 @@ impl CompletionCandidate {
     pub fn format_left(&self, style: MenuStyle, is_selected: bool) -> String {
         let spec = style.spec();
         let row_prefix = spec.row_prefixes[usize::from(is_selected)];
+        if style == MenuStyle::NerdFont {
+            use crate::ui::icons::{nf, NerdIcon};
+            let icon = match self.kind {
+                CandidateKind::Prompt => nf(NerdIcon::Sparkle),
+                CandidateKind::History => nf(NerdIcon::Clock),
+                CandidateKind::Symbol => nf(NerdIcon::Symbol),
+                CandidateKind::File => nf(NerdIcon::File),
+                CandidateKind::Command => nf(NerdIcon::Terminal),
+                CandidateKind::Task => nf(NerdIcon::Checklist),
+                CandidateKind::Skill => nf(NerdIcon::Think),
+                CandidateKind::Arg => nf(NerdIcon::Gear),
+                CandidateKind::Image => nf(NerdIcon::Image),
+            };
+            return format!("{row_prefix}{icon} {}", self.display_label);
+        }
         let kind_prefix = spec.kind_prefixes[self.kind as usize];
         format!("{row_prefix}{kind_prefix}{}", self.display_label)
     }

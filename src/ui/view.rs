@@ -1843,6 +1843,7 @@ impl TimelineView {
             ctx.show_thought_tokens,
             ctx.tool_card_style,
             ctx.tool_icon_style,
+            crate::ui::icons::use_raw_nerd_font_pua(),
         )
             .hash(&mut layout_hasher);
         let layout_key = layout_hasher.finish();

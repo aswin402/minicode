@@ -3,6 +3,7 @@ pub mod approval;
 pub mod clipboard;
 pub mod configure;
 pub mod diff_viewer;
+pub mod icons;
 pub mod input;
 pub mod intellisense;
 pub mod layout_utils;

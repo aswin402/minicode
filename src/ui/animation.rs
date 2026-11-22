@@ -58,15 +58,25 @@ pub const ACTIVITY_EMOJI_PREVIEW_FRAMES: &[&str] = &["💭", "📝", "🔧", "�
 /// Cyber geometric hexagon crystal pulse spinner (strictly 1-cell EAW=N)
 pub const HEX_PULSE_FRAMES: &[&str] = &["⎔", "⏣", "◈", "◆", "◈", "⏣"];
 
-/// Context-aware Nerd Font Codicon preview cycle (Think, Write, Edit, Search, Terminal, Sparkle)
-/// Uses collision-free Codicons (`U+EA60..U+EB65`) that never clash with Verdana/Arial PUA tables.
-pub const ACTIVITY_NF_PREVIEW_FRAMES: &[&str] = &[
-    "\u{ea61}", "\u{ea73}", "\u{eb10}", "\u{ea6d}", "\u{ea85}", "\u{eb65}",
+/// Context-aware Nerd Font preview cycle resolved dynamically via `ui::icons::nf`
+/// (native Codicons when Nerd Font is active; universal zero-box Unicode icons otherwise).
+pub const ACTIVITY_NF_PREVIEW_ICONS: &[crate::ui::icons::NerdIcon] = &[
+    crate::ui::icons::NerdIcon::Think,
+    crate::ui::icons::NerdIcon::Write,
+    crate::ui::icons::NerdIcon::Edit,
+    crate::ui::icons::NerdIcon::Search,
+    crate::ui::icons::NerdIcon::Terminal,
+    crate::ui::icons::NerdIcon::Sparkle,
 ];
 
-/// Animated Nerd Font Codicon telemetry wave (gear -> hubot -> lightbulb -> rocket -> terminal -> bug)
-pub const NF_PULSE_FRAMES: &[&str] = &[
-    "\u{eaf8}", "\u{eb08}", "\u{ea61}", "\u{eb25}", "\u{ea85}", "\u{eaaf}",
+/// Animated Nerd Font telemetry wave resolved dynamically via `ui::icons::nf`.
+pub const NF_PULSE_ICONS: &[crate::ui::icons::NerdIcon] = &[
+    crate::ui::icons::NerdIcon::Gear,
+    crate::ui::icons::NerdIcon::Bot,
+    crate::ui::icons::NerdIcon::Think,
+    crate::ui::icons::NerdIcon::Rocket,
+    crate::ui::icons::NerdIcon::Terminal,
+    crate::ui::icons::NerdIcon::Bug,
 ];
 
 /// Context-aware universal 1-cell Unicode Technical Symbol preview cycle (zero boxes in any font)
@@ -852,8 +862,8 @@ pub fn render_spinner_spans_with_all_icons(
         }
         SpinnerStyle::NerdActivity => {
             let icon = activity_nf.unwrap_or_else(|| {
-                let idx = ((millis / 500) as usize) % ACTIVITY_NF_PREVIEW_FRAMES.len();
-                ACTIVITY_NF_PREVIEW_FRAMES[idx]
+                let idx = ((millis / 500) as usize) % ACTIVITY_NF_PREVIEW_ICONS.len();
+                crate::ui::icons::nf(ACTIVITY_NF_PREVIEW_ICONS[idx])
             });
             let phase = phase_rad(millis, 160.0);
             let factor = (phase.sin() * 0.5 + 0.5).clamp(0.0, 1.0);
@@ -867,8 +877,8 @@ pub fn render_spinner_spans_with_all_icons(
             let spin_idx = ((millis / crate::constants::SPINNER_FRAME_MS) as usize)
                 % BRAILLE_SPINNER_FRAMES.len();
             let icon = activity_nf.unwrap_or_else(|| {
-                let idx = ((millis / 600) as usize) % ACTIVITY_NF_PREVIEW_FRAMES.len();
-                ACTIVITY_NF_PREVIEW_FRAMES[idx]
+                let idx = ((millis / 600) as usize) % ACTIVITY_NF_PREVIEW_ICONS.len();
+                crate::ui::icons::nf(ACTIVITY_NF_PREVIEW_ICONS[idx])
             });
             let phase = phase_rad(millis, 160.0);
             let f1 = (phase.sin() * 0.5 + 0.5).clamp(0.0, 1.0);
@@ -889,11 +899,11 @@ pub fn render_spinner_spans_with_all_icons(
             ]
         }
         SpinnerStyle::NerdPulse => {
-            let idx = ((millis / 260) as usize) % NF_PULSE_FRAMES.len();
+            let idx = ((millis / 260) as usize) % NF_PULSE_ICONS.len();
             let phase = phase_rad(millis, 160.0);
             let factor = (phase.sin() * 0.5 + 0.5).clamp(0.0, 1.0);
             vec![Span::styled(
-                format!("{}  ", NF_PULSE_FRAMES[idx]),
+                format!("{}  ", crate::ui::icons::nf(NF_PULSE_ICONS[idx])),
                 Style::default()
                     .fg(lerp_color(c1, c2, factor))
                     .add_modifier(Modifier::BOLD),
@@ -1076,7 +1086,13 @@ pub fn render_activity_hint_spans(
             Style::default().fg(theme.muted),
         )],
         ActivityHintStyle::NerdFont => vec![
-            Span::styled(" \u{ea82} ", Style::default().fg(theme.info)),
+            Span::styled(
+                format!(
+                    " {} ",
+                    crate::ui::icons::nf(crate::ui::icons::NerdIcon::Clock)
+                ),
+                Style::default().fg(theme.info),
+            ),
             Span::styled(
                 format!("{:.1}s", elapsed_secs),
                 Style::default().fg(theme.text_primary),
@@ -1141,6 +1157,7 @@ pub fn render_live_activity_line_full(
         Color,
         Color,
     );
+    use crate::ui::icons::{nf, NerdIcon};
     let (
         verb_label,
         trail_gerund,
@@ -1159,7 +1176,7 @@ pub fn render_live_activity_line_full(
             None,
             "💭",
             thinking_kaomojis[think_k_idx],
-            "\u{ea61}", // cod-lightbulb
+            nf(NerdIcon::Think),
             "✦",
             "[*]",
             theme.brand_accent,
@@ -1171,7 +1188,7 @@ pub fn render_live_activity_line_full(
             Some((last_tool.as_str(), "")),
             "💭",
             thinking_kaomojis[think_k_idx],
-            "\u{ea61}", // cod-lightbulb
+            nf(NerdIcon::Think),
             "✦",
             "[*]",
             theme.brand_accent,
@@ -1183,7 +1200,7 @@ pub fn render_live_activity_line_full(
             None,
             "🌟",
             "( •_•)",
-            "\u{eaf8}", // cod-settings-gear
+            nf(NerdIcon::Gear),
             "◈",
             "[~]",
             theme.brand_accent,
@@ -1195,7 +1212,7 @@ pub fn render_live_activity_line_full(
             None,
             "💬",
             "( ^_-)",
-            "\u{ea6b}", // cod-comment
+            nf(NerdIcon::Comment),
             "▸",
             "[>]",
             theme.info,
@@ -1207,7 +1224,7 @@ pub fn render_live_activity_line_full(
             Some((tool.as_str(), target.as_str())),
             "🧭",
             "( °_°)◈",
-            "\u{eaa6}", // cod-checklist
+            nf(NerdIcon::Checklist),
             "⎇",
             "[#]",
             theme.brand_accent,
@@ -1219,7 +1236,7 @@ pub fn render_live_activity_line_full(
             Some((tool.as_str(), path.as_str())),
             "📝",
             "( ▸_▸)◈",
-            "\u{ea73}", // cod-edit
+            nf(NerdIcon::Write),
             "✎",
             "[+]",
             theme.info,
@@ -1231,7 +1248,7 @@ pub fn render_live_activity_line_full(
             Some(("patch_file", path.as_str())),
             "🔧",
             "(⌐▪_▪)",
-            "\u{eb10}", // cod-tools
+            nf(NerdIcon::Edit),
             "⚙",
             "[~]",
             theme.info,
@@ -1243,8 +1260,8 @@ pub fn render_live_activity_line_full(
             Some((tool.as_str(), path.as_str())),
             "📖",
             "( ◉_◉)",
-            "\u{eaa4}", // cod-book
-            "⌖",
+            nf(NerdIcon::Read),
+            "§",
             "[?]",
             theme.info,
             theme.brand_accent,
@@ -1255,8 +1272,8 @@ pub fn render_live_activity_line_full(
             Some(("grep_search", target.as_str())),
             "🔭",
             "( ◉_◉)",
-            "\u{ea6d}", // cod-search
-            "⌖",
+            nf(NerdIcon::Search),
+            "◈",
             "[?]",
             theme.info,
             theme.brand_accent,
@@ -1267,7 +1284,7 @@ pub fn render_live_activity_line_full(
             Some(("search_web", query.as_str())),
             "📡",
             "( °o°)",
-            "\u{eb01}", // cod-globe
+            nf(NerdIcon::Globe),
             "◎",
             "[@]",
             theme.info,
@@ -1279,7 +1296,7 @@ pub fn render_live_activity_line_full(
             Some(("exec_cmd", step.as_str())),
             "🚀",
             "(ง°_°)ง",
-            "\u{eaaf}", // cod-bug
+            nf(NerdIcon::Bug),
             "❯",
             "[$]",
             theme.info,
@@ -1291,7 +1308,7 @@ pub fn render_live_activity_line_full(
             Some(("exec_cmd", command.as_str())),
             "🚀",
             "(ง°_°)ง",
-            "\u{ea85}", // cod-terminal
+            nf(NerdIcon::Terminal),
             "❯",
             "[$]",
             theme.info,
@@ -1303,7 +1320,7 @@ pub fn render_live_activity_line_full(
             Some(("spawn_subagent", role.as_str())),
             "🐝",
             "( ◉_◉)⊃",
-            "\u{eb08}", // cod-hubot
+            nf(NerdIcon::Bot),
             "❖",
             "[&]",
             theme.highlight,
@@ -1315,7 +1332,7 @@ pub fn render_live_activity_line_full(
             Some((tool.as_str(), skill.as_str())),
             "🧠",
             "( ✧_✧)",
-            "\u{eb65}", // cod-sparkle
+            nf(NerdIcon::Sparkle),
             "✦",
             "[*]",
             theme.brand_accent,
@@ -1327,7 +1344,7 @@ pub fn render_live_activity_line_full(
             Some((tool.as_str(), target.as_str())),
             "🌟",
             "( •_•)",
-            "\u{eaf8}", // cod-settings-gear
+            nf(NerdIcon::Gear),
             "◈",
             "[>]",
             theme.info,
@@ -1339,7 +1356,7 @@ pub fn render_live_activity_line_full(
             Some(("context_memory", "")),
             "💾",
             "( ~_~)",
-            "\u{eace}", // cod-database
+            nf(NerdIcon::Database),
             "⌘",
             "[=]",
             theme.muted,
@@ -2164,6 +2181,32 @@ mod tests {
             path: "src/App.tsx".to_string(),
         };
 
+        // 1. Default auto-fallback (no Nerd Font detected): zero PUA boxes (`✎` instead of `▯`)
+        crate::ui::icons::set_nerd_font_pua_override(None);
+        let fallback_line = render_live_activity_line_full(
+            &write_act,
+            SpinnerStyle::NerdOrbit,
+            ActivityBarStyle::NfDetail,
+            ActivityHintStyle::NerdFont,
+            true,
+            320,
+            4.5,
+            &theme,
+        );
+        let fallback_txt: String = fallback_line
+            .spans
+            .into_iter()
+            .map(|s| s.content.into_owned())
+            .collect();
+        assert!(
+            fallback_txt.contains("✎")
+                && fallback_txt.contains("◷ 4.5s")
+                && !fallback_txt.contains('\u{ea73}'),
+            "Default Nerd Font auto-fallback must render zero-box Unicode icons: {fallback_txt}"
+        );
+
+        // 2. When Nerd Font PUA is explicitly enabled, emits collision-free Codicons
+        crate::ui::icons::set_nerd_font_pua_override(Some(true));
         for (style, expected_icon) in [
             (SpinnerStyle::NerdActivity, "\u{ea73}"),
             (SpinnerStyle::NerdOrbit, "\u{ea73}"),
@@ -2210,6 +2253,7 @@ mod tests {
             nf_tool_txt.contains("\u{ea73} write_file") && !nf_tool_txt.contains("src/App.tsx"),
             "NfTool unexpected output: {nf_tool_txt}"
         );
+        crate::ui::icons::set_nerd_font_pua_override(None);
 
         // Universal Unicode Technical Symbol & ASCII activity bar + spinner styles (zero PUA boxes)
         let sym_line = render_live_activity_line_full(

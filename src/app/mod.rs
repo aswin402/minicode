@@ -173,6 +173,7 @@ impl<'a> App<'a> {
         let mut input_dock = InputDock::new_with_workspace(workspace_root);
         input_dock.menu_style = config.ui.menu_style_enum();
         input_dock.box_style = config.ui.input_box_style_enum();
+        crate::ui::icons::sync_nerd_font_pua_from_config(config.ui.nerd_font_pua);
 
         Self {
             workspace_root: workspace_root.to_path_buf(),

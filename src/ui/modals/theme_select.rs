@@ -822,6 +822,12 @@ pub static VISIBILITY_TOGGLE_OPTIONS: &[VisibilityToggleOption] = &[
         name: "Timer & Interrupt Hint",
         description: "Show '(6.3s • esc to interrupt)' next to the live activity spinner",
     },
+    VisibilityToggleOption {
+        id: "nerd_font_pua",
+        group: "Icons",
+        name: "Force Nerd Font PUA Glyphs",
+        description: "Force raw Nerd Font Codicons (OFF = auto-detect & zero-box Unicode fallback)",
+    },
 ];
 
 pub fn visibility_toggle_is_enabled(id: &str, ui: &crate::config::UiConfig) -> bool {
@@ -839,6 +845,7 @@ pub fn visibility_toggle_is_enabled(id: &str, ui: &crate::config::UiConfig) -> b
         "status_git" => ui.show_status_git,
         "status_badges" => ui.show_status_badges,
         "interrupt_hint" => ui.show_interrupt_hint,
+        "nerd_font_pua" => ui.nerd_font_pua,
         _ => true,
     }
 }
@@ -861,6 +868,7 @@ pub fn toggle_visibility_option(
         "status_git" => (&mut ui.show_status_git, "Git Branch Badge"),
         "status_badges" => (&mut ui.show_status_badges, "MCP / Swarm / Tasks Badges"),
         "interrupt_hint" => (&mut ui.show_interrupt_hint, "Timer & Interrupt Hint"),
+        "nerd_font_pua" => (&mut ui.nerd_font_pua, "Force Nerd Font PUA Glyphs"),
         _ => return None,
     };
     *field.0 = !*field.0;
@@ -2221,6 +2229,13 @@ pub fn render_theme_select(
             );
         }
         crate::ui::modals::ThemeModalTab::MenuStyles => {
+            let live_menu_preview = |style_id: &str| -> Vec<Line<'static>> {
+                let st = crate::ui::intellisense::MenuStyle::from_str_loose(style_id);
+                st.live_preview_lines()
+                    .into_iter()
+                    .map(|l| Line::from(Span::styled(l, Style::default().fg(theme.info))))
+                    .collect()
+            };
             render_style_preview_list(
                 &mut content_lines,
                 &mut preview_title,
@@ -2232,7 +2247,7 @@ pub fn render_theme_select(
                 list_max_visible,
                 right_w,
                 theme,
-                None,
+                Some(&live_menu_preview),
             );
         }
         crate::ui::modals::ThemeModalTab::InputBoxStyles => {
@@ -2786,12 +2801,23 @@ pub fn render_theme_select(
         ]));
         content_lines.extend(preview_lines);
         if preview_title.contains("Nerd Font") {
+            let (badge, msg) = if crate::ui::icons::use_raw_nerd_font_pua() {
+                (
+                    "    Nerd Font: ",
+                    "Native Codicon PUA glyphs active (toggle in 16. Show / Hide).",
+                )
+            } else {
+                (
+                    "    Auto-Fallback: ",
+                    "No Nerd Font in terminal — using zero-box Unicode icons (set FiraMono Nerd Font or toggle 'Force Nerd Font PUA' in 16. Show / Hide).",
+                )
+            };
             content_lines.push(Line::from(vec![
-                Span::styled("    Tip: ", Style::default().fg(theme.warning).add_modifier(Modifier::BOLD)),
                 Span::styled(
-                    "Nerd Font glyphs require a Nerd Font terminal font (e.g. FiraMono Nerd Font); pick Unicode Symbols (⎇ ◈ ✦) for zero-box icons in any font.",
-                    Style::default().fg(theme.muted),
+                    badge,
+                    Style::default().fg(theme.info).add_modifier(Modifier::BOLD),
                 ),
+                Span::styled(msg, Style::default().fg(theme.muted)),
             ]));
         }
     }

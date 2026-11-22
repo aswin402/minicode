@@ -76,15 +76,9 @@ pub const TOAST_SYMBOL_PALETTES: &[ToastSymbolPalette] = &[
     },
     ToastSymbolPalette {
         theme: crate::config::ToastSymbolTheme::NerdFont,
-        glyphs: [
-            "\u{eab2}", // cod-check (Success — zero Verdana/Arial PUA collision)
-            "\u{ea74}", // cod-info (Info)
-            "\u{ea6c}", // cod-warning (Warning)
-            "\u{ea87}", // cod-error (Error)
-            "\u{eb08}", // cod-hubot (Subagent)
-            "\u{eaa6}", // cod-checklist (Task)
-            "\u{ea61}", // cod-lightbulb (Skill)
-        ],
+        // Placeholder fallback entries; `ToastKind::glyph_for` dynamically resolves via `ui::icons::nf`
+        // so non-Nerd-Font terminals never render hollow `▯` tofu boxes.
+        glyphs: ["✓", "◉", "△", "✗", "❖", "⎇", "✦"],
     },
 ];
 
@@ -120,6 +114,18 @@ impl ToastKind {
     /// Resolves the status indicator glyph for the configured `ToastSymbolTheme` via table lookup.
     #[must_use]
     pub fn glyph_for(self, symbol_theme: crate::config::ToastSymbolTheme) -> &'static str {
+        if symbol_theme == crate::config::ToastSymbolTheme::NerdFont {
+            use crate::ui::icons::{nf, NerdIcon};
+            return match self {
+                Self::Success => nf(NerdIcon::Check),
+                Self::Info => nf(NerdIcon::Info),
+                Self::Warning => nf(NerdIcon::Warning),
+                Self::Error => nf(NerdIcon::Error),
+                Self::Subagent => nf(NerdIcon::Bot),
+                Self::Task => nf(NerdIcon::Checklist),
+                Self::Skill => nf(NerdIcon::Think),
+            };
+        }
         let idx = self.index();
         TOAST_SYMBOL_PALETTES
             .iter()

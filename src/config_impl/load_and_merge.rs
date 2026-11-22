@@ -128,6 +128,7 @@ pub struct RawUiConfig {
     pub show_status_badges: Option<bool>,
     pub show_interrupt_hint: Option<bool>,
     pub show_thought_tokens: Option<bool>,
+    pub nerd_font_pua: Option<bool>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -991,6 +992,9 @@ impl Config {
         if let Some(v) = other.ui.show_thought_tokens {
             self.ui.show_thought_tokens = v;
         }
+        if let Some(v) = other.ui.nerd_font_pua {
+            self.ui.nerd_font_pua = v;
+        }
         if let Some(level) = other.logging.level {
             self.logging.level = level;
         }
@@ -1257,6 +1261,9 @@ impl Config {
         }
         if let Some(v) = global.ui.show_thought_tokens {
             self.ui.show_thought_tokens = v;
+        }
+        if let Some(v) = global.ui.nerd_font_pua {
+            self.ui.nerd_font_pua = v;
         }
         if let Some(caveman_mode) = global.agent.caveman_mode {
             self.agent.caveman_mode = caveman_mode;

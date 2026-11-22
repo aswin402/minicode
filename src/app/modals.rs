@@ -1335,6 +1335,9 @@ impl<'a> App<'a> {
                                     )
                                 {
                                     *ui_prefs = self.config.ui.clone();
+                                    crate::ui::icons::sync_nerd_font_pua_from_config(
+                                        self.config.ui.nerd_font_pua,
+                                    );
                                     let _ = self.config.save(Some(&self.workspace_root));
                                     let _ = self.config.save(None);
 

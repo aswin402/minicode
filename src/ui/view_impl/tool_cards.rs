@@ -136,25 +136,28 @@ pub fn tool_lead_icon(raw_name: &str, icon_style: ToolIconStyle, success: bool) 
             ToolCategory::Skill => "( ✧_✧)",
             ToolCategory::Generic => "( •_•)",
         },
-        ToolIconStyle::NerdFont => match cat {
-            ToolCategory::Shell => "\u{ea85}",    // cod-terminal
-            ToolCategory::Browser => "\u{eb01}",  // cod-globe
-            ToolCategory::Write => "\u{ea73}",    // cod-edit
-            ToolCategory::Edit => "\u{eb10}",     // cod-tools
-            ToolCategory::Read => "\u{eaa4}",     // cod-book
-            ToolCategory::Search => "\u{ea6d}",   // cod-search
-            ToolCategory::Plan => "\u{eaa6}",     // cod-checklist
-            ToolCategory::Git => "\u{ea68}",      // cod-git-branch
-            ToolCategory::Subagent => "\u{eb08}", // cod-hubot
-            ToolCategory::Skill => "\u{ea61}",    // cod-lightbulb
-            ToolCategory::Generic => "\u{eaf8}",  // cod-settings-gear
-        },
+        ToolIconStyle::NerdFont => {
+            use crate::ui::icons::{nf, NerdIcon};
+            match cat {
+                ToolCategory::Shell => nf(NerdIcon::Terminal),
+                ToolCategory::Browser => nf(NerdIcon::Globe),
+                ToolCategory::Write => nf(NerdIcon::Write),
+                ToolCategory::Edit => nf(NerdIcon::Edit),
+                ToolCategory::Read => nf(NerdIcon::Read),
+                ToolCategory::Search => nf(NerdIcon::Search),
+                ToolCategory::Plan => nf(NerdIcon::Checklist),
+                ToolCategory::Git => nf(NerdIcon::GitBranch),
+                ToolCategory::Subagent => nf(NerdIcon::Bot),
+                ToolCategory::Skill => nf(NerdIcon::Think),
+                ToolCategory::Generic => nf(NerdIcon::Gear),
+            }
+        }
     }
 }
 
 /// Resolves the completion/failure status indicator glyph for the active `ToolIconStyle`.
 #[must_use]
-pub const fn tool_outcome_glyph(icon_style: ToolIconStyle, success: bool) -> &'static str {
+pub fn tool_outcome_glyph(icon_style: ToolIconStyle, success: bool) -> &'static str {
     match (icon_style, success) {
         (ToolIconStyle::Ascii, true) => "[OK]",
         (ToolIconStyle::Ascii, false) => "[ERR]",
@@ -162,8 +165,8 @@ pub const fn tool_outcome_glyph(icon_style: ToolIconStyle, success: bool) -> &'s
         (ToolIconStyle::Emoji, false) => "❌",
         (ToolIconStyle::Kaomoji, true) => "(•‿•)",
         (ToolIconStyle::Kaomoji, false) => "(×_×)",
-        (ToolIconStyle::NerdFont, true) => "\u{eab2}", // cod-check
-        (ToolIconStyle::NerdFont, false) => "\u{ea87}", // cod-error
+        (ToolIconStyle::NerdFont, true) => crate::ui::icons::nf(crate::ui::icons::NerdIcon::Check),
+        (ToolIconStyle::NerdFont, false) => crate::ui::icons::nf(crate::ui::icons::NerdIcon::Error),
         (_, true) => "✓",
         (_, false) => "✗",
     }
@@ -171,15 +174,20 @@ pub const fn tool_outcome_glyph(icon_style: ToolIconStyle, success: bool) -> &'s
 
 /// Resolves the Thought header prefix for the active `ToolIconStyle`.
 #[must_use]
-pub const fn thought_header_prefix(icon_style: ToolIconStyle) -> &'static str {
+pub fn thought_header_prefix(icon_style: ToolIconStyle) -> String {
     match icon_style {
-        ToolIconStyle::Minimal => "• ",
-        ToolIconStyle::Symbols => "✦ ",
-        ToolIconStyle::Ascii => "* ",
-        ToolIconStyle::Emoji => "💭 ",
-        ToolIconStyle::Kaomoji => "( ._.) ",
-        ToolIconStyle::NerdFont => "\u{ea61} ",
-        ToolIconStyle::None => "",
+        ToolIconStyle::Minimal => "• ".to_string(),
+        ToolIconStyle::Symbols => "✦ ".to_string(),
+        ToolIconStyle::Ascii => "* ".to_string(),
+        ToolIconStyle::Emoji => "💭 ".to_string(),
+        ToolIconStyle::Kaomoji => "( ._.) ".to_string(),
+        ToolIconStyle::NerdFont => {
+            format!(
+                "{} ",
+                crate::ui::icons::nf(crate::ui::icons::NerdIcon::Think)
+            )
+        }
+        ToolIconStyle::None => String::new(),
     }
 }
 
