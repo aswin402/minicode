@@ -628,7 +628,16 @@ impl<'a> App<'a> {
                         state.start_scan(scope);
                     }
                     KeyCode::Char('s') | KeyCode::Char('S') => {
-                        state.visual_style = state.visual_style.next();
+                        let next_style = state.visual_style.next();
+                        state.visual_style = next_style;
+                        self.config.ui.doctor_style = next_style.as_str().to_string();
+                        let _ = self.config.save(Some(&self.workspace_root));
+                        let _ = self.config.save(None);
+                        toast_msg = Some((
+                            crate::ui::ToastKind::Success,
+                            "MiniDoctor Style".to_string(),
+                            format!("Switched to {} and saved to config.", next_style.label()),
+                        ));
                     }
                     KeyCode::Char('e') | KeyCode::Char('E') => match state.refresh_neededfix_md() {
                         Ok(path) => {

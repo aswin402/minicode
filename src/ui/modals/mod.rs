@@ -109,6 +109,7 @@ pub enum ThemeModalTab {
     OutputStyles,
     OutputBadgeStyles,
     TurnSummaryStyles,
+    DoctorStyles,
     Visibility,
 }
 
@@ -135,6 +136,7 @@ impl ThemeModalTab {
             ThemeModalTab::OutputStyles,
             ThemeModalTab::OutputBadgeStyles,
             ThemeModalTab::TurnSummaryStyles,
+            ThemeModalTab::DoctorStyles,
             ThemeModalTab::Visibility,
         ]
     }
@@ -161,7 +163,8 @@ impl ThemeModalTab {
             ThemeModalTab::OutputStyles => "17. Output Style",
             ThemeModalTab::OutputBadgeStyles => "18. Output Badge",
             ThemeModalTab::TurnSummaryStyles => "19. Turn Summary",
-            ThemeModalTab::Visibility => "20. Show / Hide",
+            ThemeModalTab::DoctorStyles => "20. Doctor Styles",
+            ThemeModalTab::Visibility => "21. Show / Hide",
         }
     }
 
@@ -242,11 +245,15 @@ impl ThemeModalTab {
             ),
             ThemeModalTab::TurnSummaryStyles => (
                 "End-of-Turn Summary Footer (Tokens & Duration)",
-                "Style total turn tokens & duration below responses (press 'p' to change placement; toggle fields in 20. Show / Hide)",
+                "Style total turn tokens & duration below responses (press 'p' to change placement; toggle fields in 21. Show / Hide)",
+            ),
+            ThemeModalTab::DoctorStyles => (
+                "MiniDoctor Health Dashboard Styles (/doctor)",
+                "Customize /doctor card chrome, gauge bars & badges (Aura, NerdFont, Kaomoji, Emoji, ASCII, Posh, Flutter, Minimal, Cyber, Compact)",
             ),
             ThemeModalTab::Visibility => (
-                "Show / Hide TUI Elements & Inline Thought Tokens",
-                "Toggle individual status elements, KV cache, mode badges, interrupt hint, and thought tokens",
+                "Show / Hide TUI Elements & Doctor Options",
+                "Toggle status elements, turn summary fields, MiniDoctor sparkline/sub-scores/drawer/animation, and thought tokens",
             ),
         }
     }
@@ -316,6 +323,7 @@ pub enum ModalState {
         output_style_selected_index: usize,
         output_badge_style_selected_index: usize,
         turn_summary_style_selected_index: usize,
+        doctor_style_selected_index: usize,
         visibility_selected_index: usize,
         active_theme_id: String,
         active_animation_id: String,
@@ -435,10 +443,10 @@ impl ModalState {
     pub fn new_doctor(
         workspace_root: &std::path::Path,
         scope: minidoctor::ScanScope,
-        spinner_style: crate::ui::animation::SpinnerStyle,
+        ui: &crate::config::UiConfig,
     ) -> Self {
         let mut st = doctor::DoctorModalState::new(workspace_root, scope, true);
-        st.spinner_style = spinner_style;
+        st.apply_ui_config(ui);
         Self::Doctor(st)
     }
 
@@ -871,6 +879,7 @@ impl ModalState {
             output_style_selected_index: 0,
             output_badge_style_selected_index: 0,
             turn_summary_style_selected_index: 0,
+            doctor_style_selected_index: 0,
             visibility_selected_index: 0,
             active_theme_id: active_theme_id.to_string(),
             active_animation_id: active_animation_id.to_string(),
@@ -916,6 +925,7 @@ impl ModalState {
             ref mut output_style_selected_index,
             ref mut output_badge_style_selected_index,
             ref mut turn_summary_style_selected_index,
+            ref mut doctor_style_selected_index,
             ref mut active_menu_style,
             ref mut ui_prefs,
             ..
@@ -978,6 +988,11 @@ impl ModalState {
             *turn_summary_style_selected_index = theme_select::TURN_SUMMARY_STYLE_OPTIONS
                 .iter()
                 .position(|s| s.id == active_turn_summary)
+                .unwrap_or(0);
+            let active_doctor_style = ui.doctor_style_enum().as_str();
+            *doctor_style_selected_index = theme_select::DOCTOR_STYLE_OPTIONS
+                .iter()
+                .position(|s| s.id == active_doctor_style)
                 .unwrap_or(0);
             *ui_prefs = ui.clone();
         }
@@ -1490,6 +1505,7 @@ impl ModalState {
                 output_style_selected_index,
                 output_badge_style_selected_index,
                 turn_summary_style_selected_index,
+                doctor_style_selected_index,
                 visibility_selected_index,
                 active_theme_id,
                 active_animation_id,
@@ -1521,6 +1537,7 @@ impl ModalState {
                     output_styles: theme_select::OUTPUT_STYLE_OPTIONS,
                     output_badge_styles: theme_select::OUTPUT_BADGE_STYLE_OPTIONS,
                     turn_summary_styles: theme_select::TURN_SUMMARY_STYLE_OPTIONS,
+                    doctor_styles: theme_select::DOCTOR_STYLE_OPTIONS,
                     active_tab: *active_tab,
                     theme_selected_index: *theme_selected_index,
                     animation_selected_index: *animation_selected_index,
@@ -1542,6 +1559,7 @@ impl ModalState {
                     output_style_selected_index: *output_style_selected_index,
                     output_badge_style_selected_index: *output_badge_style_selected_index,
                     turn_summary_style_selected_index: *turn_summary_style_selected_index,
+                    doctor_style_selected_index: *doctor_style_selected_index,
                     visibility_selected_index: *visibility_selected_index,
                     active_theme_id,
                     active_animation_id,

@@ -1209,7 +1209,7 @@ pub fn render_turn_summary_preview(
     if footer.is_empty() {
         out.push(Line::from(String::new()));
         out.push(Line::from(vec![Span::styled(
-            "(Turn Summary hidden — press 'p' to change placement or enable in 20. Show / Hide)",
+            "(Turn Summary hidden — press 'p' to change placement or enable in 21. Show / Hide)",
             Style::default().fg(theme.muted),
         )]));
     } else {

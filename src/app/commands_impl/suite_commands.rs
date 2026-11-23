@@ -155,8 +155,7 @@ impl<'a> App<'a> {
             } else {
                 minidoctor::ScanScope::Full
             };
-            let spinner = crate::ui::animation::SpinnerStyle::from_id(&self.config.ui.animation);
-            self.modal = ModalState::new_doctor(&self.workspace_root, scope, spinner);
+            self.modal = ModalState::new_doctor(&self.workspace_root, scope, &self.config.ui);
             return Ok(Some(CommandAction::Continue));
         }
 

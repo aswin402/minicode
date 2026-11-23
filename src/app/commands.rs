@@ -812,6 +812,44 @@ impl<'a> App<'a> {
             return Ok(CommandAction::Continue);
         }
 
+        if prompt_lower == "/doctor-style" || prompt_lower.starts_with("/doctor-style ") {
+            let arg = prompt_trimmed
+                .strip_prefix("/doctor-style")
+                .unwrap_or("")
+                .trim();
+            if arg.is_empty() {
+                self.open_theme_modal(Some(crate::ui::modals::ThemeModalTab::DoctorStyles));
+            } else {
+                let lower = arg.to_ascii_lowercase().replace('-', "_");
+                if let Some(opt) = crate::ui::modals::theme_select::DOCTOR_STYLE_OPTIONS
+                    .iter()
+                    .find(|o| o.id == lower || o.name.to_ascii_lowercase().contains(&lower))
+                {
+                    self.config.ui.doctor_style = opt.id.to_string();
+                    let _ = self.config.save(Some(&self.workspace_root));
+                    let _ = self.config.save(None);
+                    self.toasts.push(
+                        crate::ui::ToastKind::Success,
+                        "MiniDoctor Style Updated",
+                        format!("Switched /doctor UI to \"{}\".", opt.name),
+                        Some(opt.id.to_string()),
+                        Some("doctor_style_preview".to_string()),
+                    );
+                } else {
+                    let valid = crate::ui::modals::theme_select::DOCTOR_STYLE_OPTIONS
+                        .iter()
+                        .map(|o| o.id)
+                        .collect::<Vec<_>>()
+                        .join(", ");
+                    self.add_timeline_status(format!(
+                        "! Unknown doctor style '{}'. Available: {}",
+                        arg, valid
+                    ));
+                }
+            }
+            return Ok(CommandAction::Continue);
+        }
+
         if prompt_lower == "/tool-icons" || prompt_lower.starts_with("/tool-icons ") {
             let arg = prompt_trimmed
                 .strip_prefix("/tool-icons")

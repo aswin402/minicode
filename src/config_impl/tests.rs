@@ -180,6 +180,29 @@ fn test_todo_widget_style_enum_mapping() {
         ToastStyle::from_str_loose("posh_pill"),
         ToastStyle::PoshPill
     );
+
+    // DoctorStyle all 10 styles + loose aliases + next() cycle + default UI toggles
+    assert_eq!(ui.doctor_style_enum(), DoctorStyle::Aura);
+    assert!(ui.show_doctor_sparkline);
+    assert!(ui.show_doctor_subscores);
+    assert!(ui.show_doctor_detail_drawer);
+    assert!(ui.doctor_animate_reveal);
+    assert_eq!(
+        DoctorStyle::from_str_loose("nerdfont"),
+        DoctorStyle::NerdFont
+    );
+    assert_eq!(DoctorStyle::from_str_loose("kamoji"), DoctorStyle::Kaomoji);
+    assert_eq!(DoctorStyle::from_str_loose("emoji"), DoctorStyle::Emoji);
+    assert_eq!(DoctorStyle::from_str_loose("ascii"), DoctorStyle::Ascii);
+    assert_eq!(DoctorStyle::from_str_loose("oh-my-posh"), DoctorStyle::Posh);
+    assert_eq!(
+        DoctorStyle::from_str_loose("flutter_doctor"),
+        DoctorStyle::Flutter
+    );
+    assert_eq!(DoctorStyle::from_str_loose("minimal"), DoctorStyle::Minimal);
+    assert_eq!(DoctorStyle::from_str_loose("hud"), DoctorStyle::Cyber);
+    assert_eq!(DoctorStyle::from_str_loose("compact"), DoctorStyle::Compact);
+    assert_eq!(DoctorStyle::Compact.next(), DoctorStyle::Aura);
 }
 
 #[test]

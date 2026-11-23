@@ -2210,6 +2210,99 @@ impl Default for TurnSummaryConfig {
     }
 }
 
+/// Visual style presets for the interactive MiniDoctor (`/doctor`) TUI modal.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DoctorStyle {
+    /// Aura Rounded card with smooth `━`/`─` gauge bar & trend sparkline (Default)
+    #[default]
+    Aura,
+    /// Auto-detecting Nerd Font Codicons with zero-box standard Unicode fallback
+    NerdFont,
+    /// Expressive Kaomoji mood faces (`(•‿•)` / `(・_・)` / `(×_×)`) & open rounded hero
+    Kaomoji,
+    /// Semantic Emoji status badges (`🩺`, `💚`, `🟡`, `🔴`, `🚨`, `⚠️`, `🧹`)
+    Emoji,
+    /// Pure 7-bit ASCII (`+--+`, `|`, `=`/`-` gauge, `[CRIT]`/`[ERR]`/`[WARN]`/`[DEAD]`)
+    Ascii,
+    /// Oh My Posh rounded capsule pills (`92/100 (A)`, `Great`) + thick accent rail
+    Posh,
+    /// Flutter Doctor Classic minimalist bordered score box & thick gauge bar
+    Flutter,
+    /// Clean borderless typographic layout with hairline rules
+    Minimal,
+    /// Cyber Neon HUD double-line borders (`╔═══╗`) & segmented block meter (`▰▱`)
+    Cyber,
+    /// Compact high-density header maximizing vertical diagnostic rows
+    Compact,
+}
+
+impl DoctorStyle {
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Aura => "aura",
+            Self::NerdFont => "nerdfont",
+            Self::Kaomoji => "kaomoji",
+            Self::Emoji => "emoji",
+            Self::Ascii => "ascii",
+            Self::Posh => "posh",
+            Self::Flutter => "flutter",
+            Self::Minimal => "minimal",
+            Self::Cyber => "cyber",
+            Self::Compact => "compact",
+        }
+    }
+
+    #[must_use]
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Aura => "Aura",
+            Self::NerdFont => "NerdFont",
+            Self::Kaomoji => "Kaomoji",
+            Self::Emoji => "Emoji",
+            Self::Ascii => "ASCII",
+            Self::Posh => "Posh",
+            Self::Flutter => "Flutter",
+            Self::Minimal => "Minimal",
+            Self::Cyber => "Cyber",
+            Self::Compact => "Compact",
+        }
+    }
+
+    #[must_use]
+    pub fn from_str_loose(s: &str) -> Self {
+        match s.trim().to_ascii_lowercase().replace('-', "_").as_str() {
+            "nerdfont" | "nerd" | "nf" | "codicons" => Self::NerdFont,
+            "kaomoji" | "kamoji" | "faces" => Self::Kaomoji,
+            "emoji" | "emojis" => Self::Emoji,
+            "ascii" | "plain" | "retro" => Self::Ascii,
+            "posh" | "oh_my_posh" | "pill" | "pills" | "capsule" => Self::Posh,
+            "flutter" | "flutter_doctor" | "classic" => Self::Flutter,
+            "minimal" | "clean" | "borderless" => Self::Minimal,
+            "cyber" | "hud" | "neon" | "double" => Self::Cyber,
+            "compact" | "dense" | "slim" => Self::Compact,
+            _ => Self::Aura,
+        }
+    }
+
+    #[must_use]
+    pub const fn next(self) -> Self {
+        match self {
+            Self::Aura => Self::NerdFont,
+            Self::NerdFont => Self::Kaomoji,
+            Self::Kaomoji => Self::Emoji,
+            Self::Emoji => Self::Ascii,
+            Self::Ascii => Self::Posh,
+            Self::Posh => Self::Flutter,
+            Self::Flutter => Self::Minimal,
+            Self::Minimal => Self::Cyber,
+            Self::Cyber => Self::Compact,
+            Self::Compact => Self::Aura,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct UiConfig {
     #[serde(default = "default_theme")]
@@ -2286,6 +2379,21 @@ pub struct UiConfig {
 
     #[serde(default = "default_turn_summary_position")]
     pub turn_summary_position: String,
+
+    #[serde(default = "default_doctor_style")]
+    pub doctor_style: String,
+
+    #[serde(default = "default_true")]
+    pub show_doctor_sparkline: bool,
+
+    #[serde(default = "default_true")]
+    pub show_doctor_subscores: bool,
+
+    #[serde(default = "default_true")]
+    pub show_doctor_detail_drawer: bool,
+
+    #[serde(default = "default_true")]
+    pub doctor_animate_reveal: bool,
 
     #[serde(default)]
     pub plain: bool,
@@ -2519,6 +2627,10 @@ impl UiConfig {
             show_kv_cache: self.show_turn_kv_cache,
         }
     }
+    #[must_use]
+    pub fn doctor_style_enum(&self) -> DoctorStyle {
+        DoctorStyle::from_str_loose(&self.doctor_style)
+    }
 }
 
 impl Default for UiConfig {
@@ -2549,6 +2661,11 @@ impl Default for UiConfig {
             output_badge_style: default_output_badge_style(),
             turn_summary_style: default_turn_summary_style(),
             turn_summary_position: default_turn_summary_position(),
+            doctor_style: default_doctor_style(),
+            show_doctor_sparkline: true,
+            show_doctor_subscores: true,
+            show_doctor_detail_drawer: true,
+            doctor_animate_reveal: true,
             plain: false,
             max_width: default_max_width(),
             show_cost: false,
@@ -2586,6 +2703,10 @@ fn default_animation() -> String {
 
 fn default_swarm_style() -> String {
     "stylish".to_string()
+}
+
+fn default_doctor_style() -> String {
+    "aura".to_string()
 }
 
 fn default_todo_style() -> String {

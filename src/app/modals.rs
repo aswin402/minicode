@@ -648,6 +648,7 @@ impl<'a> App<'a> {
                 ref mut output_style_selected_index,
                 ref mut output_badge_style_selected_index,
                 ref mut turn_summary_style_selected_index,
+                ref mut doctor_style_selected_index,
                 ref mut visibility_selected_index,
                 ref mut active_theme_id,
                 ref mut active_animation_id,
@@ -829,6 +830,10 @@ impl<'a> App<'a> {
                         *turn_summary_style_selected_index =
                             turn_summary_style_selected_index.saturating_sub(1);
                     }
+                    crate::ui::modals::ThemeModalTab::DoctorStyles => {
+                        *doctor_style_selected_index =
+                            doctor_style_selected_index.saturating_sub(1);
+                    }
                     crate::ui::modals::ThemeModalTab::Visibility => {
                         *visibility_selected_index = visibility_selected_index.saturating_sub(1);
                     }
@@ -952,6 +957,12 @@ impl<'a> App<'a> {
                             crate::ui::modals::theme_select::TURN_SUMMARY_STYLE_OPTIONS.len();
                         if *turn_summary_style_selected_index + 1 < total {
                             *turn_summary_style_selected_index += 1;
+                        }
+                    }
+                    crate::ui::modals::ThemeModalTab::DoctorStyles => {
+                        let total = crate::ui::modals::theme_select::DOCTOR_STYLE_OPTIONS.len();
+                        if *doctor_style_selected_index + 1 < total {
+                            *doctor_style_selected_index += 1;
                         }
                     }
                     crate::ui::modals::ThemeModalTab::Visibility => {
@@ -1497,6 +1508,28 @@ impl<'a> App<'a> {
                                     format!("Switched to \"{chosen_name}\"."),
                                     Some(chosen_id),
                                     Some("turn_summary_style_preview".to_string()),
+                                );
+                            }
+                        }
+                        crate::ui::modals::ThemeModalTab::DoctorStyles => {
+                            let options = crate::ui::modals::theme_select::DOCTOR_STYLE_OPTIONS;
+                            if !options.is_empty() && *doctor_style_selected_index < options.len() {
+                                let chosen = &options[*doctor_style_selected_index];
+                                let chosen_id = chosen.id.to_string();
+                                let chosen_name = chosen.name.to_string();
+
+                                self.config.ui.doctor_style = chosen_id.clone();
+                                *ui_prefs = self.config.ui.clone();
+
+                                let _ = self.config.save(Some(&self.workspace_root));
+                                let _ = self.config.save(None);
+
+                                self.toasts.push(
+                                    crate::ui::ToastKind::Success,
+                                    "MiniDoctor Style Updated",
+                                    format!("Switched /doctor UI to \"{chosen_name}\"."),
+                                    Some(chosen_id),
+                                    Some("doctor_style_preview".to_string()),
                                 );
                             }
                         }

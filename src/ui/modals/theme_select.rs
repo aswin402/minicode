@@ -60,6 +60,7 @@ pub type OutputFrameStyleOption = StylePreviewOption;
 pub type OutputStyleOption = StylePreviewOption;
 pub type OutputBadgeStyleOption = StylePreviewOption;
 pub type TurnSummaryStyleOption = StylePreviewOption;
+pub type DoctorStyleOption = StylePreviewOption;
 
 #[derive(Debug, Clone, Copy)]
 pub struct VisibilityToggleOption {
@@ -1127,6 +1128,71 @@ pub static TURN_SUMMARY_STYLE_OPTIONS: &[TurnSummaryStyleOption] = &[
     },
 ];
 
+pub static DOCTOR_STYLE_OPTIONS: &[DoctorStyleOption] = &[
+    DoctorStyleOption {
+        id: "aura",
+        name: "Aura Rounded (Default)",
+        description: "Rounded hero score card, smooth gauge bar, sparkline & detail drawer",
+        preview: &[],
+    },
+    DoctorStyleOption {
+        id: "nerdfont",
+        name: "Nerd Font Codicons (Auto Zero-Box)",
+        description:
+            "Auto-detecting Codicon headers & severity glyphs with zero-box Unicode fallback",
+        preview: &[],
+    },
+    DoctorStyleOption {
+        id: "kaomoji",
+        name: "Expressive Kaomoji (`(•‿•)` / `(×_×)`)",
+        description: "Score-reactive Kaomoji mood faces & playful diagnostic markers",
+        preview: &[],
+    },
+    DoctorStyleOption {
+        id: "emoji",
+        name: "Semantic Emoji (`🩺` / `💚` / `🚨`)",
+        description:
+            "Colorful stethoscope header, traffic-light score faces & emoji severity icons",
+        preview: &[],
+    },
+    DoctorStyleOption {
+        id: "ascii",
+        name: "Pure 7-bit ASCII (`+--+` / `[CRIT]`)",
+        description: "100% pure 7-bit ASCII borders, `=`/`-` gauge & bracket tags for any terminal",
+        preview: &[],
+    },
+    DoctorStyleOption {
+        id: "posh",
+        name: "Oh My Posh Capsule (`92/100 (A)`)",
+        description: "Rounded Powerline capsule badges with thick left accent rail",
+        preview: &[],
+    },
+    DoctorStyleOption {
+        id: "flutter",
+        name: "Flutter Doctor Classic (`█`/`░` Box)",
+        description: "High-contrast flutter_doctor-inspired bordered score box & block fill bar",
+        preview: &[],
+    },
+    DoctorStyleOption {
+        id: "minimal",
+        name: "Clean Minimalist (Borderless)",
+        description: "Open hairline rules without heavy box chrome for maximum breathing room",
+        preview: &[],
+    },
+    DoctorStyleOption {
+        id: "cyber",
+        name: "Cyber Neon HUD (`╔═══╗` / `▰▱`)",
+        description: "Double-line sci-fi HUD frames with segmented telemetry blocks",
+        preview: &[],
+    },
+    DoctorStyleOption {
+        id: "compact",
+        name: "Compact High-Density",
+        description: "Slim 3-line hero banner dedicating maximum rows to diagnostics",
+        preview: &[],
+    },
+];
+
 pub static VISIBILITY_TOGGLE_OPTIONS: &[VisibilityToggleOption] = &[
     VisibilityToggleOption {
         id: "thought_tokens",
@@ -1254,6 +1320,31 @@ pub static VISIBILITY_TOGGLE_OPTIONS: &[VisibilityToggleOption] = &[
         name: "Turn KV Cache %",
         description: "Show turn-level prompt KV cache hit rate ('kv 92%') in the summary footer",
     },
+    VisibilityToggleOption {
+        id: "doctor_sparkline",
+        group: "Doctor",
+        name: "Doctor Trend Sparkline",
+        description: "Show historical score sparkline ('▁▃▅▆▇█') & score delta in /doctor",
+    },
+    VisibilityToggleOption {
+        id: "doctor_subscores",
+        group: "Doctor",
+        name: "Doctor Dimension Scores",
+        description: "Show Correctness/Security/Perf/Arch/Maint sub-scores inside /doctor hero",
+    },
+    VisibilityToggleOption {
+        id: "doctor_detail_drawer",
+        group: "Doctor",
+        name: "Doctor Detail Drawer",
+        description: "Show bottom Why/Fix/Snippet detail panel inside /doctor (hide for more rows)",
+    },
+    VisibilityToggleOption {
+        id: "doctor_animate_reveal",
+        group: "Doctor",
+        name: "Doctor Score Reveal Anim",
+        description:
+            "Animate smooth ease-out Health Score count-up & gauge fill when /doctor completes",
+    },
 ];
 
 pub fn visibility_toggle_is_enabled(id: &str, ui: &crate::config::UiConfig) -> bool {
@@ -1279,6 +1370,10 @@ pub fn visibility_toggle_is_enabled(id: &str, ui: &crate::config::UiConfig) -> b
         "turn_cost" => ui.show_turn_cost,
         "turn_model" => ui.show_turn_model,
         "turn_kv_cache" => ui.show_turn_kv_cache,
+        "doctor_sparkline" => ui.show_doctor_sparkline,
+        "doctor_subscores" => ui.show_doctor_subscores,
+        "doctor_detail_drawer" => ui.show_doctor_detail_drawer,
+        "doctor_animate_reveal" => ui.doctor_animate_reveal,
         _ => true,
     }
 }
@@ -1309,6 +1404,10 @@ pub fn toggle_visibility_option(
         "turn_cost" => (&mut ui.show_turn_cost, "Turn Cost ($ USD)"),
         "turn_model" => (&mut ui.show_turn_model, "Turn Model Name"),
         "turn_kv_cache" => (&mut ui.show_turn_kv_cache, "Turn KV Cache %"),
+        "doctor_sparkline" => (&mut ui.show_doctor_sparkline, "Doctor Trend Sparkline"),
+        "doctor_subscores" => (&mut ui.show_doctor_subscores, "Doctor Dimension Scores"),
+        "doctor_detail_drawer" => (&mut ui.show_doctor_detail_drawer, "Doctor Detail Drawer"),
+        "doctor_animate_reveal" => (&mut ui.doctor_animate_reveal, "Doctor Score Reveal Anim"),
         _ => return None,
     };
     *field.0 = !*field.0;
@@ -1994,6 +2093,7 @@ pub struct ThemeSelectContext<'a> {
     pub output_styles: &'a [OutputStyleOption],
     pub output_badge_styles: &'a [OutputBadgeStyleOption],
     pub turn_summary_styles: &'a [TurnSummaryStyleOption],
+    pub doctor_styles: &'a [DoctorStyleOption],
     pub active_tab: crate::ui::modals::ThemeModalTab,
     pub theme_selected_index: usize,
     pub animation_selected_index: usize,
@@ -2015,6 +2115,7 @@ pub struct ThemeSelectContext<'a> {
     pub output_style_selected_index: usize,
     pub output_badge_style_selected_index: usize,
     pub turn_summary_style_selected_index: usize,
+    pub doctor_style_selected_index: usize,
     pub visibility_selected_index: usize,
     pub active_theme_id: &'a str,
     pub active_animation_id: &'a str,
@@ -2057,6 +2158,7 @@ pub fn render_theme_select(
         output_styles,
         output_badge_styles,
         turn_summary_styles,
+        doctor_styles,
         active_tab,
         theme_selected_index,
         animation_selected_index,
@@ -2078,6 +2180,7 @@ pub fn render_theme_select(
         output_style_selected_index,
         output_badge_style_selected_index,
         turn_summary_style_selected_index,
+        doctor_style_selected_index,
         visibility_selected_index,
         active_theme_id,
         active_animation_id,
@@ -2214,6 +2317,7 @@ pub fn render_theme_select(
             ("  out   ", ui_prefs.output_style.as_str()),
             ("  badge ", ui_prefs.output_badge_style.as_str()),
             ("  turn  ", ui_prefs.turn_summary_style.as_str()),
+            ("  doc   ", ui_prefs.doctor_style.as_str()),
             ("  hint  ", ui_prefs.activity_hint_style.as_str()),
             ("  todo  ", active_todo_style),
             ("  toast ", active_toast_style),
@@ -2303,6 +2407,9 @@ pub fn render_theme_select(
         }
         crate::ui::modals::ThemeModalTab::TurnSummaryStyles => {
             (turn_summary_styles.len(), turn_summary_style_selected_index)
+        }
+        crate::ui::modals::ThemeModalTab::DoctorStyles => {
+            (doctor_styles.len(), doctor_style_selected_index)
         }
         crate::ui::modals::ThemeModalTab::Visibility => {
             (VISIBILITY_TOGGLE_OPTIONS.len(), visibility_selected_index)
@@ -2945,7 +3052,7 @@ pub fn render_theme_select(
                 let mut out = Vec::new();
                 if line1.is_empty() && line2.is_empty() {
                     out.push(Line::from(Span::styled(
-                        "(all status bar segments hidden — enable in 20. Show / Hide)",
+                        "(all status bar segments hidden — enable in 21. Show / Hide)",
                         Style::default().fg(theme.muted),
                     )));
                 } else {
@@ -3010,7 +3117,7 @@ pub fn render_theme_select(
                     );
                     if meter.is_empty() {
                         spans.push(Span::styled(
-                            "(hidden — enable in 20. Show / Hide)",
+                            "(hidden — enable in 21. Show / Hide)",
                             Style::default().fg(theme.muted),
                         ));
                     } else {
@@ -3337,6 +3444,25 @@ pub fn render_theme_select(
                 Some(&live_summary_preview),
             );
         }
+        crate::ui::modals::ThemeModalTab::DoctorStyles => {
+            let live_doctor_preview = |style_id: &str| -> Vec<Line<'static>> {
+                let st = crate::config::DoctorStyle::from_str_loose(style_id);
+                crate::ui::modals::doctor::render_doctor_style_preview(st, ui_prefs, theme)
+            };
+            render_style_preview_list(
+                &mut content_lines,
+                &mut preview_title,
+                &mut preview_lines,
+                doctor_styles,
+                doctor_style_selected_index,
+                ui_prefs.doctor_style_enum().as_str(),
+                36,
+                list_max_visible,
+                right_w,
+                theme,
+                Some(&live_doctor_preview),
+            );
+        }
         crate::ui::modals::ThemeModalTab::Visibility => {
             let scroll_offset = compute_scroll_offset(visibility_selected_index, list_max_visible);
             let name_w = 26usize;
@@ -3538,12 +3664,12 @@ pub fn render_theme_select(
             let (badge, msg) = if crate::ui::icons::use_raw_nerd_font_pua() {
                 (
                     "    Nerd Font: ",
-                    "Native Codicon PUA glyphs active (toggle in 20. Show / Hide).",
+                    "Native Codicon PUA glyphs active (toggle in 21. Show / Hide).",
                 )
             } else {
                 (
                     "    Auto-Fallback: ",
-                    "No Nerd Font in terminal — using zero-box Unicode icons (set FiraMono Nerd Font or toggle 'Force Nerd Font PUA' in 20. Show / Hide).",
+                    "No Nerd Font in terminal — using zero-box Unicode icons (set FiraMono Nerd Font or toggle 'Force Nerd Font PUA' in 21. Show / Hide).",
                 )
             };
             content_lines.push(Line::from(vec![
@@ -3791,6 +3917,18 @@ mod tests {
     }
 
     #[test]
+    fn test_doctor_style_options_completeness() {
+        assert_eq!(DOCTOR_STYLE_OPTIONS.len(), 10);
+        let ids: Vec<&str> = DOCTOR_STYLE_OPTIONS.iter().map(|s| s.id).collect();
+        for expected in [
+            "aura", "nerdfont", "kaomoji", "emoji", "ascii", "posh", "flutter", "minimal", "cyber",
+            "compact",
+        ] {
+            assert!(ids.contains(&expected), "Missing doctor style {expected}");
+        }
+    }
+
+    #[test]
     fn test_render_theme_select_swarm_and_toast_styles_tabs() {
         let backend = TestBackend::new(110, 34);
         let mut terminal = Terminal::new(backend).unwrap();
@@ -3820,6 +3958,7 @@ mod tests {
                 output_styles: OUTPUT_STYLE_OPTIONS,
                 output_badge_styles: OUTPUT_BADGE_STYLE_OPTIONS,
                 turn_summary_styles: TURN_SUMMARY_STYLE_OPTIONS,
+                doctor_styles: DOCTOR_STYLE_OPTIONS,
                 active_tab: tab,
                 theme_selected_index: 0,
                 animation_selected_index: 0,
@@ -3841,6 +3980,7 @@ mod tests {
                 output_style_selected_index: 0,
                 output_badge_style_selected_index: 0,
                 turn_summary_style_selected_index: 0,
+                doctor_style_selected_index: 0,
                 visibility_selected_index: 0,
                 active_theme_id: "auto",
                 active_animation_id: "dual_pillars",
@@ -3878,7 +4018,8 @@ mod tests {
             assert!(rendered.contains("17. Output Style"));
             assert!(rendered.contains("18. Output Badge"));
             assert!(rendered.contains("19. Turn Summary"));
-            assert!(rendered.contains("20. Show / Hide"));
+            assert!(rendered.contains("20. Doctor Styles"));
+            assert!(rendered.contains("21. Show / Hide"));
             assert!(rendered.contains("Live Preview:"));
         }
     }

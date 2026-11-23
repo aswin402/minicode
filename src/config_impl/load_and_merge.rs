@@ -119,6 +119,11 @@ pub struct RawUiConfig {
     pub output_badge_style: Option<String>,
     pub turn_summary_style: Option<String>,
     pub turn_summary_position: Option<String>,
+    pub doctor_style: Option<String>,
+    pub show_doctor_sparkline: Option<bool>,
+    pub show_doctor_subscores: Option<bool>,
+    pub show_doctor_detail_drawer: Option<bool>,
+    pub doctor_animate_reveal: Option<bool>,
     pub max_width: Option<usize>,
     pub show_cost: Option<bool>,
     pub show_ponytail_badge: Option<bool>,
@@ -977,6 +982,21 @@ impl Config {
         if let Some(turn_summary_position) = other.ui.turn_summary_position {
             self.ui.turn_summary_position = turn_summary_position;
         }
+        if let Some(doctor_style) = other.ui.doctor_style {
+            self.ui.doctor_style = doctor_style;
+        }
+        if let Some(v) = other.ui.show_doctor_sparkline {
+            self.ui.show_doctor_sparkline = v;
+        }
+        if let Some(v) = other.ui.show_doctor_subscores {
+            self.ui.show_doctor_subscores = v;
+        }
+        if let Some(v) = other.ui.show_doctor_detail_drawer {
+            self.ui.show_doctor_detail_drawer = v;
+        }
+        if let Some(v) = other.ui.doctor_animate_reveal {
+            self.ui.doctor_animate_reveal = v;
+        }
         if let Some(max_width) = other.ui.max_width {
             self.ui.max_width = max_width;
         }
@@ -1285,6 +1305,21 @@ impl Config {
         }
         if let Some(ref turn_summary_position) = global.ui.turn_summary_position {
             self.ui.turn_summary_position = turn_summary_position.clone();
+        }
+        if let Some(ref doctor_style) = global.ui.doctor_style {
+            self.ui.doctor_style = doctor_style.clone();
+        }
+        if let Some(v) = global.ui.show_doctor_sparkline {
+            self.ui.show_doctor_sparkline = v;
+        }
+        if let Some(v) = global.ui.show_doctor_subscores {
+            self.ui.show_doctor_subscores = v;
+        }
+        if let Some(v) = global.ui.show_doctor_detail_drawer {
+            self.ui.show_doctor_detail_drawer = v;
+        }
+        if let Some(v) = global.ui.doctor_animate_reveal {
+            self.ui.doctor_animate_reveal = v;
         }
         if let Some(show_cost) = global.ui.show_cost {
             self.ui.show_cost = show_cost;

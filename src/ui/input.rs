@@ -183,6 +183,13 @@ pub const PALETTE_COMMANDS: &[PaletteCommand] = &[
         shortcut: None,
     },
     PaletteCommand {
+        slash_name: "/doctor-style",
+        title: "MiniDoctor UI Style",
+        description: "Switch /doctor TUI style (aura, nerdfont, kaomoji, emoji, ascii, posh, flutter, minimal, cyber, compact) or open 20. Doctor Styles",
+        category: CommandCategory::System,
+        shortcut: None,
+    },
+    PaletteCommand {
         slash_name: "/context",
         title: "Context Inspector",
         description: "Interactive context breakdown, zone allocations & KV-cache",

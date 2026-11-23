@@ -90,6 +90,14 @@ pub const COMMAND_CATALOG_ITEMS: &[CommandCatalogItem] = &[
         example: "/doctor | /doctor --diff main | /doctor fix | /doctor --score",
     },
     CommandCatalogItem {
+        name: "/doctor-style",
+        category: "Display & Aesthetics",
+        shortcut: "",
+        description:
+            "Customize MiniDoctor TUI visual style (10 styles: aura, nerdfont, kaomoji, emoji, ascii, posh, flutter, minimal, cyber, compact)",
+        example: "/doctor-style | /doctor-style cyber | /doctor-style kaomoji",
+    },
+    CommandCatalogItem {
         name: "/copy",
         category: "Display & Aesthetics",
         shortcut: "Ctrl+Y",

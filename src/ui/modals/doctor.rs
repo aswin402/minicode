@@ -84,43 +84,9 @@ impl DoctorFilterTab {
     }
 }
 
-/// Visual chrome themes cycleable via `[s]` inside `/doctor`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum DoctorVisualStyle {
-    #[default]
-    Auto,
-    NerdFont,
-    Kaomoji,
-    Emoji,
-    Ascii,
-    Posh,
-}
-
-impl DoctorVisualStyle {
-    #[must_use]
-    pub const fn next(self) -> Self {
-        match self {
-            Self::Auto => Self::NerdFont,
-            Self::NerdFont => Self::Kaomoji,
-            Self::Kaomoji => Self::Emoji,
-            Self::Emoji => Self::Ascii,
-            Self::Ascii => Self::Posh,
-            Self::Posh => Self::Auto,
-        }
-    }
-
-    #[must_use]
-    pub const fn label(self) -> &'static str {
-        match self {
-            Self::Auto => "Aura",
-            Self::NerdFont => "NerdFont",
-            Self::Kaomoji => "Kaomoji",
-            Self::Emoji => "Emoji",
-            Self::Ascii => "ASCII",
-            Self::Posh => "Posh",
-        }
-    }
-}
+/// Visual chrome themes persisted via `ui.doctor_style` (`/theme` → `20. Doctor Styles`)
+/// and cycleable live via `[s]` inside `/doctor`.
+pub use crate::config::DoctorStyle as DoctorVisualStyle;
 
 #[derive(Debug, Default)]
 struct DoctorLiveScan {
@@ -143,6 +109,10 @@ pub struct DoctorModalState {
     pub scroll_offset: usize,
     pub visual_style: DoctorVisualStyle,
     pub spinner_style: SpinnerStyle,
+    pub show_sparkline: bool,
+    pub show_subscores: bool,
+    pub show_detail_drawer: bool,
+    pub animate_reveal: bool,
     pub status_banner: Option<String>,
     pub error_message: Option<String>,
     live_channel: Option<Arc<Mutex<DoctorLiveScan>>>,
@@ -164,8 +134,12 @@ impl DoctorModalState {
             active_tab: DoctorFilterTab::All,
             selected_index: 0,
             scroll_offset: 0,
-            visual_style: DoctorVisualStyle::Auto,
+            visual_style: DoctorVisualStyle::Aura,
             spinner_style: SpinnerStyle::default(),
+            show_sparkline: true,
+            show_subscores: true,
+            show_detail_drawer: true,
+            animate_reveal: true,
             status_banner: None,
             error_message: None,
             live_channel: None,
@@ -176,6 +150,16 @@ impl DoctorModalState {
             state.reveal_started_at = Some(Instant::now());
         }
         state
+    }
+
+    /// Applies persisted `/theme` preferences (`doctor_style`, animation spinner, and Doctor visibility toggles).
+    pub fn apply_ui_config(&mut self, ui: &crate::config::UiConfig) {
+        self.visual_style = ui.doctor_style_enum();
+        self.spinner_style = SpinnerStyle::from_id(&ui.animation);
+        self.show_sparkline = ui.show_doctor_sparkline;
+        self.show_subscores = ui.show_doctor_subscores;
+        self.show_detail_drawer = ui.show_doctor_detail_drawer;
+        self.animate_reveal = ui.doctor_animate_reveal;
     }
 
     /// Creates a pre-populated static state (useful for deterministic unit tests and cached snapshots).
@@ -192,8 +176,12 @@ impl DoctorModalState {
             active_tab: DoctorFilterTab::All,
             selected_index: 0,
             scroll_offset: 0,
-            visual_style: DoctorVisualStyle::Auto,
+            visual_style: DoctorVisualStyle::Aura,
             spinner_style: SpinnerStyle::default(),
+            show_sparkline: true,
+            show_subscores: true,
+            show_detail_drawer: true,
+            animate_reveal: true,
             status_banner: None,
             error_message: None,
             live_channel: None,
@@ -291,9 +279,10 @@ impl DoctorModalState {
     #[must_use]
     pub fn has_live_animation(&self) -> bool {
         self.scanning
-            || self
-                .reveal_started_at
-                .is_some_and(|t| t.elapsed() < Duration::from_millis(850))
+            || (self.animate_reveal
+                && self
+                    .reveal_started_at
+                    .is_some_and(|t| t.elapsed() < Duration::from_millis(850)))
     }
 
     /// Returns the filtered diagnostics slice for the active tab.
@@ -405,6 +394,9 @@ impl DoctorModalState {
     /// Computes eased animation progress `0.0..=1.0` for the post-scan score count-up reveal.
     #[must_use]
     fn reveal_progress(&self) -> f64 {
+        if !self.animate_reveal {
+            return 1.0;
+        }
         let Some(started) = self.reveal_started_at else {
             return 1.0;
         };
@@ -443,13 +435,19 @@ pub fn render_doctor_modal(
     frame.render_widget(Clear, popup);
 
     let is_ascii = state.visual_style == DoctorVisualStyle::Ascii;
+    let is_cyber = state.visual_style == DoctorVisualStyle::Cyber;
+    let is_minimal = state.visual_style == DoctorVisualStyle::Minimal;
     let header_badge = match state.visual_style {
-        DoctorVisualStyle::Auto => "◈ MINIDOCTOR",
-        DoctorVisualStyle::NerdFont => &format!("{} MINIDOCTOR", nf(NerdIcon::Sparkle)),
-        DoctorVisualStyle::Kaomoji => "(◉_◉) MINIDOCTOR",
-        DoctorVisualStyle::Emoji => "🩺 MINIDOCTOR",
-        DoctorVisualStyle::Ascii => "[MINIDOCTOR]",
-        DoctorVisualStyle::Posh => "❖ MINIDOCTOR",
+        DoctorVisualStyle::Aura => "◈ MINIDOCTOR".to_string(),
+        DoctorVisualStyle::NerdFont => format!("{} MINIDOCTOR", nf(NerdIcon::Sparkle)),
+        DoctorVisualStyle::Kaomoji => "(◉_◉) MINIDOCTOR".to_string(),
+        DoctorVisualStyle::Emoji => "🩺 MINIDOCTOR".to_string(),
+        DoctorVisualStyle::Ascii => "[MINIDOCTOR]".to_string(),
+        DoctorVisualStyle::Posh => "❖ MINIDOCTOR".to_string(),
+        DoctorVisualStyle::Flutter => "◆ FLUTTER-STYLE MINIDOCTOR".to_string(),
+        DoctorVisualStyle::Minimal => "MINIDOCTOR".to_string(),
+        DoctorVisualStyle::Cyber => "◈ HUD // MINIDOCTOR".to_string(),
+        DoctorVisualStyle::Compact => "▪ MINIDOCTOR".to_string(),
     };
 
     let mut outer = Block::default()
@@ -462,16 +460,26 @@ pub fn render_doctor_modal(
             ),
             Span::styled(
                 format!(
-                    "· {} · [{}] ",
+                    "{} {} {} [{}] ",
+                    if is_ascii { "-" } else { "·" },
                     state.scope.label(),
+                    if is_ascii { "-" } else { "·" },
                     state.visual_style.label()
                 ),
                 Style::default().fg(theme.muted),
             ),
         ]))
         .title_alignment(Alignment::Left)
-        .borders(Borders::ALL)
-        .border_style(Style::default().fg(theme.brand_accent))
+        .borders(if is_minimal {
+            Borders::TOP | Borders::BOTTOM
+        } else {
+            Borders::ALL
+        })
+        .border_style(Style::default().fg(if is_cyber {
+            theme.info
+        } else {
+            theme.brand_accent
+        }))
         .style(Style::default().bg(theme.bg_primary));
 
     if is_ascii {
@@ -485,6 +493,10 @@ pub fn render_doctor_modal(
             horizontal_top: "-",
             horizontal_bottom: "-",
         });
+    } else if is_cyber {
+        outer = outer.border_type(BorderType::Double);
+    } else if is_minimal {
+        outer = outer.border_type(BorderType::Plain);
     } else {
         outer = outer.border_type(BorderType::Rounded);
     }
@@ -700,18 +712,32 @@ fn render_completed_dashboard(
     report: &DoctorReport,
     theme: &Theme,
 ) {
+    let is_ascii = state.visual_style == DoctorVisualStyle::Ascii;
+    let is_cyber = state.visual_style == DoctorVisualStyle::Cyber;
+    let is_minimal = state.visual_style == DoctorVisualStyle::Minimal;
+    let is_compact = state.visual_style == DoctorVisualStyle::Compact;
+    let is_flutter = state.visual_style == DoctorVisualStyle::Flutter;
+
+    let hero_h: u16 = if is_compact {
+        4
+    } else if is_minimal {
+        5
+    } else {
+        7
+    };
+    let detail_h: u16 = if state.show_detail_drawer { 6 } else { 0 };
+
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(7), // 0: Hero Health Score Card (flutter_doctor signature)
-            Constraint::Length(2), // 1: Filter tabs + stacks strip
-            Constraint::Min(6),    // 2: Diagnostics table
-            Constraint::Length(6), // 3: Live detail drawer / Top priority fixes
-            Constraint::Length(1), // 4: Action hotkeys footer
+            Constraint::Length(hero_h),   // 0: Hero Health Score Card
+            Constraint::Length(2),        // 1: Filter tabs strip
+            Constraint::Min(6),           // 2: Diagnostics table
+            Constraint::Length(detail_h), // 3: Live detail drawer (toggleable)
+            Constraint::Length(1),        // 4: Action hotkeys footer
         ])
         .split(area);
 
-    let is_ascii = state.visual_style == DoctorVisualStyle::Ascii;
     let s = &report.score;
 
     // ── 0. Animated Hero Health Score Card ───────────────────────────────────
@@ -720,9 +746,23 @@ fn render_completed_dashboard(
     let s_col = score_color(display_score, theme);
 
     let mut hero_block = Block::default()
-        .borders(Borders::ALL)
-        .border_style(Style::default().fg(theme.border))
-        .style(Style::default().bg(theme.bg_elevated));
+        .borders(if is_minimal {
+            Borders::BOTTOM
+        } else {
+            Borders::ALL
+        })
+        .border_style(Style::default().fg(if is_cyber {
+            theme.info
+        } else if is_flutter {
+            s_col
+        } else {
+            theme.border
+        }))
+        .style(Style::default().bg(if is_minimal {
+            theme.bg_primary
+        } else {
+            theme.bg_elevated
+        }));
     if is_ascii {
         hero_block = hero_block.border_set(border::Set {
             top_left: "+",
@@ -734,6 +774,10 @@ fn render_completed_dashboard(
             horizontal_top: "-",
             horizontal_bottom: "-",
         });
+    } else if is_cyber {
+        hero_block = hero_block.border_type(BorderType::Double);
+    } else if is_minimal {
+        hero_block = hero_block.border_type(BorderType::Plain);
     } else {
         hero_block = hero_block.border_type(BorderType::Rounded);
     }
@@ -743,25 +787,39 @@ fn render_completed_dashboard(
     let bar_w = (hero_inner.width as usize).saturating_sub(26).clamp(16, 48);
     let filled = ((display_score as usize) * bar_w) / 100;
     let empty = bar_w.saturating_sub(filled);
-
-    let delta_span = match s.delta_from_previous {
-        Some(d) if d > 0 => Span::styled(
-            format!(" +{d}"),
-            Style::default()
-                .fg(theme.success)
-                .add_modifier(Modifier::BOLD),
-        ),
-        Some(d) if d < 0 => Span::styled(
-            format!(" {d}"),
-            Style::default()
-                .fg(theme.destructive)
-                .add_modifier(Modifier::BOLD),
-        ),
-        Some(_) => Span::styled(" ±0", Style::default().fg(theme.muted)),
-        None => Span::raw(""),
+    let (bar_fill, bar_empty) = match state.visual_style {
+        DoctorVisualStyle::Ascii => ("=", "-"),
+        DoctorVisualStyle::Cyber => ("▰", "▱"),
+        DoctorVisualStyle::Minimal => ("─", "·"),
+        DoctorVisualStyle::Flutter => ("█", "░"),
+        _ => ("━", "─"),
     };
 
-    let spark_span = if !is_ascii && s.trend_history.len() > 1 {
+    let delta_span = if state.show_sparkline {
+        match s.delta_from_previous {
+            Some(d) if d > 0 => Span::styled(
+                format!(" +{d}"),
+                Style::default()
+                    .fg(theme.success)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Some(d) if d < 0 => Span::styled(
+                format!(" {d}"),
+                Style::default()
+                    .fg(theme.destructive)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Some(_) => Span::styled(
+                if is_ascii { " =0" } else { " ±0" },
+                Style::default().fg(theme.muted),
+            ),
+            None => Span::raw(""),
+        }
+    } else {
+        Span::raw("")
+    };
+
+    let spark_span = if state.show_sparkline && !is_ascii && s.trend_history.len() > 1 {
         Span::styled(
             format!("   Trend {}", render_sparkline(&s.trend_history)),
             Style::default().fg(theme.info),
@@ -773,23 +831,34 @@ fn render_completed_dashboard(
     let face_tag = match state.visual_style {
         DoctorVisualStyle::Kaomoji => {
             if display_score >= 75 {
-                " (•‿•) "
+                " (•‿•) ".to_string()
             } else if display_score >= 50 {
-                " (・_・) "
+                " (・_・) ".to_string()
             } else {
-                " (×_×) "
+                " (×_×) ".to_string()
             }
         }
         DoctorVisualStyle::Emoji => {
             if display_score >= 75 {
-                " 💚 "
+                " 💚 ".to_string()
             } else if display_score >= 50 {
-                " 🟡 "
+                " 🟡 ".to_string()
             } else {
-                " 🔴 "
+                " 🔴 ".to_string()
             }
         }
-        _ => " ",
+        DoctorVisualStyle::NerdFont => {
+            let ic = if display_score >= 75 {
+                nf(NerdIcon::Check)
+            } else if display_score >= 50 {
+                nf(NerdIcon::Warning)
+            } else {
+                nf(NerdIcon::Error)
+            };
+            format!(" {ic} ")
+        }
+        DoctorVisualStyle::Cyber => " ◈ ".to_string(),
+        _ => " ".to_string(),
     };
 
     let pill_bg = theme.bg_primary;
@@ -806,10 +875,16 @@ fn render_completed_dashboard(
             ),
             Span::styled("\u{e0b4}", Style::default().fg(pill_bg)),
             delta_span,
+            Span::raw(" "),
+            Span::styled("\u{e0b6}", Style::default().fg(pill_bg)),
             Span::styled(
-                format!("  {}  ", s.label),
-                Style::default().fg(s_col).add_modifier(Modifier::BOLD),
+                format!(" {} ", s.label),
+                Style::default()
+                    .fg(s_col)
+                    .bg(pill_bg)
+                    .add_modifier(Modifier::BOLD),
             ),
+            Span::styled("\u{e0b4}", Style::default().fg(pill_bg)),
             spark_span,
         ]
     } else {
@@ -834,78 +909,85 @@ fn render_completed_dashboard(
         ]
     };
 
-    let hero_lines = vec![
+    let sep_dot = if is_ascii { " | " } else { " · " };
+    let mut metrics_spans = vec![
+        Span::raw("  "),
+        Span::styled(
+            format!("{} crit", s.criticals),
+            Style::default()
+                .fg(if s.criticals > 0 {
+                    theme.destructive
+                } else {
+                    theme.muted
+                })
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(sep_dot, Style::default().fg(theme.border)),
+        Span::styled(
+            format!("{} err", s.errors),
+            Style::default()
+                .fg(if s.errors > 0 {
+                    theme.destructive
+                } else {
+                    theme.muted
+                })
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(sep_dot, Style::default().fg(theme.border)),
+        Span::styled(
+            format!("{} warn", s.warnings),
+            Style::default().fg(if s.warnings > 0 {
+                theme.warning
+            } else {
+                theme.muted
+            }),
+        ),
+        Span::styled(sep_dot, Style::default().fg(theme.border)),
+        Span::styled(
+            format!("{} dead", s.dead_code),
+            Style::default().fg(if s.dead_code > 0 {
+                theme.info
+            } else {
+                theme.muted
+            }),
+        ),
+    ];
+    if state.show_subscores {
+        metrics_spans.push(Span::styled("   |  ", Style::default().fg(theme.border)));
+        metrics_spans.push(Span::styled(
+            format!(
+                "Correct {}{sep_dot}Sec {}{sep_dot}Perf {}{sep_dot}Arch {}{sep_dot}Maint {}",
+                s.correctness, s.security, s.performance, s.architecture, s.maintainability
+            ),
+            Style::default().fg(theme.muted),
+        ));
+    }
+
+    let stacks_lbl = match state.visual_style {
+        DoctorVisualStyle::NerdFont => format!("  {} Stacks: ", nf(NerdIcon::Chip)),
+        DoctorVisualStyle::Emoji => "  📦 Stacks: ".to_string(),
+        _ => "  Stacks: ".to_string(),
+    };
+
+    let mut hero_lines = vec![
         Line::from(score_spans),
         Line::from(vec![
             Span::raw("  "),
-            Span::styled(
-                (if is_ascii { "=" } else { "━" }).repeat(filled),
-                Style::default().fg(s_col),
-            ),
-            Span::styled(
-                (if is_ascii { "-" } else { "─" }).repeat(empty),
-                Style::default().fg(theme.border),
-            ),
+            Span::styled(bar_fill.repeat(filled), Style::default().fg(s_col)),
+            Span::styled(bar_empty.repeat(empty), Style::default().fg(theme.border)),
             Span::styled(
                 format!(
-                    "  {} files · {}ms",
+                    "  {} files{sep_dot}{}ms",
                     report.profile.file_count, report.duration_ms
                 ),
                 Style::default().fg(theme.muted),
             ),
         ]),
-        Line::from(vec![
-            Span::raw("  "),
-            Span::styled(
-                format!("{} crit", s.criticals),
-                Style::default()
-                    .fg(if s.criticals > 0 {
-                        theme.destructive
-                    } else {
-                        theme.muted
-                    })
-                    .add_modifier(Modifier::BOLD),
-            ),
-            Span::styled(" · ", Style::default().fg(theme.border)),
-            Span::styled(
-                format!("{} err", s.errors),
-                Style::default()
-                    .fg(if s.errors > 0 {
-                        theme.destructive
-                    } else {
-                        theme.muted
-                    })
-                    .add_modifier(Modifier::BOLD),
-            ),
-            Span::styled(" · ", Style::default().fg(theme.border)),
-            Span::styled(
-                format!("{} warn", s.warnings),
-                Style::default().fg(if s.warnings > 0 {
-                    theme.warning
-                } else {
-                    theme.muted
-                }),
-            ),
-            Span::styled(" · ", Style::default().fg(theme.border)),
-            Span::styled(
-                format!("{} dead", s.dead_code),
-                Style::default().fg(if s.dead_code > 0 {
-                    theme.info
-                } else {
-                    theme.muted
-                }),
-            ),
-            Span::styled("   |  ", Style::default().fg(theme.border)),
-            Span::styled(
-                format!(
-                    "Correct {} · Sec {} · Perf {} · Arch {} · Maint {}",
-                    s.correctness, s.security, s.performance, s.architecture, s.maintainability
-                ),
-                Style::default().fg(theme.muted),
-            ),
-        ]),
-        Line::from(vec![
-            Span::styled("  Stacks: ", Style::default().fg(theme.muted)),
+    ];
+    if !is_compact {
+        hero_lines.push(Line::from(metrics_spans));
+        hero_lines.push(Line::from(vec![
+            Span::styled(stacks_lbl, Style::default().fg(theme.muted)),
             Span::styled(
                 report.profile.stack_summary(),
                 Style::default()
@@ -921,8 +1003,8 @@ fn render_completed_dashboard(
                     .unwrap_or(".minicode/minidoctor/NEEDEDFIX.md"),
                 Style::default().fg(theme.success),
             ),
-        ]),
-    ];
+        ]));
+    }
     frame.render_widget(Paragraph::new(hero_lines), hero_inner);
 
     // ── 1. Filter Tabs Bar ───────────────────────────────────────────────────
@@ -948,20 +1030,38 @@ fn render_completed_dashboard(
 
     // ── 2. Diagnostics List ──────────────────────────────────────────────────
     let filtered = state.filtered_diagnostics();
-    let list_block = Block::default()
+    let mut list_block = Block::default()
         .title(format!(
-            " Diagnostics ({}) — {} ",
+            " Diagnostics ({}) {} {} ",
             filtered.len(),
+            if is_ascii { "-" } else { "—" },
             state.active_tab.label()
         ))
-        .borders(Borders::ALL)
-        .border_type(if is_ascii {
-            BorderType::Plain
+        .borders(if is_minimal {
+            Borders::TOP
         } else {
-            BorderType::Rounded
+            Borders::ALL
         })
-        .border_style(Style::default().fg(theme.border))
+        .border_style(Style::default().fg(if is_cyber { theme.info } else { theme.border }))
         .style(Style::default().bg(theme.bg_primary));
+    if is_ascii {
+        list_block = list_block.border_set(border::Set {
+            top_left: "+",
+            top_right: "+",
+            bottom_left: "+",
+            bottom_right: "+",
+            vertical_left: "|",
+            vertical_right: "|",
+            horizontal_top: "-",
+            horizontal_bottom: "-",
+        });
+    } else if is_cyber {
+        list_block = list_block.border_type(BorderType::Double);
+    } else if is_minimal {
+        list_block = list_block.border_type(BorderType::Plain);
+    } else {
+        list_block = list_block.border_type(BorderType::Rounded);
+    }
     let list_inner = list_block.inner(chunks[2]);
     frame.render_widget(list_block, chunks[2]);
 
@@ -1033,7 +1133,7 @@ fn render_completed_dashboard(
             };
 
             let rule_label = if let Some(dk) = diag.dead_code_kind {
-                format!("{} · {}", dk.label(), diag.rule)
+                format!("{}{sep_dot}{}", dk.label(), diag.rule)
             } else {
                 diag.rule.clone()
             };
@@ -1057,7 +1157,7 @@ fn render_completed_dashboard(
                         out.push(ch);
                         w += cw;
                     }
-                    out.push('…');
+                    out.push(if is_ascii { '~' } else { '…' });
                     out
                 } else {
                     String::new()
@@ -1114,80 +1214,105 @@ fn render_completed_dashboard(
     }
     frame.render_widget(Paragraph::new(list_lines), list_inner);
 
-    // ── 3. Live Detail Drawer & Remediation Recipe ───────────────────────────
-    let detail_block = Block::default()
-        .title(" Diagnostic Detail & Auto-Fix Recipe ")
-        .borders(Borders::ALL)
-        .border_type(if is_ascii {
-            BorderType::Plain
+    // ── 3. Live Detail Drawer & Remediation Recipe (toggleable via 21. Show / Hide) ─
+    if state.show_detail_drawer && chunks[3].height >= 3 {
+        let mut detail_block = Block::default()
+            .title(" Diagnostic Detail & Auto-Fix Recipe ")
+            .borders(if is_minimal {
+                Borders::TOP
+            } else {
+                Borders::ALL
+            })
+            .border_style(Style::default().fg(if is_cyber { theme.info } else { theme.border }))
+            .style(Style::default().bg(if is_minimal {
+                theme.bg_primary
+            } else {
+                theme.bg_elevated
+            }));
+        if is_ascii {
+            detail_block = detail_block.border_set(border::Set {
+                top_left: "+",
+                top_right: "+",
+                bottom_left: "+",
+                bottom_right: "+",
+                vertical_left: "|",
+                vertical_right: "|",
+                horizontal_top: "-",
+                horizontal_bottom: "-",
+            });
+        } else if is_cyber {
+            detail_block = detail_block.border_type(BorderType::Double);
+        } else if is_minimal {
+            detail_block = detail_block.border_type(BorderType::Plain);
         } else {
-            BorderType::Rounded
-        })
-        .border_style(Style::default().fg(theme.border))
-        .style(Style::default().bg(theme.bg_elevated));
-    let detail_inner = detail_block.inner(chunks[3]);
-    frame.render_widget(detail_block, chunks[3]);
-
-    let detail_lines = if let Some(sel) = filtered.get(sel_clamped) {
-        let why = explain_rule(&sel.rule)
-            .map(|m| m.why)
-            .unwrap_or("Detected by MiniDoctor static analysis.");
-        let mut dl = vec![
-            Line::from(vec![
-                Span::styled(
-                    format!(" {} ", sel.rule),
-                    Style::default().fg(theme.info).add_modifier(Modifier::BOLD),
-                ),
-                Span::styled(
-                    format!("at {}  ", sel.location()),
-                    Style::default().fg(theme.muted),
-                ),
-                Span::styled(
-                    format!("[{}]", sel.category.label()),
-                    Style::default().fg(theme.brand_accent),
-                ),
-            ]),
-            Line::from(vec![
-                Span::styled(
-                    " Why: ",
-                    Style::default()
-                        .fg(theme.warning)
-                        .add_modifier(Modifier::BOLD),
-                ),
-                Span::styled(why, Style::default().fg(theme.text_primary)),
-            ]),
-            Line::from(vec![
-                Span::styled(
-                    " Fix: ",
-                    Style::default()
-                        .fg(theme.success)
-                        .add_modifier(Modifier::BOLD),
-                ),
-                Span::styled(
-                    sel.suggestion.clone(),
-                    Style::default().fg(theme.text_primary),
-                ),
-            ]),
-        ];
-        if let Some(ref snip) = sel.snippet {
-            dl.push(Line::from(vec![
-                Span::styled(" Code: ", Style::default().fg(theme.muted)),
-                Span::styled(snip.clone(), Style::default().fg(theme.highlight)),
-            ]));
+            detail_block = detail_block.border_type(BorderType::Rounded);
         }
-        dl
-    } else {
-        vec![
-            Line::from(Span::styled(
-                " ✓ Workspace passed all checks in this view. Press [d] to toggle Diff/Full or [e] to refresh .minicode/minidoctor/NEEDEDFIX.md.",
+        let detail_inner = detail_block.inner(chunks[3]);
+        frame.render_widget(detail_block, chunks[3]);
+
+        let detail_lines = if let Some(sel) = filtered.get(sel_clamped) {
+            let why = explain_rule(&sel.rule)
+                .map(|m| m.why)
+                .unwrap_or("Detected by MiniDoctor static analysis.");
+            let mut dl = vec![
+                Line::from(vec![
+                    Span::styled(
+                        format!(" {} ", sel.rule),
+                        Style::default().fg(theme.info).add_modifier(Modifier::BOLD),
+                    ),
+                    Span::styled(
+                        format!("at {}  ", sel.location()),
+                        Style::default().fg(theme.muted),
+                    ),
+                    Span::styled(
+                        format!("[{}]", sel.category.label()),
+                        Style::default().fg(theme.brand_accent),
+                    ),
+                ]),
+                Line::from(vec![
+                    Span::styled(
+                        " Why: ",
+                        Style::default()
+                            .fg(theme.warning)
+                            .add_modifier(Modifier::BOLD),
+                    ),
+                    Span::styled(why, Style::default().fg(theme.text_primary)),
+                ]),
+                Line::from(vec![
+                    Span::styled(
+                        " Fix: ",
+                        Style::default()
+                            .fg(theme.success)
+                            .add_modifier(Modifier::BOLD),
+                    ),
+                    Span::styled(
+                        sel.suggestion.clone(),
+                        Style::default().fg(theme.text_primary),
+                    ),
+                ]),
+            ];
+            if let Some(ref snip) = sel.snippet {
+                dl.push(Line::from(vec![
+                    Span::styled(" Code: ", Style::default().fg(theme.muted)),
+                    Span::styled(snip.clone(), Style::default().fg(theme.highlight)),
+                ]));
+            }
+            dl
+        } else {
+            vec![Line::from(Span::styled(
+                if is_ascii {
+                    " [OK] Workspace passed all checks in this view. Press [d] to toggle Diff/Full or [e] to refresh .minicode/minidoctor/NEEDEDFIX.md."
+                } else {
+                    " ✓ Workspace passed all checks in this view. Press [d] to toggle Diff/Full or [e] to refresh .minicode/minidoctor/NEEDEDFIX.md."
+                },
                 Style::default().fg(theme.success),
-            )),
-        ]
-    };
-    frame.render_widget(
-        Paragraph::new(detail_lines).wrap(Wrap { trim: true }),
-        detail_inner,
-    );
+            ))]
+        };
+        frame.render_widget(
+            Paragraph::new(detail_lines).wrap(Wrap { trim: true }),
+            detail_inner,
+        );
+    }
 
     // ── 4. Action Footer ─────────────────────────────────────────────────────
     let footer = Line::from(vec![
@@ -1227,6 +1352,393 @@ fn render_completed_dashboard(
         Span::styled("Close", Style::default().fg(theme.muted)),
     ]);
     frame.render_widget(Paragraph::new(footer), chunks[4]);
+}
+
+/// Renders a live, theme-colored miniature preview of any [`DoctorVisualStyle`] inside `/theme` → `20. Doctor Styles`.
+pub fn render_doctor_style_preview(
+    style: DoctorVisualStyle,
+    ui: &crate::config::UiConfig,
+    theme: &Theme,
+) -> Vec<Line<'static>> {
+    let border_st = Style::default().fg(theme.border);
+    let accent_b = Style::default()
+        .fg(theme.brand_accent)
+        .add_modifier(Modifier::BOLD);
+    let ok_b = Style::default()
+        .fg(theme.success)
+        .add_modifier(Modifier::BOLD);
+    let err_pill = Style::default()
+        .fg(Color::White)
+        .bg(theme.destructive)
+        .add_modifier(Modifier::BOLD);
+    let warn_pill = Style::default()
+        .fg(Color::Black)
+        .bg(theme.warning)
+        .add_modifier(Modifier::BOLD);
+    let info_b = Style::default().fg(theme.info).add_modifier(Modifier::BOLD);
+    let muted = Style::default().fg(theme.muted);
+    let text = Style::default().fg(theme.text_primary);
+    let pill_bg = theme.bg_primary;
+
+    let spark_str = if ui.show_doctor_sparkline && style != DoctorVisualStyle::Ascii {
+        "  Trend ▃▄▅▆▇█"
+    } else if ui.show_doctor_sparkline {
+        "  +6"
+    } else {
+        ""
+    };
+    let sub_line_str = if ui.show_doctor_subscores {
+        if style == DoctorVisualStyle::Ascii {
+            " | Correct 94 | Sec 90 | Perf 88"
+        } else {
+            " · Correct 94 · Sec 90 · Perf 88"
+        }
+    } else {
+        ""
+    };
+
+    match style {
+        DoctorVisualStyle::Aura => vec![
+            Line::from(vec![
+                Span::styled("╭─ ", border_st),
+                Span::styled("◈ MINIDOCTOR", accent_b),
+                Span::styled(" ─────────── ", border_st),
+                Span::styled("92/100 (A) Excellent", ok_b),
+                Span::styled(spark_str, info_b),
+                Span::styled(" ─╮", border_st),
+            ]),
+            Line::from(vec![
+                Span::styled("│ ", border_st),
+                Span::styled("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━", ok_b),
+                Span::styled("────", border_st),
+                Span::styled(format!(" 24 files{sub_line_str}"), muted),
+            ]),
+            Line::from(vec![
+                Span::styled("│ ", border_st),
+                Span::styled(" CRIT ", err_pill),
+                Span::raw(" "),
+                Span::styled("fastapi/sync-in-async-route  ", info_b),
+                Span::styled("app/routes.py:42", muted),
+            ]),
+            Line::from(vec![
+                Span::styled("│ ", border_st),
+                Span::styled(" WARN ", warn_pill),
+                Span::raw(" "),
+                Span::styled("react/index-as-key           ", info_b),
+                Span::styled("src/List.tsx:18", muted),
+            ]),
+            Line::from(Span::styled(
+                "╰─────────────────────────────────────────────────────────────╯",
+                border_st,
+            )),
+        ],
+        DoctorVisualStyle::NerdFont => {
+            let sp = nf(NerdIcon::Sparkle);
+            let chk = nf(NerdIcon::Check);
+            let chip = nf(NerdIcon::Chip);
+            let err_i = nf(NerdIcon::Error);
+            let wrn_i = nf(NerdIcon::Warning);
+            vec![
+                Line::from(vec![
+                    Span::styled("╭─ ", border_st),
+                    Span::styled(format!("{sp} MINIDOCTOR"), accent_b),
+                    Span::styled(" ───────── ", border_st),
+                    Span::styled(format!("{chk} 92/100 (A)"), ok_b),
+                    Span::styled(spark_str, info_b),
+                    Span::styled(" ─╮", border_st),
+                ]),
+                Line::from(vec![
+                    Span::styled("│ ", border_st),
+                    Span::styled("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━", ok_b),
+                    Span::styled("────", border_st),
+                    Span::styled(format!(" {chip} Rust · React{sub_line_str}"), muted),
+                ]),
+                Line::from(vec![
+                    Span::styled("│ ", border_st),
+                    Span::styled(
+                        format!("{err_i} CRIT "),
+                        Style::default()
+                            .fg(theme.destructive)
+                            .add_modifier(Modifier::BOLD),
+                    ),
+                    Span::styled("fastapi/sync-in-async-route  ", info_b),
+                    Span::styled("app/routes.py:42", muted),
+                ]),
+                Line::from(vec![
+                    Span::styled("│ ", border_st),
+                    Span::styled(
+                        format!("{wrn_i} WARN "),
+                        Style::default()
+                            .fg(theme.warning)
+                            .add_modifier(Modifier::BOLD),
+                    ),
+                    Span::styled("react/index-as-key           ", info_b),
+                    Span::styled("src/List.tsx:18", muted),
+                ]),
+                Line::from(Span::styled(
+                    "╰─────────────────────────────────────────────────────────────╯",
+                    border_st,
+                )),
+            ]
+        }
+        DoctorVisualStyle::Kaomoji => vec![
+            Line::from(vec![
+                Span::styled("╭─ ", border_st),
+                Span::styled("(◉_◉) MINIDOCTOR", accent_b),
+                Span::styled(" ───── ", border_st),
+                Span::styled("(•‿•) 92/100 Great!", ok_b),
+                Span::styled(spark_str, info_b),
+                Span::styled(" ─╮", border_st),
+            ]),
+            Line::from(vec![
+                Span::styled("│ ", border_st),
+                Span::styled("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━", ok_b),
+                Span::styled("────", border_st),
+                Span::styled(format!(" 24 files{sub_line_str}"), muted),
+            ]),
+            Line::from(vec![
+                Span::styled("│ ", border_st),
+                Span::styled(
+                    "(×_×) ",
+                    Style::default()
+                        .fg(theme.destructive)
+                        .add_modifier(Modifier::BOLD),
+                ),
+                Span::styled("fastapi/sync-in-async-route  ", info_b),
+                Span::styled("app/routes.py:42", muted),
+            ]),
+            Line::from(vec![
+                Span::styled("│ ", border_st),
+                Span::styled(
+                    "(°△°) ",
+                    Style::default()
+                        .fg(theme.warning)
+                        .add_modifier(Modifier::BOLD),
+                ),
+                Span::styled("react/index-as-key           ", info_b),
+                Span::styled("src/List.tsx:18", muted),
+            ]),
+            Line::from(Span::styled(
+                "╰─────────────────────────────────────────────────────────────╯",
+                border_st,
+            )),
+        ],
+        DoctorVisualStyle::Emoji => vec![
+            Line::from(vec![
+                Span::styled("╭─ ", border_st),
+                Span::styled("🩺 MINIDOCTOR", accent_b),
+                Span::styled(" ───────── ", border_st),
+                Span::styled("💚 92/100 Excellent", ok_b),
+                Span::styled(spark_str, info_b),
+                Span::styled(" ─╮", border_st),
+            ]),
+            Line::from(vec![
+                Span::styled("│ ", border_st),
+                Span::styled("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━", ok_b),
+                Span::styled("────", border_st),
+                Span::styled(format!(" 📦 Rust · FastAPI{sub_line_str}"), muted),
+            ]),
+            Line::from(vec![
+                Span::styled("│ ", border_st),
+                Span::styled("🚨 ", Style::default().fg(theme.destructive)),
+                Span::styled("fastapi/sync-in-async-route  ", info_b),
+                Span::styled("app/routes.py:42", muted),
+            ]),
+            Line::from(vec![
+                Span::styled("│ ", border_st),
+                Span::styled("⚠️  ", Style::default().fg(theme.warning)),
+                Span::styled("react/index-as-key           ", info_b),
+                Span::styled("src/List.tsx:18", muted),
+            ]),
+            Line::from(Span::styled(
+                "╰─────────────────────────────────────────────────────────────╯",
+                border_st,
+            )),
+        ],
+        DoctorVisualStyle::Ascii => vec![
+            Line::from(vec![
+                Span::styled("+-- ", border_st),
+                Span::styled("[MINIDOCTOR]", accent_b),
+                Span::styled(" ----------- ", border_st),
+                Span::styled("92/100 (A) Great", ok_b),
+                Span::styled(spark_str, info_b),
+                Span::styled(" --+", border_st),
+            ]),
+            Line::from(vec![
+                Span::styled("| ", border_st),
+                Span::styled("==============================", ok_b),
+                Span::styled("----", border_st),
+                Span::styled(format!(" 24 files{sub_line_str}"), muted),
+            ]),
+            Line::from(vec![
+                Span::styled("| ", border_st),
+                Span::styled(
+                    "[CRIT] ",
+                    Style::default()
+                        .fg(theme.destructive)
+                        .add_modifier(Modifier::BOLD),
+                ),
+                Span::styled("fastapi/sync-in-async-route  ", info_b),
+                Span::styled("app/routes.py:42", muted),
+            ]),
+            Line::from(vec![
+                Span::styled("| ", border_st),
+                Span::styled(
+                    "[WARN] ",
+                    Style::default()
+                        .fg(theme.warning)
+                        .add_modifier(Modifier::BOLD),
+                ),
+                Span::styled("react/index-as-key           ", info_b),
+                Span::styled("src/List.tsx:18", muted),
+            ]),
+            Line::from(Span::styled(
+                "+-------------------------------------------------------------+",
+                border_st,
+            )),
+        ],
+        DoctorVisualStyle::Posh => vec![
+            Line::from(vec![
+                Span::styled("\u{e0b6}", Style::default().fg(pill_bg)),
+                Span::styled(" ❖ MINIDOCTOR ", accent_b.bg(pill_bg)),
+                Span::styled("\u{e0b4} ", Style::default().fg(pill_bg)),
+                Span::styled("\u{e0b6}", Style::default().fg(pill_bg)),
+                Span::styled(" 92/100 (A) ", ok_b.bg(pill_bg)),
+                Span::styled("\u{e0b4} ", Style::default().fg(pill_bg)),
+                Span::styled("\u{e0b6}", Style::default().fg(pill_bg)),
+                Span::styled(" Excellent ", ok_b.bg(pill_bg)),
+                Span::styled("\u{e0b4}", Style::default().fg(pill_bg)),
+                Span::styled(spark_str, info_b),
+            ]),
+            Line::from(vec![
+                Span::styled("▎ ", accent_b),
+                Span::styled("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━", ok_b),
+                Span::styled("────", border_st),
+                Span::styled(format!(" 24 files{sub_line_str}"), muted),
+            ]),
+            Line::from(vec![
+                Span::styled("▎ ", accent_b),
+                Span::styled(" CRIT ", err_pill),
+                Span::raw(" "),
+                Span::styled("fastapi/sync-in-async-route  ", info_b),
+                Span::styled("app/routes.py:42", muted),
+            ]),
+            Line::from(vec![
+                Span::styled("▎ ", border_st),
+                Span::styled(" WARN ", warn_pill),
+                Span::raw(" "),
+                Span::styled("react/index-as-key           ", info_b),
+                Span::styled("src/List.tsx:18", muted),
+            ]),
+        ],
+        DoctorVisualStyle::Flutter => vec![
+            Line::from(Span::styled(
+                "╭─────────────────────────────────────────────────────────────╮",
+                ok_b,
+            )),
+            Line::from(vec![
+                Span::styled("│ ", ok_b),
+                Span::styled("92 (A)", ok_b.add_modifier(Modifier::UNDERLINED)),
+                Span::styled("  HEALTH SCORE ", muted),
+                Span::styled("█████████████████████░░░", ok_b),
+                Span::styled(spark_str, info_b),
+            ]),
+            Line::from(vec![
+                Span::styled("│ ", ok_b),
+                Span::styled("Great ", ok_b),
+                Span::styled(
+                    format!(" 1 crit · 1 err · 2 warn · 24 files{sub_line_str}"),
+                    text,
+                ),
+            ]),
+            Line::from(Span::styled(
+                "╰─────────────────────────────────────────────────────────────╯",
+                ok_b,
+            )),
+            Line::from(vec![
+                Span::styled("  → Fix ", Style::default().fg(theme.destructive)),
+                Span::styled("fastapi/sync-in-async-route", info_b),
+                Span::styled(" (app/routes.py:42)", muted),
+            ]),
+        ],
+        DoctorVisualStyle::Minimal => vec![
+            Line::from(vec![
+                Span::styled("MINIDOCTOR  ", accent_b),
+                Span::styled("92/100 (A) Excellent", ok_b),
+                Span::styled(spark_str, info_b),
+            ]),
+            Line::from(vec![
+                Span::styled("──────────────────────────────", ok_b),
+                Span::styled("····", border_st),
+                Span::styled(format!(" 24 files{sub_line_str}"), muted),
+            ]),
+            Line::from(vec![
+                Span::styled(
+                    "crit  ",
+                    Style::default()
+                        .fg(theme.destructive)
+                        .add_modifier(Modifier::BOLD),
+                ),
+                Span::styled("fastapi/sync-in-async-route   ", text),
+                Span::styled("app/routes.py:42", muted),
+            ]),
+            Line::from(vec![
+                Span::styled("warn  ", Style::default().fg(theme.warning)),
+                Span::styled("react/index-as-key            ", text),
+                Span::styled("src/List.tsx:18", muted),
+            ]),
+        ],
+        DoctorVisualStyle::Cyber => vec![
+            Line::from(vec![
+                Span::styled("╔═ ", info_b),
+                Span::styled("◈ HUD // MINIDOCTOR", accent_b),
+                Span::styled(" ═════ ", info_b),
+                Span::styled("92/100 [A]", ok_b),
+                Span::styled(spark_str, info_b),
+                Span::styled(" ═╗", info_b),
+            ]),
+            Line::from(vec![
+                Span::styled("║ ", info_b),
+                Span::styled("▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰", ok_b),
+                Span::styled("▱▱▱▱", border_st),
+                Span::styled(format!(" 24 files{sub_line_str}"), muted),
+            ]),
+            Line::from(vec![
+                Span::styled("║ ", info_b),
+                Span::styled(" CRIT ", err_pill),
+                Span::raw(" "),
+                Span::styled("fastapi/sync-in-async-route  ", info_b),
+                Span::styled("app/routes.py:42", muted),
+            ]),
+            Line::from(Span::styled(
+                "╚═════════════════════════════════════════════════════════════╝",
+                info_b,
+            )),
+        ],
+        DoctorVisualStyle::Compact => vec![
+            Line::from(vec![
+                Span::styled("▪ MINIDOCTOR ", accent_b),
+                Span::styled("92/100 (A)", ok_b),
+                Span::styled(" ━━━━━━━━━━── ", ok_b),
+                Span::styled("1c 1e 2w · 24f", muted),
+                Span::styled(spark_str, info_b),
+            ]),
+            Line::from(vec![
+                Span::styled("❯ ", accent_b),
+                Span::styled(" CRIT ", err_pill),
+                Span::raw(" "),
+                Span::styled("fastapi/sync-in-async-route ", info_b),
+                Span::styled("app/routes.py:42", muted),
+            ]),
+            Line::from(vec![
+                Span::raw("  "),
+                Span::styled(" WARN ", warn_pill),
+                Span::raw(" "),
+                Span::styled("react/index-as-key          ", info_b),
+                Span::styled("src/List.tsx:18", muted),
+            ]),
+        ],
+    }
 }
 
 #[cfg(test)]
@@ -1334,12 +1846,16 @@ mod tests {
             .contains("sec/hardcoded-secret"));
 
         for style in [
-            DoctorVisualStyle::Auto,
+            DoctorVisualStyle::Aura,
             DoctorVisualStyle::NerdFont,
             DoctorVisualStyle::Kaomoji,
             DoctorVisualStyle::Emoji,
             DoctorVisualStyle::Ascii,
             DoctorVisualStyle::Posh,
+            DoctorVisualStyle::Flutter,
+            DoctorVisualStyle::Minimal,
+            DoctorVisualStyle::Cyber,
+            DoctorVisualStyle::Compact,
         ] {
             state.visual_style = style;
             terminal
@@ -1347,6 +1863,38 @@ mod tests {
                     render_doctor_modal(f, f.area(), &state, &theme, SpinnerStyle::default());
                 })
                 .unwrap();
+
+            let preview =
+                render_doctor_style_preview(style, &crate::config::UiConfig::default(), &theme);
+            assert!(
+                preview.len() >= 3,
+                "style {:?} preview should have at least 3 rows",
+                style
+            );
+            let joined: String = preview
+                .iter()
+                .map(|l| {
+                    l.spans
+                        .iter()
+                        .map(|s| s.content.as_ref())
+                        .collect::<String>()
+                })
+                .collect::<Vec<_>>()
+                .join("\n");
+            if style == DoctorVisualStyle::Ascii {
+                assert!(
+                    joined.is_ascii(),
+                    "ASCII doctor preview must be pure 7-bit ASCII: {joined}"
+                );
+            }
+            if style == DoctorVisualStyle::NerdFont {
+                assert!(
+                    !joined
+                        .chars()
+                        .any(|c| ('\u{EA60}'..='\u{F8FF}').contains(&c)),
+                    "NerdFont doctor preview in auto/fallback test mode must emit zero PUA glyphs: {joined}"
+                );
+            }
         }
     }
 }

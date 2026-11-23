@@ -3197,5 +3197,49 @@ mod tests {
         assert_eq!(reloaded5.ui.output_badge_style, "diamond");
         assert_eq!(reloaded5.ui.turn_summary_position, "bottom_left");
         assert_eq!(reloaded5.ui.turn_summary_style, "compact");
+
+        // 9. Doctor Styles (20) + /doctor-style command + Doctor toggles in Visibility (21)
+        app.open_theme_modal(Some(crate::ui::modals::ThemeModalTab::DoctorStyles));
+        app.handle_modal_key(
+            KeyEvent::new(KeyCode::Down, KeyModifiers::NONE),
+            &control_tx,
+        )
+        .await;
+        app.handle_modal_key(
+            KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+            &control_tx,
+        )
+        .await;
+        assert_eq!(app.config.ui.doctor_style, "nerdfont");
+
+        let _ = app
+            .handle_command_or_prompt("/doctor-style cyber", None, &control_tx)
+            .await
+            .expect("doctor-style command");
+        assert_eq!(app.config.ui.doctor_style, "cyber");
+
+        // Toggle show_doctor_sparkline via visibility helper and persist
+        let spark_idx = crate::ui::modals::theme_select::VISIBILITY_TOGGLE_OPTIONS
+            .iter()
+            .position(|o| o.id == "doctor_sparkline")
+            .expect("doctor_sparkline toggle exists");
+        app.open_theme_modal(Some(crate::ui::modals::ThemeModalTab::Visibility));
+        for _ in 0..spark_idx {
+            app.handle_modal_key(
+                KeyEvent::new(KeyCode::Down, KeyModifiers::NONE),
+                &control_tx,
+            )
+            .await;
+        }
+        app.handle_modal_key(
+            KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+            &control_tx,
+        )
+        .await;
+        assert!(!app.config.ui.show_doctor_sparkline);
+
+        let reloaded6 = Config::load(Some(temp_dir.path()), None).expect("reload config 6");
+        assert_eq!(reloaded6.ui.doctor_style, "cyber");
+        assert!(!reloaded6.ui.show_doctor_sparkline);
     }
 }
