@@ -1799,9 +1799,9 @@ impl Provider for OpenAiCompatibleProvider {
                                         if prompt_tokens > 0 || completion_tokens > 0 || cached_prompt_tokens > 0 {
                                             yield Ok(StreamChunk::Usage { prompt_tokens, completion_tokens, cached_prompt_tokens });
                                         } else {
-                                            tracing::debug!(
+                                            tracing::trace!(
                                                 provider = %provider_name,
-                                                "Usage metadata absent or zero in response (prompt_tokens=0, completion_tokens=0)"
+                                                "Usage metadata absent or zero in response chunk (prompt_tokens=0, completion_tokens=0)"
                                             );
                                         }
                                     }

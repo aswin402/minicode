@@ -97,6 +97,15 @@ pub const RULE_CATALOG: &[RuleMeta] = &[
         how_to_fix: "Hoist the inner component to module scope and pass needed data via props.",
     },
     RuleMeta {
+        id: "react/useeffect-missing-deps",
+        stack: "react",
+        category: DiagnosticCategory::Performance,
+        default_severity: Severity::Warning,
+        summary: "`useEffect` missing dependency array while fetching or setting state",
+        why: "Omitting the dependency array causes the effect to re-run after every render; combining that with `fetch()` or state setters triggers an infinite render/request loop.",
+        how_to_fix: "Provide an explicit dependency array (`[]` for mount-only or `[dep1, dep2]` for reactive updates).",
+    },
+    RuleMeta {
         id: "next/client-secret-env",
         stack: "nextjs",
         category: DiagnosticCategory::Security,
@@ -250,6 +259,15 @@ pub const RULE_CATALOG: &[RuleMeta] = &[
         summary: "SQL query constructed via f-string interpolation",
         why: "Interpolating variables directly into SQL strings opens the application to SQL injection.",
         how_to_fix: "Use bound query parameters (`text(\"SELECT ... WHERE id = :id\"), {\"id\": user_id}`).",
+    },
+    RuleMeta {
+        id: "py/subprocess-shell-true",
+        stack: "python",
+        category: DiagnosticCategory::Security,
+        default_severity: Severity::Critical,
+        summary: "`subprocess.*` invoked with `shell=True`",
+        why: "Passing `shell=True` executes the command through `/bin/sh`, allowing shell metacharacters in untrusted arguments to execute arbitrary commands.",
+        how_to_fix: "Pass an explicit list of arguments (`subprocess.run([\"cmd\", arg])`) with `shell=False`.",
     },
     // ── Rust / Tokio / Ratatui ───────────────────────────────────────────────
     RuleMeta {

@@ -17,6 +17,50 @@ pub fn hono_api() -> Stack {
         transitive_packages: vec![],
         files: vec![
             StackFile {
+                path: "package.json".into(),
+                content: r##"{
+  "name": "hono-api",
+  "version": "1.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "bun --watch src/server.ts",
+    "start": "bun run src/server.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "hono": "^4.7.0",
+    "pino": "^9.6.0"
+  },
+  "devDependencies": {
+    "typescript": "^5.7.0",
+    "@types/node": "^22.0.0",
+    "pino-pretty": "^13.0.0"
+  }
+}
+"##
+                .into(),
+                binary_content: None,
+            },
+            StackFile {
+                path: "tsconfig.json".into(),
+                content: r##"{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "strict": true,
+    "noEmit": true,
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "types": ["node"]
+  },
+  "include": ["src"]
+}
+"##
+                .into(),
+                binary_content: None,
+            },
+            StackFile {
                 path: "src/server.ts".into(),
                 content: r##"import { Hono } from "hono";
 import { logger as httpLogger } from "hono/logger";

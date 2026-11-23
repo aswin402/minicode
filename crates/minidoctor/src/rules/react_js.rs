@@ -76,6 +76,31 @@ fn looks_like_component_name(name: &str) -> bool {
         && !name.chars().all(|c| c.is_ascii_uppercase() || c == '_')
 }
 
+/// Detects React `useState`-style setter calls (`setFoo(...)`) inside a `useEffect` body.
+fn has_react_setter_call(body: &str) -> bool {
+    let bytes = body.as_bytes();
+    let mut i = 0usize;
+    while i + 4 < bytes.len() {
+        let prev_ok = i == 0 || !(bytes[i - 1].is_ascii_alphanumeric() || bytes[i - 1] == b'_');
+        if prev_ok
+            && bytes[i] == b's'
+            && bytes[i + 1] == b'e'
+            && bytes[i + 2] == b't'
+            && bytes[i + 3].is_ascii_uppercase()
+        {
+            let mut j = i + 4;
+            while j < bytes.len() && (bytes[j].is_ascii_alphanumeric() || bytes[j] == b'_') {
+                j += 1;
+            }
+            if j < bytes.len() && bytes[j] == b'(' {
+                return true;
+            }
+        }
+        i += 1;
+    }
+    false
+}
+
 fn contains_jsx(node: Node) -> bool {
     if matches!(
         node.kind(),
@@ -260,7 +285,7 @@ fn walk_js(node: Node, nesting: usize, ctx: &mut JsWalkCtx<'_>) {
         if let Some(func) = node.child_by_field_name("function") {
             let fn_txt = node_text(func, ctx.bytes);
 
-            // 5a. `useEffect(async () => ...)`
+            // 5a. `useEffect(async () => ...)` and missing dependency array on effectful `useEffect`
             if fn_txt == "useEffect" || fn_txt == "React.useEffect" {
                 if let Some(args) = node.child_by_field_name("arguments") {
                     if let Some(first_arg) = args.named_child(0) {
@@ -277,6 +302,25 @@ fn walk_js(node: Node, nesting: usize, ctx: &mut JsWalkCtx<'_>) {
                                 "Declare an inner `async function run()` inside `useEffect` and handle cancellation in the cleanup return.",
                                 &ctx.file.content,
                             ));
+                        }
+                        // Missing dependency array while fetching or calling a React state setter causes infinite render loops
+                        if !ctx.file.is_test && args.named_child_count() == 1 {
+                            let triggers_loop = arg_txt.contains("fetch(")
+                                || arg_txt.contains("axios.")
+                                || has_react_setter_call(arg_txt);
+                            if triggers_loop {
+                                ctx.out.push(make_diag(
+                                    "react/useeffect-missing-deps",
+                                    Severity::Warning,
+                                    DiagnosticCategory::Performance,
+                                    &ctx.file.rel_path,
+                                    line,
+                                    col,
+                                    "`useEffect` has no dependency array while fetching or updating state — runs on every render",
+                                    "Add an explicit dependency array (e.g. `[]` for mount-only or `[dep]` for reactive updates) to prevent infinite render loops.",
+                                    &ctx.file.content,
+                                ));
+                            }
                         }
                     }
                 }

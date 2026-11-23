@@ -307,6 +307,8 @@ pub enum BatchStep {
         #[serde(alias = "url", alias = "pattern")]
         url_contains: String,
     },
+    #[serde(alias = "inspect", alias = "dom_snapshot", alias = "a11y_snapshot")]
+    Snapshot {},
 }
 
 const fn default_checked_true() -> bool {
@@ -1506,6 +1508,19 @@ impl BrowserInteractor {
                         (action, msg.clone(), Err(ToolError::CommandExec(msg).into()))
                     }
                 }
+                BatchStep::Snapshot {} => {
+                    let action = "snapshot";
+                    let (rev, elements, _) = Self::settle_and_refresh_tree(cdp, acc_mgr, 100).await;
+                    (
+                        action,
+                        format!(
+                            "Refreshed live DOM/ARIA snapshot (@v{}, {} interactive element(s))",
+                            rev,
+                            elements.len()
+                        ),
+                        Ok(()),
+                    )
+                }
             };
 
             let duration_ms = start_time.elapsed().as_millis() as u64;
@@ -2388,5 +2403,20 @@ mod tests {
                 y: None,
             }
         );
+    }
+
+    #[test]
+    fn test_batch_step_parse_steps_supports_snapshot_and_aliases() {
+        let val = serde_json::json!([
+            {"action": "wait_for_network_idle", "timeout_ms": 5000},
+            {"action": "snapshot"},
+            {"action": "dom_snapshot"},
+            {"action": "inspect"}
+        ]);
+        let steps = BatchStep::parse_steps(&val).expect("snapshot variants should parse cleanly");
+        assert_eq!(steps.len(), 4);
+        assert_eq!(steps[1], BatchStep::Snapshot {});
+        assert_eq!(steps[2], BatchStep::Snapshot {});
+        assert_eq!(steps[3], BatchStep::Snapshot {});
     }
 }

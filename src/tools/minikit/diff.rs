@@ -299,12 +299,13 @@ mod tests {
 
         // 2. With apply = true, missing files are restored
         let res_apply = diff_stack(temp.path(), Some("hono-api"), true).unwrap();
-        assert_eq!(res_apply.restored_files.len(), 2);
+        assert_eq!(res_apply.restored_files.len(), 4);
+        assert!(temp.path().join("package.json").exists());
         assert!(temp.path().join("src/server.ts").exists());
 
         // 3. Re-running without apply now shows intact
         let res_after = diff_stack(temp.path(), Some("hono-api"), false).unwrap();
-        assert_eq!(res_after.intact_files_count, 2);
+        assert_eq!(res_after.intact_files_count, 4);
         assert_eq!(res_after.missing_files.len(), 0);
     }
 

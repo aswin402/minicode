@@ -336,6 +336,32 @@ fn walk_py(node: Node, in_async_fn: bool, nesting: usize, ctx: &mut PyWalkCtx<'_
                 &ctx.file.content,
             ));
         }
+
+        // 5f. `subprocess.*(..., shell=True)` command injection hazard (sync or async)
+        if ctx.run_security
+            && !ctx.file.is_test
+            && matches!(
+                fn_txt,
+                "subprocess.run"
+                    | "subprocess.call"
+                    | "subprocess.Popen"
+                    | "subprocess.check_output"
+                    | "subprocess.check_call"
+            )
+            && (full_call.contains("shell=True") || full_call.contains("shell = True"))
+        {
+            ctx.out.push(make_diag(
+                "py/subprocess-shell-true",
+                Severity::Critical,
+                DiagnosticCategory::Security,
+                &ctx.file.rel_path,
+                line,
+                col,
+                format!("`{fn_txt}(..., shell=True)` enables shell command injection"),
+                "Pass an argument list (`[\"cmd\", arg]`) with `shell=False` instead of invoking a shell.",
+                &ctx.file.content,
+            ));
+        }
     }
 
     let mut cursor = node.walk();

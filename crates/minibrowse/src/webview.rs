@@ -2809,6 +2809,7 @@ struct WebKitActorState {
     tabs: HashMap<String, WebKitTabSlot>,
     active_target_id: String,
     filter_store: *mut c_void,
+    filter_store_dir: Option<std::path::PathBuf>,
     compiled_filter: *mut c_void,
     headless: bool,
     webgl: bool,
@@ -2971,16 +2972,21 @@ fn run_webkit_thread(
             (api.webkit_web_context_set_cache_model)(web_ctx, WEBKIT_CACHE_MODEL_DOCUMENT_VIEWER);
         }
 
-        let filter_store = if let Some(new_store) = api.webkit_user_content_filter_store_new {
-            let store_dir =
-                std::env::temp_dir().join(format!("minibrowse-ucf-{}", std::process::id()));
-            let _ = std::fs::create_dir_all(&store_dir);
-            CString::new(store_dir.to_string_lossy().as_bytes())
-                .ok()
-                .map_or(ptr::null_mut(), |p| new_store(p.as_ptr()))
-        } else {
-            ptr::null_mut()
-        };
+        // Sweep orphaned `/tmp/minibrowse-ucf-<dead_pid>` dirs left behind by killed sessions
+        cleanup_stale_ucf_dirs();
+
+        let (filter_store, filter_store_dir) =
+            if let Some(new_store) = api.webkit_user_content_filter_store_new {
+                let store_dir =
+                    std::env::temp_dir().join(format!("minibrowse-ucf-{}", std::process::id()));
+                let _ = std::fs::create_dir_all(&store_dir);
+                let ptr = CString::new(store_dir.to_string_lossy().as_bytes())
+                    .ok()
+                    .map_or(ptr::null_mut(), |p| new_store(p.as_ptr()));
+                (ptr, Some(store_dir))
+            } else {
+                (ptr::null_mut(), None)
+            };
 
         let wakeup_fn = api.g_idle_add_full;
         let boxed_state = Box::new(WebKitActorState {
@@ -2988,6 +2994,7 @@ fn run_webkit_thread(
             tabs: HashMap::new(),
             active_target_id: "main".to_string(),
             filter_store,
+            filter_store_dir,
             compiled_filter: ptr::null_mut(),
             headless: opts.headless,
             webgl: opts.webgl,
@@ -3032,7 +3039,41 @@ fn run_webkit_thread(
         if !state_box.filter_store.is_null() {
             (state_box.api.g_object_unref)(state_box.filter_store);
         }
+        if let Some(ref store_dir) = state_box.filter_store_dir {
+            let _ = std::fs::remove_dir_all(store_dir);
+        }
         trim_process_heap();
+    }
+}
+
+/// Removes orphaned `minibrowse-ucf-<pid>` temp directories whose owner process no longer exists.
+fn cleanup_stale_ucf_dirs() {
+    let tmp = std::env::temp_dir();
+    let Ok(entries) = std::fs::read_dir(&tmp) else {
+        return;
+    };
+    let my_pid = std::process::id();
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let Some(name_str) = name.to_str() else {
+            continue;
+        };
+        let Some(pid_str) = name_str.strip_prefix("minibrowse-ucf-") else {
+            continue;
+        };
+        let Ok(pid) = pid_str.parse::<u32>() else {
+            continue;
+        };
+        if pid == my_pid {
+            continue;
+        }
+        #[cfg(target_os = "linux")]
+        let alive = std::path::Path::new(&format!("/proc/{pid}")).exists();
+        #[cfg(not(target_os = "linux"))]
+        let alive = false;
+        if !alive {
+            let _ = std::fs::remove_dir_all(entry.path());
+        }
     }
 }
 

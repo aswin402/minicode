@@ -451,7 +451,8 @@ pub fn get_schemas() -> Vec<ToolSchema> {
                                         "assert_selector",
                                         "assert_url",
                                         "emulate",
-                                        "screenshot"
+                                        "screenshot",
+                                        "snapshot"
                                     ],
                                     "description": "Browser operation step name (discriminator key is 'action')"
                                 },

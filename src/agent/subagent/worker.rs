@@ -702,11 +702,14 @@ impl SubagentWorker {
             let mut files_inspected = Vec::new();
             let mut files_modified = Vec::new();
             let mut tokens_used = 0usize;
+            let mut baseline_prompt_tokens: Option<usize> = None;
             let mut cumulative_completion_tokens = 0usize;
             let mut turns_executed = 0;
             let mut final_summary = String::new();
             let mut last_preamble_text = String::new();
             let mut success = true;
+            let mut hit_zero_edit_abort = false;
+            let mut hit_budget_without_edits = false;
             let mut step_counter = 0;
             let mut thought_only_nudges: usize = 0;
             let mut synthesis_nudges: usize = 0;
@@ -942,6 +945,9 @@ impl SubagentWorker {
                 // (e.g. 3 source files totaling ~10k tokens) never wipe their own read outputs and
                 // fall into a re-read amnesia loop.
                 let mut last_prompt_tokens = estimate_prompt_tokens(&messages);
+                if baseline_prompt_tokens.is_none() {
+                    baseline_prompt_tokens = Some(last_prompt_tokens);
+                }
                 let soft_compact_threshold = ((live_token_budget
                     .saturating_mul(crate::constants::MINIPUB_SOFT_COMPACT_NUMERATOR))
                     / crate::constants::MINIPUB_SOFT_COMPACT_DENOMINATOR.max(1))
@@ -971,6 +977,14 @@ impl SubagentWorker {
                     last_prompt_tokens = estimate_prompt_tokens(&messages);
                 }
                 tokens_used = last_prompt_tokens.saturating_add(cumulative_completion_tokens);
+                // Measure working token growth above the fixed Turn-1 baseline prompt
+                // (system prompt + injected skills + parent task brief) so `"quick"` workers
+                // never burn their entire budget before writing a single file, while still
+                // enforcing a hard context-window ceiling for safety.
+                let working_tokens_used =
+                    tokens_used.saturating_sub(baseline_prompt_tokens.unwrap_or(0));
+                let hard_context_reached = last_prompt_tokens
+                    >= crate::constants::CONTEXT_WINDOW_128K.saturating_sub(8_000);
 
                 // Elastic Runtime Progress Continuation:
                 // If the worker hits its initial turn or token ceiling while actively making verified
@@ -979,7 +993,9 @@ impl SubagentWorker {
                 // Never override explicit Orchestrator turn caps (`explicit_max_turns`) or `"quick"` workers,
                 // and cap read-only workers to at most 1 extension so reviewers/scouts cannot spin indefinitely.
                 let turn_limit_reached = turns_executed >= live_max_turns && live_max_turns > 1;
-                let token_limit_reached = tokens_used >= live_token_budget && turns_executed > 1;
+                let token_limit_reached = (working_tokens_used >= live_token_budget
+                    || hard_context_reached)
+                    && turns_executed > 1;
                 let is_quick_category = self.config.category.as_deref().is_some_and(|c| {
                     let norm = c.trim().to_ascii_lowercase().replace(['-', ' '], "_");
                     norm == "quick" || norm == "unspecified_low"
@@ -1041,11 +1057,17 @@ impl SubagentWorker {
                     info.tokens_used = tokens_used;
                 }
 
-                let budget_reached = tokens_used >= live_token_budget && turns_executed > 1;
+                let budget_reached = (working_tokens_used >= live_token_budget
+                    || hard_context_reached)
+                    && turns_executed > 1;
                 if budget_reached {
+                    if role.is_mutating() && files_modified.is_empty() {
+                        hit_budget_without_edits = true;
+                    }
                     tracing::warn!(
                         minipub_id = %id,
                         tokens_used,
+                        working_tokens_used,
                         live_token_budget,
                         "MiniPub token budget reached; executing final tool-free synthesis turn"
                     );
@@ -1053,17 +1075,20 @@ impl SubagentWorker {
 
                 // Zero-edit spin guard for mutating roles (Frontend, Backend, Coder, etc.):
                 // Prevent a coder worker from burning its entire budget on read-only shell checks
-                // without applying edits.
-                let zero_edit_nudge_turn = (live_max_turns / 2).max(6);
-                let zero_edit_stop_turn = ((live_max_turns * 3) / 4).max(10);
+                // (e.g. digging through node_modules) without applying edits.
+                let zero_edit_nudge_turn = (live_max_turns / 3).clamp(5, 7);
+                let zero_edit_stop_turn = ((live_max_turns * 2) / 3).clamp(9, 12);
                 let zero_edit_spin_stop = role.is_mutating()
                     && files_modified.is_empty()
-                    && live_max_turns >= 12
+                    && live_max_turns >= 10
                     && turns_executed >= zero_edit_stop_turn;
+                if zero_edit_spin_stop {
+                    hit_zero_edit_abort = true;
+                }
                 if role.is_mutating()
                     && files_modified.is_empty()
                     && !zero_edit_nudge_sent
-                    && live_max_turns >= 10
+                    && live_max_turns >= 8
                     && turns_executed >= zero_edit_nudge_turn
                     && !zero_edit_spin_stop
                     && messages
@@ -1073,7 +1098,7 @@ impl SubagentWorker {
                 {
                     zero_edit_nudge_sent = true;
                     messages.push(Message::user(format!(
-                        "[System: You have spent {}/{} turns inspecting without making any file edits. Stop running exploratory commands and apply your edits with `patch_file`/`write_file` now, or report `STATUS: BLOCKED` with the exact blocker.]",
+                        "[System: You have spent {}/{} turns inspecting without making any file edits. Stop inspecting `node_modules` or running exploratory shell commands and apply your edits with `patch_file`/`write_file` immediately, or report `STATUS: BLOCKED` with the exact blocker.]",
                         turns_executed, live_max_turns
                     )));
                 }
@@ -1875,6 +1900,11 @@ impl SubagentWorker {
                     final_summary =
                         "Subagent execution was canceled before completion.".to_string();
                 }
+            } else if role.is_mutating()
+                && files_modified.is_empty()
+                && (hit_zero_edit_abort || hit_budget_without_edits)
+            {
+                success = false;
             }
 
             transcript.total_tokens = tokens_used;

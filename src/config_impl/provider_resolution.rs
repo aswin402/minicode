@@ -519,7 +519,15 @@ impl Config {
     /// For local models (Ollama, LM Studio, vLLM, localhost endpoints), API keys are strictly optional.
     pub fn get_api_key(&self, provider_name: &str) -> Result<String> {
         let env_trimmed = |key: &str| std::env::var(key).map(|v| v.trim().to_string());
-        let norm = provider_name.to_lowercase();
+        let norm = provider_name.trim().to_lowercase();
+        if norm.is_empty() {
+            return Err(ConfigError::InvalidValue {
+                key: "provider.default".to_string(),
+                reason: "No default LLM provider is configured. Run `minicode setup` or pass `--provider <name>`."
+                    .to_string(),
+            }
+            .into());
+        }
 
         // 1. Check environment variables
         let env_val = match norm.as_str() {

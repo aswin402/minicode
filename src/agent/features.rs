@@ -101,6 +101,7 @@ impl AgentFeature {
                 "power_review",
                 "power_verify",
                 "power_speckit",
+                "project_doctor",
             ],
             Self::MiniPubs => &[
                 "minitask",
@@ -150,7 +151,7 @@ impl AgentFeature {
                 "Provides 105+ verified color palette tokens and 1,080+ pre-built, tested UI components to prevent writing unstyled or monolithic CSS/JSX from scratch."
             }
             Self::MiniPowers => {
-                "Provides structured methodologies (planning, Git worktree isolation, two-stage review, verification barriers) for complex tasks."
+                "Provides structured methodologies (planning, Git worktree isolation, two-stage review, verification barriers, and native Rust MiniDoctor multi-stack health audits writing `.minicode/minidoctor/NEEDEDFIX.md`) for complex tasks."
             }
             Self::MiniPubs => {
                 "Spawns and manages 14 specialized subagent roles (scout, architect, planner, designer, frontend, backend, coder, vision, content_writer, debugger, reviewer, security, tester, simplifier) with Boomerang todos and file boundaries."
@@ -183,7 +184,7 @@ impl AgentFeature {
                 "When designing or building user interfaces. Query `block_palettes` for color tokens and `block_search`/`block_scaffold` for pre-built components (heroes, navbars, cards, modals) instead of inventing styles from memory."
             }
             Self::MiniPowers => {
-                "When facing architectural doubt, risky refactors, or multi-step engineering initiatives. Use `power_plan` for structured plans, `power_review` for two-stage review, `power_worktree_task` for isolated risky work, and `power_verify` for 4-gate verification."
+                "When facing architectural doubt, risky refactors, or multi-step engineering initiatives. Use `power_plan` for structured plans, `power_review` for two-stage review, `power_worktree_task` for isolated risky work, `project_doctor` for native multi-stack AST/security/dead-code health checks (`.minicode/minidoctor/NEEDEDFIX.md`), and `power_verify` for 4-gate verification."
             }
             Self::MiniPubs => {
                 "When a task has independent modules, components, or audit passes that benefit from scoped specialist execution (`minitask(action=\"spawn_minipub\", role=\"frontend\"|\"backend\"|\"designer\"|\"vision\"|\"tester\", file_boundaries=[...], todos=[...])` or `invoke_subagent`)."

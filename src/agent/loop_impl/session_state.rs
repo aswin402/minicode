@@ -1312,6 +1312,49 @@ impl AgentLoop {
         turn_tool_results.push(rejected);
     }
 
+    /// Emits events, session records, and LLM-visible messages for an in-flight tool
+    /// cancelled via Esc/Abort, preserving actual elapsed execution duration and an
+    /// accurate cancellation notice (without misleading approval-prompt instructions).
+    pub(super) fn emit_cancelled_tool_result(
+        &mut self,
+        event_sender: &mpsc::UnboundedSender<AgentEvent>,
+        turn_id: usize,
+        tool_call: &ToolCall,
+        duration_ms: u64,
+        turn_tool_results: &mut Vec<crate::agent::types::ToolResult>,
+    ) {
+        let output = format!(
+            "Execution of '{}' was cancelled by user (Esc/Abort) after {}ms.",
+            tool_call.name, duration_ms
+        );
+        let cancelled = crate::agent::types::ToolResult {
+            tool_id: tool_call.id.clone(),
+            tool_name: tool_call.name.clone(),
+            success: false,
+            output: output.clone(),
+            display_output: String::new(),
+            duration_ms,
+        };
+        let res_event = AgentEvent::ToolResult {
+            turn_id,
+            tool_id: cancelled.tool_id.clone(),
+            tool: cancelled.tool_name.clone(),
+            success: false,
+            output: output.clone(),
+            duration_ms,
+        };
+        let _ = self
+            .session_store
+            .append_event(&self.session_id, &res_event);
+        let _ = event_sender.send(res_event);
+        self.messages.push(Message::tool_result(
+            tool_call.id.clone(),
+            tool_call.name.clone(),
+            output,
+        ));
+        turn_tool_results.push(cancelled);
+    }
+
     /// Checks WorkingMemory for current active execution plan tasks and emits
     /// an `AgentEvent::PlanUpdated` only when the plan state has actually changed.
     pub fn emit_current_plan(

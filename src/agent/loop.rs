@@ -2188,16 +2188,18 @@ impl AgentLoop {
                                 1500,
                                 2000,
                             );
+                            let tool_started = std::time::Instant::now();
                             let tool_result = if let Some(cancel) = &cancel_token {
                                 tokio::select! {
                                     _ = cancel.cancelled() => {
                                         was_cancelled = true;
-                                        Self::emit_rejected_tool_result(
+                                        let elapsed_ms = tool_started.elapsed().as_millis() as u64;
+                                        Self::emit_cancelled_tool_result(
                                             self,
                                             &event_sender,
                                             turn_id,
                                             &tool_call,
-                                            "cancelled by user (Esc)",
+                                            elapsed_ms,
                                             &mut turn_tool_results,
                                         );
                                         break;

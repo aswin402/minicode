@@ -835,3 +835,20 @@ fn test_saving_cleared_optional_fields_removes_stale_browser_engine_and_fallback
         "Protected [provider.api_keys] must still be preserved:\n{saved_raw}"
     );
 }
+
+#[test]
+fn test_empty_provider_name_returns_clear_setup_error() {
+    let cfg = Config::default();
+    let err = cfg
+        .get_api_key("")
+        .expect_err("empty provider must return error")
+        .to_string();
+    assert!(
+        err.contains("minicode setup"),
+        "Expected friendly setup hint for empty provider, got: {err}"
+    );
+    assert!(
+        !err.contains("_API_KEY"),
+        "Must never emit bogus '_API_KEY' placeholder for empty provider, got: {err}"
+    );
+}

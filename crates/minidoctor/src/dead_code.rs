@@ -31,13 +31,18 @@ fn py_top_def_re() -> &'static Regex {
 
 fn is_entrypoint_file(rel_path: &str) -> bool {
     let lower = rel_path.to_ascii_lowercase();
-    let stem = lower
-        .rsplit('/')
-        .next()
-        .unwrap_or(&lower)
-        .split('.')
-        .next()
-        .unwrap_or("");
+    let filename = lower.rsplit('/').next().unwrap_or(&lower);
+    let stem = filename.split('.').next().unwrap_or("");
+    // Ambient TypeScript declarations and framework/build/linter/test configs
+    // (e.g. `vite.config.ts`, `tailwind.config.js`, `eslint.config.mjs`, `vite-env.d.ts`)
+    // are consumed by tooling rather than imported by application source files.
+    if filename.ends_with(".d.ts")
+        || filename.contains(".config.")
+        || filename.starts_with("tsconfig")
+        || filename.starts_with("jsconfig")
+    {
+        return true;
+    }
     matches!(
         stem,
         "main"
@@ -58,12 +63,17 @@ fn is_entrypoint_file(rel_path: &str) -> bool {
             | "__main__"
             | "conftest"
             | "setup"
+            | "manage"
+            | "wsgi"
+            | "asgi"
+            | "settings"
             | "build"
     ) || lower.contains("/routes/")
         || lower.contains("/pages/")
         || lower.contains("/app/")
         || lower.contains("/bin/")
         || lower.contains("/api/")
+        || lower.contains("/migrations/")
 }
 
 /// Runs lightweight cross-file unused-export and duplicate-block detection over scanned workspace files.
@@ -317,4 +327,94 @@ pub fn detect_dead_code_and_duplicates(
     }
 
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{run_doctor, DoctorOptions, ScanScope};
+
+    #[test]
+    fn test_config_and_ambient_files_are_entrypoints_not_dead_code() {
+        for p in [
+            "web/vite.config.ts",
+            "tailwind.config.js",
+            "eslint.config.mjs",
+            "src/vite-env.d.ts",
+            "tsconfig.json",
+            "app/manage.py",
+        ] {
+            assert!(
+                is_entrypoint_file(p),
+                "Expected tooling/config file `{p}` to be treated as an entrypoint"
+            );
+        }
+        assert!(!is_entrypoint_file("src/utils/obsolete_helper.ts"));
+    }
+
+    #[test]
+    fn test_python_shell_true_and_react_useeffect_missing_deps_rules() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        std::fs::create_dir_all(root.join("app")).unwrap();
+        std::fs::create_dir_all(root.join("web/src")).unwrap();
+        std::fs::write(root.join("requirements.txt"), "fastapi>=0.115.0\n").unwrap();
+        std::fs::write(
+            root.join("app/main.py"),
+            "import subprocess\n\ndef run_shell(cmd: str):\n    return subprocess.run(cmd, shell=True)\n",
+        )
+        .unwrap();
+        std::fs::write(
+            root.join("web/package.json"),
+            "{\"name\":\"t\",\"dependencies\":{\"react\":\"^19.0.0\"}}\n",
+        )
+        .unwrap();
+        std::fs::write(
+            root.join("web/vite.config.ts"),
+            "export default { server: { port: 5173 } };\n",
+        )
+        .unwrap();
+        std::fs::write(
+            root.join("web/src/App.tsx"),
+            "import { useEffect, useState } from 'react';\nexport default function App() {\n  const [items, setItems] = useState([]);\n  useEffect(() => { fetch('/api').then(r => r.json()).then(setItems); });\n  return <div>{items.length}</div>;\n}\n",
+        )
+        .unwrap();
+        std::fs::write(root.join("web/src/extra1.ts"), "export const a = 1;\n").unwrap();
+        std::fs::write(
+            root.join("web/src/extra2.ts"),
+            "import { a } from './extra1'; export const b = a + 1;\n",
+        )
+        .unwrap();
+
+        let opts = DoctorOptions {
+            scope: ScanScope::Full,
+            write_workspace_artifacts: false,
+            ..DoctorOptions::default()
+        };
+        let report = run_doctor(root, &opts).unwrap();
+        assert!(
+            report
+                .diagnostics
+                .iter()
+                .any(|d| d.rule == "py/subprocess-shell-true"),
+            "Expected py/subprocess-shell-true in {:?}",
+            report.diagnostics
+        );
+        assert!(
+            report
+                .diagnostics
+                .iter()
+                .any(|d| d.rule == "react/useeffect-missing-deps"),
+            "Expected react/useeffect-missing-deps in {:?}",
+            report.diagnostics
+        );
+        assert!(
+            !report
+                .diagnostics
+                .iter()
+                .any(|d| d.rule == "dead/unused-file" && d.file.ends_with("vite.config.ts")),
+            "vite.config.ts must never be flagged as dead/unused-file: {:?}",
+            report.diagnostics
+        );
+    }
 }
