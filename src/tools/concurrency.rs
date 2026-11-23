@@ -260,7 +260,10 @@ pub fn classify_tool(name: &str) -> ToolSafetyLevel {
         | "power_verify"
         | "minipower_verify"
         | "power_diagnose"
-        | "minipower_diagnose" => ToolSafetyLevel::ReadOnly,
+        | "minipower_diagnose"
+        | "project_doctor"
+        | "minidoctor"
+        | "doctor" => ToolSafetyLevel::ReadOnly,
 
         // MiniPower Planning & Worktree Task Execution
         "power_plan"

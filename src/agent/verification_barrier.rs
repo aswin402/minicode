@@ -1228,7 +1228,7 @@ impl VerificationBarrier {
         Self::check_gate4_loaded(workspace_root, &loaded)
     }
 
-    fn check_gate4_loaded(_workspace_root: &Path, loaded: &[LoadedModifiedFile]) -> GateStatus {
+    fn check_gate4_loaded(workspace_root: &Path, loaded: &[LoadedModifiedFile]) -> GateStatus {
         for entry in loaded {
             let ModifiedFilePayload::Utf8Text(content) = &entry.payload else {
                 continue;
@@ -1350,6 +1350,38 @@ impl VerificationBarrier {
                         ),
                     };
                 }
+            }
+        }
+
+        // Smart Auto-Guard: changed-scope MiniDoctor regression check (blocks ONLY on Critical defects)
+        let changed_paths: Vec<String> = loaded.iter().map(|e| e.rel_path.clone()).collect();
+        if let Some(doc_report) = minidoctor::check_changed_files(workspace_root, &changed_paths) {
+            let criticals: Vec<&minidoctor::Diagnostic> = doc_report
+                .diagnostics
+                .iter()
+                .filter(|d| d.severity == minidoctor::Severity::Critical)
+                .collect();
+            if let Some(first) = criticals.first() {
+                let extra = if criticals.len() > 1 {
+                    format!(" (+{} more critical finding(s))", criticals.len() - 1)
+                } else {
+                    String::new()
+                };
+                return GateStatus::Failed {
+                    gate_name: "Gate 4: Diff Sanity & MiniDoctor Critical Guard",
+                    reason: format!(
+                        "MiniDoctor detected Critical defect `{}` at `{}`: {}{} (changed-scope health: {}/100).",
+                        first.rule,
+                        first.location(),
+                        first.message,
+                        extra,
+                        doc_report.score.overall
+                    ),
+                    actionable_remediation: format!(
+                        "{} Run `project_doctor(scope=\"changed\")` after fixing to verify.",
+                        first.suggestion
+                    ),
+                };
             }
         }
 

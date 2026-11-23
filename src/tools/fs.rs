@@ -982,6 +982,33 @@ fn write_file_inner(
             msg.push_str("\n\n");
             msg.push_str(&feedback);
         }
+
+        // Smart Auto-Guard: ultra-fast (<15ms) single-file native AST Critical/Error micro-guard
+        let doctor_hits: Vec<minidoctor::Diagnostic> =
+            minidoctor::check_single_file(workspace_root, relative_path, &effective_content)
+                .into_iter()
+                .filter(|d| {
+                    matches!(
+                        d.severity,
+                        minidoctor::Severity::Critical | minidoctor::Severity::Error
+                    )
+                })
+                .take(4)
+                .collect();
+        if !doctor_hits.is_empty() {
+            msg.push_str("\n\n[MiniDoctor Auto-Guard]:");
+            for d in doctor_hits {
+                msg.push_str(&format!(
+                    "\n  - [{}] `{}` at {}:{} — {} (Fix: {})",
+                    d.severity.badge(),
+                    d.rule,
+                    d.file,
+                    d.line,
+                    d.message,
+                    d.suggestion
+                ));
+            }
+        }
     }
 
     Ok(msg)

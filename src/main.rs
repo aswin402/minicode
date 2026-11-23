@@ -180,8 +180,44 @@ enum Commands {
         json: bool,
     },
 
-    /// Run multi-runtime environment health checks and diagnostics
-    Doctor,
+    /// Run MiniDoctor multi-stack codebase & runtime health checks (writes .minicode/minidoctor/NEEDEDFIX.md)
+    Doctor {
+        /// Run runtime environment checks only (MiniKit Doctor)
+        #[arg(long)]
+        env: bool,
+
+        /// Scan only changed files relative to a git ref (or working tree if omitted)
+        #[arg(long, num_args = 0..=1, default_missing_value = "")]
+        diff: Option<String>,
+
+        /// Output only the numeric 0–100 health score
+        #[arg(long)]
+        score: bool,
+
+        /// Output format: terminal, json, sarif, markdown
+        #[arg(long, default_value = "terminal")]
+        format: String,
+
+        /// Show detailed fix instructions per diagnostic
+        #[arg(long)]
+        verbose_report: bool,
+
+        /// Skip writing .minicode/minidoctor/NEEDEDFIX.md
+        #[arg(long)]
+        no_md: bool,
+
+        /// Export an additional copy of NEEDEDFIX.md to a custom path
+        #[arg(long)]
+        export: Option<PathBuf>,
+
+        /// Minimum passing health score threshold (default: 75)
+        #[arg(long)]
+        threshold: Option<u8>,
+
+        /// Explain a specific rule ID instead of scanning
+        #[arg(long)]
+        explain: Option<String>,
+    },
 
     /// Initialize a new MiniKit project or scaffold a stack
     Init {
@@ -759,9 +795,76 @@ async fn main() -> anyhow::Result<()> {
         Some(Commands::Review { staged, json }) => {
             handle_review_cli(&workspace_canonical, staged, json).await?;
         }
-        Some(Commands::Doctor) => {
-            let report = tools::minikit::doctor::MiniKitDoctor::diagnose();
-            println!("{}", report);
+        Some(Commands::Doctor {
+            env,
+            diff,
+            score,
+            format,
+            verbose_report,
+            no_md,
+            export,
+            threshold,
+            explain,
+        }) => {
+            if env {
+                let report = tools::minikit::doctor::MiniKitDoctor::diagnose();
+                println!("{}", report);
+            } else if let Some(rule_id) = explain {
+                if let Some(meta) = minidoctor::explain_rule(&rule_id) {
+                    println!(
+                        "Rule:     {}\nStack:    {}\nCategory: {}\nSeverity: {}\n\nSummary:\n  {}\n\nWhy:\n  {}\n\nHow to fix:\n  {}",
+                        meta.id,
+                        meta.stack,
+                        meta.category.label(),
+                        meta.default_severity.badge(),
+                        meta.summary,
+                        meta.why,
+                        meta.how_to_fix
+                    );
+                } else {
+                    eprintln!("Unknown rule `{rule_id}`.");
+                    std::process::exit(1);
+                }
+            } else {
+                let scope = match diff {
+                    Some(ref r) if !r.trim().is_empty() => {
+                        minidoctor::ScanScope::Changed(Some(r.trim().to_string()))
+                    }
+                    Some(_) => minidoctor::ScanScope::Changed(None),
+                    None => minidoctor::ScanScope::Full,
+                };
+                let opts = minidoctor::DoctorOptions {
+                    scope,
+                    run_dead_code: true,
+                    run_security: true,
+                    write_workspace_artifacts: !no_md,
+                    export_md_path: export,
+                    threshold_override: threshold,
+                    max_files: 2500,
+                };
+                let rep = minidoctor::run_doctor(&workspace_canonical, &opts)?;
+                if score {
+                    println!("{}", rep.score.overall);
+                } else {
+                    match format.trim().to_ascii_lowercase().as_str() {
+                        "json" => println!("{}", serde_json::to_string_pretty(&rep)?),
+                        "sarif" => println!("{}", minidoctor::format_sarif_json(&rep)),
+                        "markdown" | "md" => {
+                            print!("{}", minidoctor::format_neededfix_markdown(&rep))
+                        }
+                        _ => {
+                            let use_color = std::io::IsTerminal::is_terminal(&std::io::stdout());
+                            print!(
+                                "{}",
+                                minidoctor::format_terminal_report(&rep, verbose_report, use_color)
+                            );
+                        }
+                    }
+                }
+                if !rep.passed_threshold() {
+                    std::process::exit(1);
+                }
+            }
         }
         Some(Commands::Init { name, stack }) => {
             handle_init_cli(&workspace_canonical, name, stack).await?;

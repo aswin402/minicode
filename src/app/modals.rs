@@ -2018,7 +2018,8 @@ impl<'a> App<'a> {
             | ModalState::WorkspaceAnalysis { .. }
             | ModalState::ProviderSetupRequired { .. }
             | ModalState::ArchitectureAudit { .. }
-            | ModalState::ContextDiagnostics { .. } => {
+            | ModalState::ContextDiagnostics { .. }
+            | ModalState::Doctor(_) => {
                 self.handle_agent_and_workspace_modal_key(key, control_tx)
                     .await;
             }

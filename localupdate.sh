@@ -699,6 +699,14 @@ if [ -f "$MINIBROWSE_SOURCE_BIN" ]; then
     echo -e "    ${MUTED}minibrowse    ${RESET} ${GREEN}${MINIBROWSE_TARGET_BIN}${RESET} ${CYAN}(${MB_SIZE})${RESET}"
 fi
 
+MINIDOCTOR_SOURCE_BIN="$SCRIPT_DIR/target/${BUILD_PROFILE}/minidoctor"
+MINIDOCTOR_TARGET_BIN="$INSTALL_DIR/minidoctor"
+if [ -f "$MINIDOCTOR_SOURCE_BIN" ]; then
+    install -m 755 "$MINIDOCTOR_SOURCE_BIN" "$MINIDOCTOR_TARGET_BIN"
+    MD_SIZE=$(ls -lh "$MINIDOCTOR_TARGET_BIN" | awk '{print $5}')
+    echo -e "    ${MUTED}minidoctor    ${RESET} ${GREEN}${MINIDOCTOR_TARGET_BIN}${RESET} ${CYAN}(${MD_SIZE})${RESET}"
+fi
+
 "$TARGET_BIN" stack list --json >/dev/null 2>&1 || true
 STACK_DB_COUNT=$(ls -1 "$CONFIG_DIR/stacks/"*.json 2>/dev/null | wc -l || echo 0)
 echo -e "    ${MUTED}stack db      ${RESET} ${GREEN}${STACK_DB_COUNT} templates (${CONFIG_DIR}/stacks)${RESET}"

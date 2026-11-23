@@ -1368,7 +1368,7 @@ dependencies = [
 
 [[package]]
 name = "minicode"
-version = "0.5.78"
+version = "0.5.79"
 dependencies = [
  "anyhow",
  "async-stream",
@@ -1386,6 +1386,7 @@ dependencies = [
  "landlock",
  "libc",
  "memmap2",
+ "minidoctor",
  "petgraph",
  "pulldown-cmark",
  "ratatui",
@@ -1416,6 +1417,28 @@ dependencies = [
  "url",
  "uuid",
  "which",
+]
+
+[[package]]
+name = "minidoctor"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "chrono",
+ "clap",
+ "ignore",
+ "regex",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 1.0.69",
+ "toml",
+ "tree-sitter",
+ "tree-sitter-javascript",
+ "tree-sitter-python",
+ "tree-sitter-rust",
+ "tree-sitter-typescript",
+ "unicode-width 0.2.0",
 ]
 
 [[package]]

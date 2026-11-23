@@ -888,6 +888,32 @@ impl<'a> App<'a> {
                         let bg_flags = self.sync_background_telemetry_and_continuation(&control_tx).await;
                         scheduler.mark_dirty(bg_flags);
 
+                        if let crate::ui::modals::ModalState::Doctor(ref mut state) = self.modal {
+                            let just_finished = state.poll_progress();
+                            if just_finished {
+                                if let Some(ref rep) = state.report {
+                                    let kind = if rep.score.overall >= 75 {
+                                        crate::ui::ToastKind::Success
+                                    } else if rep.score.overall >= 50 {
+                                        crate::ui::ToastKind::Warning
+                                    } else {
+                                        crate::ui::ToastKind::Error
+                                    };
+                                    self.toasts.push(
+                                        kind,
+                                        format!("MiniDoctor · {}/100 ({})", rep.score.overall, rep.score.label),
+                                        format!(
+                                            "{} crit · {} err · {} warn · saved .minicode/minidoctor/NEEDEDFIX.md",
+                                            rep.score.criticals, rep.score.errors, rep.score.warnings
+                                        ),
+                                        Some(format!("{}ms", rep.duration_ms)),
+                                        Some("minidoctor_scan".to_string()),
+                                    );
+                                }
+                            }
+                            scheduler.mark_dirty(crate::ui::DirtyFlags::OVERLAY);
+                        }
+
                         if let crate::ui::modals::ModalState::Processes(ref mut state) = self.modal {
                             if state.last_refresh.elapsed() >= std::time::Duration::from_millis(1000) {
                                 state.refresh_live().await;

@@ -595,6 +595,98 @@ impl<'a> App<'a> {
                 }
                 _ => {}
             },
+            ModalState::Doctor(ref mut state) => {
+                use crate::ui::modals::doctor::DoctorFilterTab;
+                let mut pending_fix_prompt: Option<(String, String)> = None;
+                let mut toast_msg: Option<(crate::ui::ToastKind, String, String)> = None;
+                let mut should_pop = false;
+
+                match key.code {
+                    KeyCode::Esc | KeyCode::Char('q') | KeyCode::Char('Q') => {
+                        should_pop = true;
+                    }
+                    KeyCode::Up | KeyCode::Char('k') | KeyCode::Char('K') => {
+                        state.select_prev();
+                    }
+                    KeyCode::Down | KeyCode::Char('j') | KeyCode::Char('J') => {
+                        state.select_next();
+                    }
+                    KeyCode::Tab => {
+                        let next = state.active_tab.next();
+                        state.set_tab(next);
+                    }
+                    KeyCode::Char('1') => state.set_tab(DoctorFilterTab::All),
+                    KeyCode::Char('2') => state.set_tab(DoctorFilterTab::CriticalAndErrors),
+                    KeyCode::Char('3') => state.set_tab(DoctorFilterTab::Warnings),
+                    KeyCode::Char('4') => state.set_tab(DoctorFilterTab::DeadCode),
+                    KeyCode::Char('5') => state.set_tab(DoctorFilterTab::Security),
+                    KeyCode::Char('d') | KeyCode::Char('D') => {
+                        state.toggle_diff_scope();
+                    }
+                    KeyCode::Char('r') | KeyCode::Char('R') => {
+                        let scope = state.scope.clone();
+                        state.start_scan(scope);
+                    }
+                    KeyCode::Char('s') | KeyCode::Char('S') => {
+                        state.visual_style = state.visual_style.next();
+                    }
+                    KeyCode::Char('e') | KeyCode::Char('E') => match state.refresh_neededfix_md() {
+                        Ok(path) => {
+                            toast_msg = Some((
+                                crate::ui::ToastKind::Success,
+                                "NEEDEDFIX.md Saved".to_string(),
+                                format!("Updated `{path}` & latest.json"),
+                            ));
+                        }
+                        Err(err) => {
+                            toast_msg = Some((
+                                crate::ui::ToastKind::Warning,
+                                "MiniDoctor Export".to_string(),
+                                err,
+                            ));
+                        }
+                    },
+                    KeyCode::Char('f') | KeyCode::Char('F') => {
+                        if let Some(prompt) = state.build_fix_all_prompt() {
+                            pending_fix_prompt = Some((
+                                prompt,
+                                "/doctor fix (.minicode/minidoctor/NEEDEDFIX.md)".to_string(),
+                            ));
+                        } else {
+                            toast_msg = Some((
+                                crate::ui::ToastKind::Info,
+                                "MiniDoctor Clean".to_string(),
+                                "No issues to auto-fix!".to_string(),
+                            ));
+                        }
+                    }
+                    KeyCode::Enter => {
+                        if let Some(prompt) = state.build_fix_selected_prompt() {
+                            pending_fix_prompt =
+                                Some((prompt, "/doctor fix (selected diagnostic)".to_string()));
+                        }
+                    }
+                    _ => {}
+                }
+
+                if let Some((kind, title, body)) = toast_msg {
+                    self.toasts.push(
+                        kind,
+                        title,
+                        body,
+                        None,
+                        Some("minidoctor_action".to_string()),
+                    );
+                }
+                if let Some((full_prompt, display)) = pending_fix_prompt {
+                    self.close_all_modals();
+                    let _ = self
+                        .handle_command_or_prompt(&full_prompt, Some(&display), control_tx)
+                        .await;
+                } else if should_pop {
+                    self.pop_modal();
+                }
+            }
             _ => {}
         }
     }

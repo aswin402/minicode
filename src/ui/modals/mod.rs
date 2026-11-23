@@ -8,6 +8,7 @@ pub mod code_review;
 pub mod command_catalog;
 pub mod common;
 pub mod context_diagnostics;
+pub mod doctor;
 pub mod exit_confirm;
 pub mod git_diff;
 pub mod help;
@@ -401,6 +402,7 @@ pub enum ModalState {
     Vault(vault::VaultModalState),
     Inquiry(inquiry::InquiryModalState),
     CodeReview(code_review::CodeReviewModalState),
+    Doctor(doctor::DoctorModalState),
 }
 
 impl ModalState {
@@ -425,8 +427,19 @@ impl ModalState {
             ModalState::ModelSelect { loading: true, .. } => true,
             ModalState::Settings(state) => state.probing,
             ModalState::MiniPower(state) => state.is_evaluating,
+            ModalState::Doctor(state) => state.has_live_animation(),
             _ => false,
         }
+    }
+
+    pub fn new_doctor(
+        workspace_root: &std::path::Path,
+        scope: minidoctor::ScanScope,
+        spinner_style: crate::ui::animation::SpinnerStyle,
+    ) -> Self {
+        let mut st = doctor::DoctorModalState::new(workspace_root, scope, true);
+        st.spinner_style = spinner_style;
+        Self::Doctor(st)
     }
 
     pub fn new_code_review(report: crate::git::ReviewReport, staged_only: bool) -> Self {
@@ -1285,6 +1298,7 @@ impl ModalState {
             ModalState::Todo(_) => "Roadmap",
             ModalState::Vault(_) => "MiniVault",
             ModalState::CodeReview(_) => "Review",
+            ModalState::Doctor(_) => "MiniDoctor",
             ModalState::Approval(_)
             | ModalState::Inquiry(_)
             | ModalState::ExitConfirm { .. }
@@ -1372,6 +1386,7 @@ impl ModalState {
             ModalState::Blocks(_) => Some(centered_rect(90, 85, area)),
             ModalState::Processes(_) | ModalState::Vault(_) => Some(centered_rect(92, 86, area)),
             ModalState::CodeReview(_) => Some(centered_rect(82, 78, area)),
+            ModalState::Doctor(_) => Some(centered_rect(92, 88, area)),
             ModalState::None
             | ModalState::Approval(_)
             | ModalState::Inquiry(_)
@@ -1746,6 +1761,9 @@ impl ModalState {
             }
             ModalState::CodeReview(ref state) => {
                 code_review::render_code_review(frame, area, state, theme);
+            }
+            ModalState::Doctor(ref state) => {
+                doctor::render_doctor_modal(frame, area, state, theme, state.spinner_style);
             }
         }
 

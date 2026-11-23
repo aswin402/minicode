@@ -333,6 +333,37 @@ pub fn get_schemas() -> Vec<ToolSchema> {
                 }
             }),
         },
+        ToolSchema {
+            name: "project_doctor".to_string(),
+            description: "Run MiniDoctor — universal native Rust codebase health diagnostic engine across React/Next.js, Hono/TS/JS/Prisma/Zod/Pino, Python/FastAPI/SQLAlchemy, Rust/Tokio/Ratatui, Flutter/Dart, and Go. Computes a 0–100 health score with category sub-scores, detects AST anti-patterns, security defects, dead code & duplicate blocks, and saves a prioritized human + AI checklist to `.minicode/minidoctor/NEEDEDFIX.md`.".to_string(),
+            parameters: json!({
+                "type": "object",
+                "properties": {
+                    "scope": {
+                        "type": "string",
+                        "enum": ["changed", "full"],
+                        "description": "Scan scope: `changed` (git diff / working tree files) or `full` (entire workspace). Defaults to `full`."
+                    },
+                    "diff_ref": {
+                        "type": "string",
+                        "description": "Optional git reference for `changed` scope (e.g. `main`, `HEAD~1`)."
+                    },
+                    "category": {
+                        "type": "string",
+                        "enum": ["all", "correctness", "security", "performance", "architecture", "dead_code", "maintainability"],
+                        "description": "Optional category filter for returned findings. Defaults to `all`."
+                    },
+                    "explain_rule": {
+                        "type": "string",
+                        "description": "Optional rule ID (e.g. `fastapi/sync-in-async-route`) to inspect detailed rationale and remediation instead of running a scan."
+                    },
+                    "write_neededfix": {
+                        "type": "boolean",
+                        "description": "Whether to write/update `.minicode/minidoctor/NEEDEDFIX.md`, `latest.json`, and `history.jsonl`. Defaults to true."
+                    }
+                }
+            }),
+        },
     ]
 }
 
@@ -1859,6 +1890,74 @@ pub async fn dispatch(
             diag.push_str(&caveman_waste.format_markdown());
             Ok(diag)
         }),
+        "project_doctor" | "minidoctor" | "doctor" => Some({
+            if let Some(rule_id) = opt_str(args, "explain_rule") {
+                if let Some(meta) = minidoctor::explain_rule(rule_id) {
+                    Ok(format!(
+                        "Rule `{}` (stack: {}, category: {}, severity: {})\nSummary: {}\nWhy: {}\nHow to fix: {}",
+                        meta.id,
+                        meta.stack,
+                        meta.category.label(),
+                        meta.default_severity.badge(),
+                        meta.summary,
+                        meta.why,
+                        meta.how_to_fix
+                    ))
+                } else {
+                    Ok(format!(
+                        "Unknown MiniDoctor rule `{rule_id}`. Available rules: {}",
+                        minidoctor::list_rules()
+                            .iter()
+                            .map(|r| r.id)
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    ))
+                }
+            } else {
+                let scope_str = opt_str(args, "scope").unwrap_or("full");
+                let diff_ref = opt_str(args, "diff_ref").map(String::from);
+                let scope = if scope_str.eq_ignore_ascii_case("changed") {
+                    minidoctor::ScanScope::Changed(diff_ref)
+                } else {
+                    minidoctor::ScanScope::Full
+                };
+                let write_md = args
+                    .get("write_neededfix")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(true);
+                let cat_filter = opt_str(args, "category")
+                    .map(|c| c.trim().to_ascii_lowercase())
+                    .filter(|c| !c.is_empty() && c != "all");
+                let ws = workspace_root.to_path_buf();
+                let opts = minidoctor::DoctorOptions {
+                    scope,
+                    run_dead_code: true,
+                    run_security: true,
+                    write_workspace_artifacts: write_md,
+                    export_md_path: None,
+                    threshold_override: None,
+                    max_files: 2500,
+                };
+                match tokio::task::spawn_blocking(move || minidoctor::run_doctor(&ws, &opts)).await
+                {
+                    Ok(Ok(mut rep)) => {
+                        if let Some(ref cf) = cat_filter {
+                            rep.diagnostics.retain(|d| {
+                                let label = format!("{:?}", d.category).to_ascii_lowercase();
+                                label == *cf || label.replace('_', "") == cf.replace('_', "")
+                            });
+                        }
+                        Ok(minidoctor::format_agent_compact_summary(&rep, 25))
+                    }
+                    Ok(Err(e)) => Err(crate::error::MinicodeError::from(
+                        ToolError::ExecutionFailed(format!("MiniDoctor failed: {e}")),
+                    )),
+                    Err(e) => Err(crate::error::MinicodeError::from(
+                        ToolError::ExecutionFailed(format!("MiniDoctor task join error: {e}")),
+                    )),
+                }
+            }
+        }),
         "power_speckit" | "minipower_speckit" | "speckit" => Some({
             use crate::agent::minipower::speckit::{
                 analyze_workspace_artifacts, converge_workspace, evaluate_requirements_checklist,
@@ -1972,7 +2071,7 @@ mod tests {
     #[test]
     fn test_minipower_tools_schema_count() {
         let schemas = get_schemas();
-        assert_eq!(schemas.len(), 7);
+        assert_eq!(schemas.len(), 8);
         let names: Vec<String> = schemas.into_iter().map(|s| s.name).collect();
         assert!(!names.contains(&"power_status".to_string()));
         assert!(names.contains(&"power_brainstorm".to_string()));
@@ -1982,6 +2081,37 @@ mod tests {
         assert!(names.contains(&"power_worktree_task".to_string()));
         assert!(names.contains(&"power_diagnose".to_string()));
         assert!(names.contains(&"power_speckit".to_string()));
+        assert!(names.contains(&"project_doctor".to_string()));
+    }
+
+    #[tokio::test]
+    async fn test_project_doctor_dispatch_and_neededfix_artifact() {
+        let temp = tempfile::tempdir().unwrap();
+        std::fs::write(
+            temp.path().join("app.py"),
+            "import time\nasync def handler():\n    time.sleep(1)\n",
+        )
+        .unwrap();
+        let res = dispatch("project_doctor", &json!({"scope": "full"}), temp.path())
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(res.contains("MiniDoctor Health Score:"));
+        assert!(res.contains("fastapi/sync-in-async-route"));
+        assert!(temp
+            .path()
+            .join(".minicode/minidoctor/NEEDEDFIX.md")
+            .is_file());
+
+        let explain = dispatch(
+            "project_doctor",
+            &json!({"explain_rule": "fastapi/sync-in-async-route"}),
+            temp.path(),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        assert!(explain.contains("asyncio.sleep"));
     }
 
     #[tokio::test]

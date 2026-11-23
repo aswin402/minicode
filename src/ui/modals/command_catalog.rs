@@ -82,6 +82,14 @@ pub const COMMAND_CATALOG_ITEMS: &[CommandCatalogItem] = &[
         example: "/review",
     },
     CommandCatalogItem {
+        name: "/doctor",
+        category: "Code & Inspection",
+        shortcut: "",
+        description:
+            "Universal multi-stack native Rust health doctor (0–100 score, AST/security/dead-code scan & .minicode/minidoctor/NEEDEDFIX.md)",
+        example: "/doctor | /doctor --diff main | /doctor fix | /doctor --score",
+    },
+    CommandCatalogItem {
         name: "/copy",
         category: "Display & Aesthetics",
         shortcut: "Ctrl+Y",

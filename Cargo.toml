@@ -1,6 +1,6 @@
 [package]
 name = "minicode"
-version = "0.5.78"
+version = "0.5.79"
 edition = "2021"
 description = "Fast, minimal Rust-native TUI + CLI coding agent for humans and AI agents"
 authors = ["Aswin"]
@@ -9,10 +9,11 @@ homepage = "https://github.com/aswin402/minicode"
 license = "MIT OR Apache-2.0"
 
 [workspace]
-members = [".", "crates/minibrowse"]
-default-members = [".", "crates/minibrowse"]
+members = [".", "crates/minibrowse", "crates/minidoctor"]
+default-members = [".", "crates/minibrowse", "crates/minidoctor"]
 
 [dependencies]
+minidoctor = { path = "crates/minidoctor" }
 # CLI & Configuration
 clap = { version = "4.5", features = ["derive", "env"] }
 serde = { version = "1.0", features = ["derive"] }

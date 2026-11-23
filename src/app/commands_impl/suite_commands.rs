@@ -18,6 +18,148 @@ impl<'a> App<'a> {
             return Ok(Some(CommandAction::Continue));
         }
 
+        // Universal Native Rust Health Doctor (`/doctor`, `/minidoctor`)
+        if prompt_lower == "/doctor"
+            || prompt_lower == "/minidoctor"
+            || prompt_lower.starts_with("/doctor ")
+            || prompt_lower.starts_with("/minidoctor ")
+        {
+            let rest = if prompt_lower.starts_with("/minidoctor") {
+                prompt_trimmed[11..].trim()
+            } else {
+                prompt_trimmed[7..].trim()
+            };
+            let rest_lower = rest.to_ascii_lowercase();
+
+            if rest_lower.starts_with("explain ") {
+                let rule_id = rest[8..].trim();
+                if let Some(meta) = minidoctor::explain_rule(rule_id) {
+                    let md = format!(
+                        "### MiniDoctor Rule: `{}`\n- **Stack:** `{}` · **Category:** `{}` · **Default Severity:** `{}`\n- **Summary:** {}\n- **Why it matters:** {}\n- **How to fix:** {}\n",
+                        meta.id,
+                        meta.stack,
+                        meta.category.label(),
+                        meta.default_severity.badge(),
+                        meta.summary,
+                        meta.why,
+                        meta.how_to_fix
+                    );
+                    self.timeline
+                        .entries
+                        .push(crate::ui::view::TimelineEntry::AssistantMarkdown(md));
+                } else {
+                    self.add_timeline_status(format!(
+                        "✗ Unknown MiniDoctor rule `{rule_id}`. Run `/doctor rules` to list all built-in rules."
+                    ));
+                }
+                return Ok(Some(CommandAction::Continue));
+            }
+
+            if rest_lower == "rules" || rest_lower == "rules list" {
+                let mut md = String::from("### MiniDoctor Built-in Rule Catalog\n\n| Rule | Stack | Severity | Summary |\n| :--- | :--- | :--- | :--- |\n");
+                for r in minidoctor::list_rules() {
+                    md.push_str(&format!(
+                        "| `{}` | {} | **{}** | {} |\n",
+                        r.id,
+                        r.stack,
+                        r.default_severity.badge(),
+                        r.summary
+                    ));
+                }
+                self.timeline
+                    .entries
+                    .push(crate::ui::view::TimelineEntry::AssistantMarkdown(md));
+                return Ok(Some(CommandAction::Continue));
+            }
+
+            if rest_lower == "--score" || rest_lower == "score" {
+                let ws = self.workspace_root.clone();
+                let res = tokio::task::spawn_blocking(move || {
+                    minidoctor::run_doctor(&ws, &minidoctor::DoctorOptions::default())
+                })
+                .await;
+                match res {
+                    Ok(Ok(rep)) => {
+                        let summary = minidoctor::format_agent_compact_summary(&rep, 5);
+                        self.toasts.push(
+                            if rep.score.overall >= 75 {
+                                crate::ui::ToastKind::Success
+                            } else {
+                                crate::ui::ToastKind::Warning
+                            },
+                            format!("MiniDoctor · {}/100 ({})", rep.score.overall, rep.score.label),
+                            format!(
+                                "{} crit · {} err · {} warn · saved .minicode/minidoctor/NEEDEDFIX.md",
+                                rep.score.criticals, rep.score.errors, rep.score.warnings
+                            ),
+                            Some(format!("{}ms", rep.duration_ms)),
+                            Some("minidoctor_scan".to_string()),
+                        );
+                        self.timeline
+                            .entries
+                            .push(crate::ui::view::TimelineEntry::AssistantMarkdown(summary));
+                    }
+                    Ok(Err(e)) => self.add_timeline_status(format!("✗ MiniDoctor failed: {e}")),
+                    Err(e) => self.add_timeline_status(format!("✗ MiniDoctor task error: {e}")),
+                }
+                return Ok(Some(CommandAction::Continue));
+            }
+
+            if rest_lower == "fix" || rest_lower == "--fix" {
+                let ws = self.workspace_root.clone();
+                let res = tokio::task::spawn_blocking(move || {
+                    minidoctor::run_doctor(&ws, &minidoctor::DoctorOptions::default())
+                })
+                .await;
+                match res {
+                    Ok(Ok(rep)) => {
+                        if rep.diagnostics.is_empty() {
+                            self.add_timeline_status(format!(
+                                "✔ MiniDoctor score {}/100 ({}) — zero issues to fix!",
+                                rep.score.overall, rep.score.label
+                            ));
+                        } else {
+                            let st = crate::ui::modals::doctor::DoctorModalState::new(
+                                &self.workspace_root,
+                                minidoctor::ScanScope::Full,
+                                false,
+                            );
+                            let mut st = st;
+                            st.report = Some(rep);
+                            if let Some(fix_prompt) = st.build_fix_all_prompt() {
+                                return Box::pin(self.handle_command_or_prompt(
+                                    &fix_prompt,
+                                    Some("/doctor fix (.minicode/minidoctor/NEEDEDFIX.md)"),
+                                    control_tx,
+                                ))
+                                .await
+                                .map(Some);
+                            }
+                        }
+                    }
+                    Ok(Err(e)) => self.add_timeline_status(format!("✗ MiniDoctor failed: {e}")),
+                    Err(e) => self.add_timeline_status(format!("✗ MiniDoctor task error: {e}")),
+                }
+                return Ok(Some(CommandAction::Continue));
+            }
+
+            // Default: open animated `/doctor` modal in Full or Git Diff mode
+            let scope = if rest_lower == "--diff" || rest_lower == "diff" {
+                minidoctor::ScanScope::Changed(None)
+            } else if let Some(git_ref) = rest
+                .strip_prefix("--diff ")
+                .or_else(|| rest.strip_prefix("diff "))
+            {
+                let r = git_ref.trim();
+                minidoctor::ScanScope::Changed((!r.is_empty()).then(|| r.to_string()))
+            } else {
+                minidoctor::ScanScope::Full
+            };
+            let spinner = crate::ui::animation::SpinnerStyle::from_id(&self.config.ui.animation);
+            self.modal = ModalState::new_doctor(&self.workspace_root, scope, spinner);
+            return Ok(Some(CommandAction::Continue));
+        }
+
         if prompt_lower == "/blocks"
             || prompt_lower == "/miniblocks"
             || prompt_lower.starts_with("/blocks ")

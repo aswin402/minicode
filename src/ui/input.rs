@@ -176,6 +176,13 @@ pub const PALETTE_COMMANDS: &[PaletteCommand] = &[
         shortcut: Some("Ctrl+R"),
     },
     PaletteCommand {
+        slash_name: "/doctor",
+        title: "MiniDoctor Health Scan",
+        description: "Universal native Rust stack doctor (0-100 score, AST/security/dead-code & .minicode/minidoctor/NEEDEDFIX.md)",
+        category: CommandCategory::Intelligence,
+        shortcut: None,
+    },
+    PaletteCommand {
         slash_name: "/context",
         title: "Context Inspector",
         description: "Interactive context breakdown, zone allocations & KV-cache",
