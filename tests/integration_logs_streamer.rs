@@ -233,6 +233,7 @@ async fn test_live_follow_file_growth() {
             total_tokens_used: 1500,
             cached_prompt_tokens: 0,
             files_modified: vec!["src/main.rs".to_string()],
+            duration_ms: None,
         };
         writeln!(appender, "{}", serde_json::to_string(&event2).unwrap()).unwrap();
         appender.flush().unwrap();

@@ -82,6 +82,7 @@ pub struct App<'a> {
     pub notifier: crate::ui::SystemNotifier,
     last_bg_task_count: usize,
     turn_tool_steps: usize,
+    turn_tool_duration_ms: u64,
     turn_estimated_tokens: usize,
     handling_live_steering: bool,
     last_pool_version: u64,
@@ -209,6 +210,7 @@ impl<'a> App<'a> {
             notifier: crate::ui::SystemNotifier::new(),
             last_bg_task_count: initial_bg_tasks,
             turn_tool_steps: 0,
+            turn_tool_duration_ms: 0,
             turn_estimated_tokens: 0,
             handling_live_steering: false,
             last_pool_version: initial_pool_version,
@@ -253,27 +255,47 @@ impl<'a> App<'a> {
         self.modal = ModalState::None;
         self.modal_history.clear();
         let mut hydrated_turn_tools: usize = 0;
+        let mut hydrated_turn_tool_ms: u64 = 0;
+        let mut hydrated_turn_start_ts: Option<chrono::DateTime<chrono::FixedOffset>> = None;
+        let mut hydrated_last_ts: Option<chrono::DateTime<chrono::FixedOffset>> = None;
         let mut hydrated_turn_model = self.config.provider.model.clone();
         for event in events {
             match event {
-                AgentEvent::UserPrompt { prompt, .. } => {
+                AgentEvent::UserPrompt {
+                    timestamp, prompt, ..
+                } => {
+                    if let Ok(ts) = chrono::DateTime::parse_from_rfc3339(timestamp) {
+                        hydrated_turn_start_ts = Some(ts);
+                        hydrated_last_ts = Some(ts);
+                    }
                     self.timeline.add_user_message(prompt.clone());
                     if !crate::ui::prompt_corpus::is_excluded_from_prompt_history(prompt) {
                         self.input_dock.history.seed_prompt(prompt);
                     }
                 }
                 AgentEvent::TurnStart {
+                    timestamp,
                     context_tokens,
                     model,
                     ..
                 } => {
                     self.saw_turn_context_update = false;
                     hydrated_turn_tools = 0;
+                    hydrated_turn_tool_ms = 0;
+                    if let Ok(ts) = chrono::DateTime::parse_from_rfc3339(timestamp) {
+                        hydrated_turn_start_ts = Some(ts);
+                        hydrated_last_ts = Some(ts);
+                    }
                     if !model.trim().is_empty() {
                         hydrated_turn_model = model.clone();
                     }
                     if *context_tokens > 0 {
                         self.last_turn_tokens = *context_tokens;
+                    }
+                }
+                AgentEvent::Heartbeat { timestamp, .. } => {
+                    if let Ok(ts) = chrono::DateTime::parse_from_rfc3339(timestamp) {
+                        hydrated_last_ts = Some(ts);
                     }
                 }
                 AgentEvent::ThinkingDelta { delta, .. } => {
@@ -296,17 +318,31 @@ impl<'a> App<'a> {
                     ..
                 } => {
                     hydrated_turn_tools = hydrated_turn_tools.saturating_add(1);
+                    hydrated_turn_tool_ms = hydrated_turn_tool_ms.saturating_add(*duration_ms);
                     self.timeline
                         .finish_tool_call(tool, *success, output.clone(), *duration_ms);
                 }
                 AgentEvent::TurnEnd {
                     total_tokens_used,
                     cached_prompt_tokens,
+                    duration_ms,
                     ..
                 } => {
                     self.timeline.finalize_open_entries_on_turn_end();
-                    if *total_tokens_used > 0 {
-                        if !self.saw_turn_context_update {
+                    let hydrated_duration_secs = if let Some(ms) = duration_ms.filter(|&m| m > 0) {
+                        ms as f64 / 1000.0
+                    } else {
+                        let ts_secs = hydrated_turn_start_ts
+                            .zip(hydrated_last_ts)
+                            .map(|(start, end)| {
+                                (end - start).num_milliseconds().max(0) as f64 / 1000.0
+                            })
+                            .unwrap_or(0.0);
+                        let tool_secs = hydrated_turn_tool_ms as f64 / 1000.0;
+                        ts_secs.max(tool_secs)
+                    };
+                    if *total_tokens_used > 0 || hydrated_duration_secs >= 0.001 {
+                        if !self.saw_turn_context_update && *total_tokens_used > 0 {
                             self.last_turn_tokens = *total_tokens_used;
                         }
                         self.cumulative_tokens =
@@ -325,12 +361,16 @@ impl<'a> App<'a> {
                         self.timeline.add_turn_summary(
                             *total_tokens_used,
                             *cached_prompt_tokens,
-                            0.0,
+                            hydrated_duration_secs,
                             hydrated_turn_tools,
                             turn_cost,
                             hydrated_turn_model.clone(),
                         );
                     }
+                    hydrated_turn_tools = 0;
+                    hydrated_turn_tool_ms = 0;
+                    hydrated_turn_start_ts = None;
+                    hydrated_last_ts = None;
                     if *cached_prompt_tokens > 0 {
                         self.last_turn_cached_tokens = *cached_prompt_tokens;
                     }
@@ -986,6 +1026,7 @@ impl<'a> App<'a> {
                                 self.is_working = true;
                                 self.saw_turn_context_update = false;
                                 self.turn_tool_steps = 0;
+                                self.turn_tool_duration_ms = 0;
                                 self.turn_estimated_tokens = 0;
                                 if self.work_start.is_none() {
                                     self.work_start = Some(Instant::now());
@@ -1061,6 +1102,8 @@ impl<'a> App<'a> {
                                 ..
                             } => {
                                 self.turn_tool_steps = self.turn_tool_steps.saturating_add(1);
+                                self.turn_tool_duration_ms =
+                                    self.turn_tool_duration_ms.saturating_add(duration_ms);
                                 self.current_activity =
                                     Some(crate::ui::AgentActivity::ThinkingAfter {
                                         last_tool: tool.clone(),
@@ -1089,6 +1132,7 @@ impl<'a> App<'a> {
                                 status,
                                 total_tokens_used,
                                 cached_prompt_tokens,
+                                duration_ms,
                                 ..
                             } => {
                                 if total_tokens_used > 0 {
@@ -1116,12 +1160,26 @@ impl<'a> App<'a> {
                                 } else {
                                     self.turn_estimated_tokens
                                 };
-                                let elapsed_secs = self
-                                    .work_start
-                                    .or(self.timeline.turn_start)
-                                    .map(|t| t.elapsed().as_secs_f64())
+                                let elapsed_secs = duration_ms
+                                    .filter(|&ms| ms > 0)
+                                    .map(|ms| ms as f64 / 1000.0)
+                                    .or_else(|| {
+                                        self.work_start
+                                            .or(self.timeline.turn_start)
+                                            .map(|t| t.elapsed().as_secs_f64())
+                                            .filter(|&s| s > 0.0)
+                                    })
+                                    .or_else(|| {
+                                        (self.turn_tool_duration_ms > 0)
+                                            .then_some(self.turn_tool_duration_ms as f64 / 1000.0)
+                                    })
                                     .unwrap_or(0.0);
-                                if turn_tokens > 0 || elapsed_secs >= 0.05 {
+                                let elapsed_secs = if elapsed_secs > 0.0 {
+                                    elapsed_secs.max(0.001)
+                                } else {
+                                    0.0
+                                };
+                                if turn_tokens > 0 || elapsed_secs >= 0.001 {
                                     self.timeline.add_turn_summary(
                                         turn_tokens,
                                         cached_prompt_tokens,
@@ -1141,6 +1199,7 @@ impl<'a> App<'a> {
                                 self.handling_live_steering = false;
                                 self.current_activity = None;
                                 self.work_start = None;
+                                self.turn_tool_duration_ms = 0;
                                 self.turn_estimated_tokens = 0;
                                 self.cancel_token = None;
                             }
@@ -2502,21 +2561,52 @@ mod tests {
                 total_tokens_used: 1580,
                 files_modified: vec![],
                 cached_prompt_tokens: 0,
+                duration_ms: Some(4250),
             },
         ];
 
         app.hydrate_session(&events);
         assert_eq!(app.last_turn_tokens, 1580);
+        // Persisted TurnEnd.duration_ms must populate TurnSummary duration_secs
+        let first_summary = app
+            .timeline
+            .entries
+            .iter()
+            .find_map(|e| match e {
+                crate::ui::view::TimelineEntry::TurnSummary {
+                    tokens_used,
+                    duration_secs,
+                    ..
+                } => Some((*tokens_used, *duration_secs)),
+                _ => None,
+            })
+            .expect("hydrated TurnSummary for turn 1");
+        assert_eq!(first_summary.0, 1580);
+        assert!((first_summary.1 - 4.25).abs() < 0.01);
 
         // minitest81 regression: when ContextTokensUpdated reports true active context occupancy
         // before TurnEnd, TurnEnd's cumulative turn spend must update `cumulative_tokens` without
         // overwriting `last_turn_tokens` (preserving accurate context bar & `kv (%)` cache hit rate).
+        // Legacy saved turns without `duration_ms` must also reconstruct duration from ToolResult + Heartbeat.
         let multi_step_events = vec![
             AgentEvent::TurnStart {
                 turn_id: 2,
                 timestamp: "2026-11-21T17:13:54Z".to_string(),
                 model: "MiniMax-M3.1-Flash".to_string(),
                 context_tokens: 12153,
+            },
+            AgentEvent::ToolResult {
+                turn_id: 2,
+                tool_id: "t1".to_string(),
+                tool: "browser_eval".to_string(),
+                success: true,
+                output: "ok".to_string(),
+                duration_ms: 6200,
+            },
+            AgentEvent::Heartbeat {
+                timestamp: "2026-11-21T17:14:12Z".to_string(),
+                status: "working".to_string(),
+                turn_id: Some(2),
             },
             AgentEvent::ContextTokensUpdated {
                 turn_id: 2,
@@ -2529,12 +2619,35 @@ mod tests {
                 total_tokens_used: 385_375,
                 files_modified: vec![],
                 cached_prompt_tokens: 157_184,
+                duration_ms: None,
             },
         ];
         app.hydrate_session(&multi_step_events);
         assert_eq!(app.last_turn_tokens, 175_000);
         assert_eq!(app.last_turn_cached_tokens, 157_184);
         assert_eq!(app.cumulative_tokens, 1580 + 385_375);
+        let second_summary = app
+            .timeline
+            .entries
+            .iter()
+            .rev()
+            .find_map(|e| match e {
+                crate::ui::view::TimelineEntry::TurnSummary {
+                    tokens_used,
+                    duration_secs,
+                    tool_calls,
+                    ..
+                } => Some((*tokens_used, *duration_secs, *tool_calls)),
+                _ => None,
+            })
+            .expect("hydrated TurnSummary for legacy turn 2");
+        assert_eq!(second_summary.0, 385_375);
+        assert!(
+            (second_summary.1 - 18.0).abs() < 0.01,
+            "Legacy turn without TurnEnd.duration_ms should recover 18s duration from Heartbeat/ToolResult, got {}",
+            second_summary.1
+        );
+        assert_eq!(second_summary.2, 1);
     }
 
     #[test]

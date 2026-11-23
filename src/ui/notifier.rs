@@ -329,6 +329,7 @@ mod tests {
             total_tokens_used: 1200,
             files_modified: Vec::new(),
             cached_prompt_tokens: 0,
+            duration_ms: None,
         };
         assert!(notifier
             .classify_event(&short_turn, Some(Duration::from_secs(3)))

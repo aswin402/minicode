@@ -1147,6 +1147,13 @@ impl AgentLoop {
                                     .saturating_add(cumulative_completion_tokens),
                                 files_modified: turn_files_modified.clone(),
                                 cached_prompt_tokens: last_cached_prompt_tokens,
+                                duration_ms: Some(
+                                    turn_started_at
+                                        .elapsed()
+                                        .unwrap_or_default()
+                                        .as_millis()
+                                        .max(1) as u64,
+                                ),
                             };
                             let _ = self
                                 .session_store
@@ -1394,6 +1401,13 @@ impl AgentLoop {
                                     .saturating_add(cumulative_completion_tokens),
                                 files_modified: turn_files_modified.clone(),
                                 cached_prompt_tokens: last_cached_prompt_tokens,
+                                duration_ms: Some(
+                                    turn_started_at
+                                        .elapsed()
+                                        .unwrap_or_default()
+                                        .as_millis()
+                                        .max(1) as u64,
+                                ),
                             };
                             let _ = self
                                 .session_store
@@ -1506,6 +1520,13 @@ impl AgentLoop {
                                     .saturating_add(cumulative_completion_tokens),
                                 files_modified: turn_files_modified.clone(),
                                 cached_prompt_tokens: last_cached_prompt_tokens,
+                                duration_ms: Some(
+                                    turn_started_at
+                                        .elapsed()
+                                        .unwrap_or_default()
+                                        .as_millis()
+                                        .max(1) as u64,
+                                ),
                             };
                             let _ = self
                                 .session_store
@@ -3295,6 +3316,13 @@ impl AgentLoop {
             total_tokens_used: turn_tokens_used,
             files_modified: turn_files_modified.clone(),
             cached_prompt_tokens: last_cached_prompt_tokens,
+            duration_ms: Some(
+                turn_started_at
+                    .elapsed()
+                    .unwrap_or_default()
+                    .as_millis()
+                    .max(1) as u64,
+            ),
         };
         if let Err(e) = self
             .session_store

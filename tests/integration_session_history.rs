@@ -45,6 +45,7 @@ async fn test_session_summary_analytics() {
         total_tokens_used: 450,
         cached_prompt_tokens: 0,
         files_modified: vec!["src/lib.rs".to_string()],
+        duration_ms: None,
     };
 
     store.append_event(&session_id, &event1).unwrap();
@@ -337,6 +338,7 @@ async fn test_user_prompt_in_summary_and_export() {
         total_tokens_used: 350,
         cached_prompt_tokens: 0,
         files_modified: vec!["src/auth.rs".to_string()],
+        duration_ms: None,
     };
 
     store.append_event(&session_id, &user_event).unwrap();

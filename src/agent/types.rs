@@ -418,6 +418,8 @@ pub enum AgentEvent {
         files_modified: Vec<String>,
         #[serde(default)]
         cached_prompt_tokens: usize,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        duration_ms: Option<u64>,
     },
 
     #[serde(rename = "error")]

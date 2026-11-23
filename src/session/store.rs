@@ -1567,6 +1567,7 @@ mod tests {
                     total_tokens_used: 120,
                     files_modified: Vec::new(),
                     cached_prompt_tokens: 0,
+                    duration_ms: None,
                 },
             )
             .unwrap();

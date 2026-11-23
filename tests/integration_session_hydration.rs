@@ -66,6 +66,7 @@ async fn test_agent_hydrate_from_events_structural_reconstruction() {
             total_tokens_used: 240,
             files_modified: vec![],
             cached_prompt_tokens: 0,
+            duration_ms: None,
         },
         AgentEvent::TurnStart {
             turn_id: 2,
@@ -108,6 +109,7 @@ async fn test_agent_hydrate_from_events_structural_reconstruction() {
             total_tokens_used: 310,
             files_modified: vec!["src/calculator.rs".to_string()],
             cached_prompt_tokens: 0,
+            duration_ms: None,
         },
     ];
 
