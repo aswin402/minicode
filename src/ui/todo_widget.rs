@@ -220,7 +220,12 @@ const fn style_chrome_rows(style: TodoWidgetStyle) -> u16 {
         TodoWidgetStyle::Rail
         | TodoWidgetStyle::Minimal
         | TodoWidgetStyle::Checklist
-        | TodoWidgetStyle::Pipeline => 3,
+        | TodoWidgetStyle::Pipeline
+        | TodoWidgetStyle::NerdFont
+        | TodoWidgetStyle::Kaomoji
+        | TodoWidgetStyle::Emoji
+        | TodoWidgetStyle::Ascii
+        | TodoWidgetStyle::Posh => 3,
     }
 }
 
@@ -302,6 +307,11 @@ pub fn render_todo_widget_bounded<'a>(
         TodoWidgetStyle::Minimal => render_todo_minimal(plan, &projected, width, theme),
         TodoWidgetStyle::Checklist => render_todo_checklist(plan, &projected, width, theme),
         TodoWidgetStyle::Pipeline => render_todo_pipeline(plan, &projected, width, theme),
+        TodoWidgetStyle::NerdFont => render_todo_nerdfont(plan, &projected, width, theme),
+        TodoWidgetStyle::Kaomoji => render_todo_kaomoji(plan, &projected, width, theme),
+        TodoWidgetStyle::Emoji => render_todo_emoji(plan, &projected, width, theme),
+        TodoWidgetStyle::Ascii => render_todo_ascii(plan, &projected, width, theme),
+        TodoWidgetStyle::Posh => render_todo_posh(plan, &projected, width, theme),
     };
     lines.extend(content_lines);
     lines
@@ -913,6 +923,316 @@ fn render_todo_pipeline<'a>(
     lines
 }
 
+/// Shared themed-pack renderer for NerdFont, Kaomoji, Emoji, ASCII, and Oh My Posh todo styles.
+#[allow(clippy::too_many_arguments)]
+fn render_todo_themed_pack<'a>(
+    projected: &InlineTodoProjection<'a>,
+    width: u16,
+    theme: &'a Theme,
+    header_line: Line<'a>,
+    row_gutter: &'static str,
+    gutter_color: ratatui::style::Color,
+    done_glyph: String,
+    active_glyph: String,
+    pending_glyph: String,
+    sub_indent: &'static str,
+    bottom_rule: Line<'a>,
+) -> Vec<Line<'a>> {
+    let mut lines = Vec::with_capacity(projected.total_row_count() + 2);
+    let glyph_max_w = UnicodeWidthStr::width(done_glyph.as_str())
+        .max(UnicodeWidthStr::width(active_glyph.as_str()))
+        .max(UnicodeWidthStr::width(pending_glyph.as_str()));
+    let gutter_w = UnicodeWidthStr::width(row_gutter);
+    let max_task_cols = (width as usize)
+        .saturating_sub(gutter_w + glyph_max_w + 3)
+        .max(8);
+    let max_sub_cols = (width as usize)
+        .saturating_sub(gutter_w + UnicodeWidthStr::width(sub_indent) + glyph_max_w + 3)
+        .max(8);
+
+    lines.push(header_line);
+
+    let visuals = |status: LivePlanTaskStatus| -> (
+        &str,
+        ratatui::style::Color,
+        ratatui::style::Color,
+        Modifier,
+        Modifier,
+    ) {
+        match status {
+            LivePlanTaskStatus::Completed => (
+                done_glyph.as_str(),
+                theme.success,
+                theme.muted,
+                Modifier::empty(),
+                Modifier::CROSSED_OUT,
+            ),
+            LivePlanTaskStatus::InProgress => (
+                active_glyph.as_str(),
+                theme.info,
+                theme.text_primary,
+                Modifier::BOLD,
+                Modifier::BOLD,
+            ),
+            LivePlanTaskStatus::Pending => (
+                pending_glyph.as_str(),
+                theme.muted,
+                theme.muted,
+                Modifier::empty(),
+                Modifier::empty(),
+            ),
+        }
+    };
+
+    for row in &projected.rows {
+        let (glyph, g_col, t_col, g_mod, t_mod) = visuals(row.task.status);
+        let raw_title =
+            crate::ui::markdown::MarkdownRenderer::normalize_status_glyphs(&row.task.title);
+        let clean_title = truncate_todo_line(&raw_title, max_task_cols);
+        lines.push(Line::from(vec![
+            Span::styled(row_gutter, Style::default().fg(gutter_color)),
+            Span::styled(
+                glyph.to_string(),
+                Style::default().fg(g_col).add_modifier(g_mod),
+            ),
+            Span::styled(clean_title, Style::default().fg(t_col).add_modifier(t_mod)),
+        ]));
+
+        for sub in &row.sub_tasks {
+            let (sg, sg_col, st_col, sg_mod, st_mod) = visuals(sub.status);
+            let raw_sub =
+                crate::ui::markdown::MarkdownRenderer::normalize_status_glyphs(&sub.title);
+            let clean_sub = truncate_todo_line(&raw_sub, max_sub_cols);
+            lines.push(Line::from(vec![
+                Span::styled(row_gutter, Style::default().fg(gutter_color)),
+                Span::raw(sub_indent),
+                Span::styled(
+                    sg.to_string(),
+                    Style::default().fg(sg_col).add_modifier(sg_mod),
+                ),
+                Span::styled(clean_sub, Style::default().fg(st_col).add_modifier(st_mod)),
+            ]));
+        }
+    }
+
+    lines.push(bottom_rule);
+    lines
+}
+
+/// Style 7: Nerd Font Codicons (auto-detecting zero-box fallback via `crate::ui::icons::nf`)
+fn render_todo_nerdfont<'a>(
+    plan: &'a LivePlanBlock,
+    projected: &InlineTodoProjection<'a>,
+    width: u16,
+    theme: &'a Theme,
+) -> Vec<Line<'a>> {
+    use crate::ui::icons::{nf, NerdIcon};
+    let counts = format_plan_progress_counts(plan);
+    let header = Line::from(vec![
+        Span::styled("▎ ", Style::default().fg(theme.brand_accent)),
+        Span::styled(
+            format!("{} TODO · ", nf(NerdIcon::Checklist)),
+            Style::default()
+                .fg(theme.brand_accent)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(
+            format!("{} · [{}]", counts, plan.title),
+            Style::default().fg(theme.muted),
+        ),
+    ]);
+    let bottom = Line::from(vec![Span::styled(
+        "─".repeat((width.saturating_sub(1) as usize).max(10)),
+        Style::default().fg(theme.border),
+    )]);
+    render_todo_themed_pack(
+        projected,
+        width,
+        theme,
+        header,
+        "▎ ",
+        theme.border,
+        format!("{} ", nf(NerdIcon::Check)),
+        format!("{} ", nf(NerdIcon::Rocket)),
+        "○ ".to_string(),
+        "  ",
+        bottom,
+    )
+}
+
+/// Style 8: Expressive Kaomoji Todo Widget
+fn render_todo_kaomoji<'a>(
+    plan: &'a LivePlanBlock,
+    projected: &InlineTodoProjection<'a>,
+    width: u16,
+    theme: &'a Theme,
+) -> Vec<Line<'a>> {
+    let counts = format_plan_progress_counts(plan);
+    let header = Line::from(vec![
+        Span::styled(
+            "(ง•_•)ง TODO · ",
+            Style::default()
+                .fg(theme.brand_accent)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(
+            format!("{} · [{}]", counts, plan.title),
+            Style::default().fg(theme.muted),
+        ),
+    ]);
+    let bottom = Line::from(vec![Span::styled(
+        "─".repeat((width.saturating_sub(1) as usize).max(10)),
+        Style::default().fg(theme.border),
+    )]);
+    render_todo_themed_pack(
+        projected,
+        width,
+        theme,
+        header,
+        "  ",
+        theme.muted,
+        "(•‿•)  ".to_string(),
+        "(ง°_°)ง ".to_string(),
+        "(・_・) ".to_string(),
+        "  ",
+        bottom,
+    )
+}
+
+/// Style 9: Expressive Emoji Todo Widget
+fn render_todo_emoji<'a>(
+    plan: &'a LivePlanBlock,
+    projected: &InlineTodoProjection<'a>,
+    width: u16,
+    theme: &'a Theme,
+) -> Vec<Line<'a>> {
+    let counts = format_plan_progress_counts(plan);
+    let header = Line::from(vec![
+        Span::styled(
+            "📋 TODO · ",
+            Style::default()
+                .fg(theme.brand_accent)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(
+            format!("{} · [{}]", counts, plan.title),
+            Style::default().fg(theme.muted),
+        ),
+    ]);
+    let bottom = Line::from(vec![Span::styled(
+        "─".repeat((width.saturating_sub(1) as usize).max(10)),
+        Style::default().fg(theme.border),
+    )]);
+    render_todo_themed_pack(
+        projected,
+        width,
+        theme,
+        header,
+        "  ",
+        theme.muted,
+        "✅ ".to_string(),
+        "🚀 ".to_string(),
+        "⏳ ".to_string(),
+        "  ",
+        bottom,
+    )
+}
+
+/// Style 10: Pure 7-bit ASCII Classic Todo Widget
+fn render_todo_ascii<'a>(
+    plan: &'a LivePlanBlock,
+    projected: &InlineTodoProjection<'a>,
+    width: u16,
+    theme: &'a Theme,
+) -> Vec<Line<'a>> {
+    let counts = format_plan_progress_counts(plan);
+    let total_w = (width.saturating_sub(1) as usize).max(20);
+    let label = format!("+-- TODO [{}] ({}) ", counts, plan.title);
+    let label_w = UnicodeWidthStr::width(label.as_str());
+    let dash_rem = total_w.saturating_sub(label_w + 1);
+    let header = Line::from(vec![
+        Span::styled("+-- ", Style::default().fg(theme.border)),
+        Span::styled(
+            format!("TODO [{counts}] "),
+            Style::default()
+                .fg(theme.brand_accent)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(
+            format!("({}) ", plan.title),
+            Style::default().fg(theme.muted),
+        ),
+        Span::styled(
+            format!("{}+", "-".repeat(dash_rem)),
+            Style::default().fg(theme.border),
+        ),
+    ]);
+    let bottom = Line::from(vec![Span::styled(
+        format!("+{}+", "-".repeat(total_w.saturating_sub(2))),
+        Style::default().fg(theme.border),
+    )]);
+    render_todo_themed_pack(
+        projected,
+        width,
+        theme,
+        header,
+        "| ",
+        theme.border,
+        "[x] ".to_string(),
+        "[>] ".to_string(),
+        "[ ] ".to_string(),
+        "  ",
+        bottom,
+    )
+}
+
+/// Style 11: Oh My Posh Capsule Pill Todo Widget
+fn render_todo_posh<'a>(
+    plan: &'a LivePlanBlock,
+    projected: &InlineTodoProjection<'a>,
+    width: u16,
+    theme: &'a Theme,
+) -> Vec<Line<'a>> {
+    let counts = format_plan_progress_counts(plan);
+    let pill_bg = theme.bg_elevated;
+    let total_w = (width.saturating_sub(1) as usize).max(20);
+    let header_txt_w = 12 + counts.len() + UnicodeWidthStr::width(plan.title.as_str());
+    let rem = total_w.saturating_sub(header_txt_w).min(36);
+    let header = Line::from(vec![
+        Span::styled("\u{e0b6}", Style::default().fg(pill_bg)),
+        Span::styled(
+            "✦ TODO",
+            Style::default()
+                .fg(theme.brand_accent)
+                .bg(pill_bg)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::styled("\u{e0b4} ", Style::default().fg(pill_bg)),
+        Span::styled(
+            format!("{counts} · {} ", plan.title),
+            Style::default().fg(theme.muted),
+        ),
+        Span::styled("─".repeat(rem), Style::default().fg(theme.border)),
+    ]);
+    let bottom = Line::from(vec![Span::styled(
+        "─".repeat(total_w),
+        Style::default().fg(theme.border),
+    )]);
+    render_todo_themed_pack(
+        projected,
+        width,
+        theme,
+        header,
+        "▎ ",
+        theme.brand_accent,
+        "✓ ".to_string(),
+        "❯ ".to_string(),
+        "○ ".to_string(),
+        "  ",
+        bottom,
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -974,6 +1294,20 @@ mod tests {
             todo_widget_required_height(&plan, TodoWidgetStyle::Pipeline),
             6
         );
+        for style in [
+            TodoWidgetStyle::NerdFont,
+            TodoWidgetStyle::Kaomoji,
+            TodoWidgetStyle::Emoji,
+            TodoWidgetStyle::Ascii,
+            TodoWidgetStyle::Posh,
+        ] {
+            assert_eq!(
+                todo_widget_required_height(&plan, style),
+                6,
+                "style {:?}",
+                style
+            );
+        }
 
         // 100% completed plan remains renderable while unarchived (before `archive_plan` clears tasks)
         let completed_unarchived = Some(LivePlanBlock {
@@ -1040,6 +1374,42 @@ mod tests {
 
         let pipeline_lines = render_todo_widget(&plan, TodoWidgetStyle::Pipeline, 80, &theme);
         assert_eq!(pipeline_lines.len(), 6);
+
+        for style in [
+            TodoWidgetStyle::NerdFont,
+            TodoWidgetStyle::Kaomoji,
+            TodoWidgetStyle::Emoji,
+            TodoWidgetStyle::Ascii,
+            TodoWidgetStyle::Posh,
+        ] {
+            let lines = render_todo_widget(&plan, style, 80, &theme);
+            assert_eq!(lines.len(), 6, "style {:?}", style);
+            assert!(lines[0].spans.is_empty() || lines[0].spans[0].content.is_empty());
+            let joined: String = lines
+                .iter()
+                .map(|l| {
+                    l.spans
+                        .iter()
+                        .map(|s| s.content.as_ref())
+                        .collect::<String>()
+                })
+                .collect::<Vec<_>>()
+                .join("\n");
+            if style == TodoWidgetStyle::Ascii {
+                assert!(
+                    joined.is_ascii(),
+                    "ASCII todo widget must emit pure 7-bit ASCII: {joined}"
+                );
+            }
+            if style == TodoWidgetStyle::NerdFont {
+                assert!(
+                    !joined
+                        .chars()
+                        .any(|c| ('\u{EA60}'..='\u{F8FF}').contains(&c)),
+                    "NerdFont todo widget in auto/fallback test mode must emit zero PUA glyphs: {joined}"
+                );
+            }
+        }
     }
 
     #[test]
@@ -1471,6 +1841,11 @@ mod tests {
             TodoWidgetStyle::Minimal,
             TodoWidgetStyle::Checklist,
             TodoWidgetStyle::Pipeline,
+            TodoWidgetStyle::NerdFont,
+            TodoWidgetStyle::Kaomoji,
+            TodoWidgetStyle::Emoji,
+            TodoWidgetStyle::Ascii,
+            TodoWidgetStyle::Posh,
         ];
 
         for style in styles {

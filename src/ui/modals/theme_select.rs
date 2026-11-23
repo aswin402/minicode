@@ -1385,6 +1385,36 @@ pub static TODO_STYLE_OPTIONS: &[TodoStyleOption] = &[
             "  ○── T3: End-to-end verification and documentation",
         ],
     },
+    TodoStyleOption {
+        id: "nerdfont",
+        name: "Nerd Font Codicons",
+        description: "Auto-detecting Nerd Font task icons on left accent rail (zero-box fallback)",
+        preview: &[],
+    },
+    TodoStyleOption {
+        id: "kaomoji",
+        name: "Kaomoji Expressive",
+        description: "Playful kaomoji task faces (•‿•) done, (ง°_°)ง active, (・_・) pending",
+        preview: &[],
+    },
+    TodoStyleOption {
+        id: "emoji",
+        name: "Emoji Expressive",
+        description: "Full-color status emojis (📋 TODO, ✅ done, 🚀 active, ⏳ pending)",
+        preview: &[],
+    },
+    TodoStyleOption {
+        id: "ascii",
+        name: "ASCII Classic",
+        description: "Pure 7-bit ASCII boxed todo frame (+-- TODO --+ / [x] / [>] / [ ])",
+        preview: &[],
+    },
+    TodoStyleOption {
+        id: "posh",
+        name: "Oh My Posh Capsule",
+        description: "Rounded Oh My Posh header pill (✦ TODO) with accent left rail",
+        preview: &[],
+    },
 ];
 
 pub static SWARM_STYLE_OPTIONS: &[SwarmStyleOption] = &[
@@ -1454,6 +1484,38 @@ pub static SWARM_STYLE_OPTIONS: &[SwarmStyleOption] = &[
             "│ ▸ [t2] Formatter    │ \"ROISummary\"       │ [test] passed       │",
             "└─────────────────────┴────────────────────┴─────────────────────┘",
         ],
+    },
+    SwarmStyleOption {
+        id: "nerdfont",
+        name: "Nerd Font Flight Deck (Auto Zero-Box)",
+        description:
+            "Rounded flight deck with Nerd Font Codicons for bots, CPU & bus (zero-box fallback)",
+        preview: &[],
+    },
+    SwarmStyleOption {
+        id: "kaomoji",
+        name: "Kaomoji Squad Deck ((◉_◉) / (ง°_°)ง)",
+        description: "Expressive kaomoji worker states, moods & playful message bus",
+        preview: &[],
+    },
+    SwarmStyleOption {
+        id: "emoji",
+        name: "Emoji Mission Control (🤖 / 🚀 / 💬)",
+        description: "Full-color emojis across worker fleet, live logs & inter-worker bus",
+        preview: &[],
+    },
+    SwarmStyleOption {
+        id: "ascii",
+        name: "ASCII Classic Telemetry (+--+ / [RUN])",
+        description:
+            "Strict 7-bit ASCII borders, status tags & progress meters for max portability",
+        preview: &[],
+    },
+    SwarmStyleOption {
+        id: "posh",
+        name: "Oh My Posh Capsule Deck (❖ SWARM)",
+        description: "Rounded Oh My Posh header & status pills with sleek left accent gutter",
+        preview: &[],
     },
 ];
 
@@ -1556,6 +1618,36 @@ pub const TOAST_STYLE_OPTIONS: &[ToastStyleOption] = &[
             "│    \"Security Auditor\" finished            ",
             "└───────────────────────────────────────────",
         ],
+    },
+    ToastStyleOption {
+        id: "nerdfont",
+        name: "Nerd Font Capsule Card (Auto Zero-Box)",
+        description: "Rounded card with auto-detecting Nerd Font Codicon status & clock icons",
+        preview: &[],
+    },
+    ToastStyleOption {
+        id: "kaomoji",
+        name: "Kaomoji Open Bracket (╭─ (•‿•) ─╮)",
+        description: "Open-sided rounded bracket toast with expressive kaomoji embedded in the top rule",
+        preview: &[],
+    },
+    ToastStyleOption {
+        id: "emoji",
+        name: "Emoji Rounded Banner (✅ / 🤖 / 📋)",
+        description: "Rounded toast card with full-color category emojis on elevated surface",
+        preview: &[],
+    },
+    ToastStyleOption {
+        id: "ascii",
+        name: "ASCII Classic Box (+--+ / | [OK] |)",
+        description: "Pure 7-bit ASCII toast frame with bracketed [OK]/[ERR] tags for raw terminals",
+        preview: &[],
+    },
+    ToastStyleOption {
+        id: "posh_pill",
+        name: "Oh My Posh Pill Rail (┃ … 27s)",
+        description: "Thick semantic left spine with rounded Oh My Posh timing/status capsule pill",
+        preview: &[],
     },
 ];
 
@@ -2545,6 +2637,28 @@ pub fn render_theme_select(
             );
         }
         crate::ui::modals::ThemeModalTab::SwarmStyles => {
+            let live_swarm_preview = |style_id: &str| -> Vec<Line<'static>> {
+                let st = crate::config::SwarmDashboardStyle::from_str_loose(style_id);
+                let dynamic = crate::ui::modals::swarm_deck::render_swarm_style_preview(st, theme);
+                if !dynamic.is_empty() {
+                    return dynamic;
+                }
+                SWARM_STYLE_OPTIONS
+                    .iter()
+                    .find(|o| o.id == style_id)
+                    .map(|o| {
+                        o.preview
+                            .iter()
+                            .map(|&l| {
+                                Line::from(vec![Span::styled(
+                                    format!("  {l}"),
+                                    Style::default().fg(theme.text_primary),
+                                )])
+                            })
+                            .collect()
+                    })
+                    .unwrap_or_default()
+            };
             render_style_preview_list(
                 &mut content_lines,
                 &mut preview_title,
@@ -2552,14 +2666,19 @@ pub fn render_theme_select(
                 swarm_styles,
                 swarm_style_selected_index,
                 active_swarm_style,
-                30,
+                34,
                 list_max_visible,
                 right_w,
                 theme,
-                None,
+                Some(&live_swarm_preview),
             );
         }
         crate::ui::modals::ThemeModalTab::ToastStyles => {
+            let active_sym = crate::config::ToastSymbolTheme::from_str_loose(active_toast_symbols);
+            let live_toast_preview = |style_id: &str| -> Vec<Line<'static>> {
+                let st = crate::config::ToastStyle::from_str_loose(style_id);
+                crate::ui::toast::ToastManager::render_style_preview(st, active_sym, theme)
+            };
             render_style_preview_list(
                 &mut content_lines,
                 &mut preview_title,
@@ -2567,11 +2686,11 @@ pub fn render_theme_select(
                 toast_styles,
                 toast_style_selected_index,
                 active_toast_style,
-                34,
+                36,
                 list_max_visible,
                 right_w,
                 theme,
-                None,
+                Some(&live_toast_preview),
             );
         }
         crate::ui::modals::ThemeModalTab::ToastSymbols => {
@@ -3601,29 +3720,60 @@ mod tests {
     use ratatui::Terminal;
 
     #[test]
+    fn test_todo_style_options_completeness() {
+        assert_eq!(TODO_STYLE_OPTIONS.len(), 11);
+        let ids: Vec<&str> = TODO_STYLE_OPTIONS.iter().map(|s| s.id).collect();
+        for expected in [
+            "tree",
+            "card",
+            "rail",
+            "minimal",
+            "checklist",
+            "pipeline",
+            "nerdfont",
+            "kaomoji",
+            "emoji",
+            "ascii",
+            "posh",
+        ] {
+            assert!(ids.contains(&expected), "Missing todo style {expected}");
+        }
+    }
+
+    #[test]
     fn test_swarm_style_options_completeness() {
-        assert_eq!(SWARM_STYLE_OPTIONS.len(), 5);
+        assert_eq!(SWARM_STYLE_OPTIONS.len(), 10);
         let ids: Vec<&str> = SWARM_STYLE_OPTIONS.iter().map(|s| s.id).collect();
-        assert!(ids.contains(&"stylish"));
-        assert!(ids.contains(&"gitgraph"));
-        assert!(ids.contains(&"modern"));
-        assert!(ids.contains(&"minimal"));
-        assert!(ids.contains(&"cockpit"));
+        for expected in [
+            "stylish", "gitgraph", "modern", "minimal", "cockpit", "nerdfont", "kaomoji", "emoji",
+            "ascii", "posh",
+        ] {
+            assert!(ids.contains(&expected), "Missing swarm style {expected}");
+        }
     }
 
     #[test]
     fn test_toast_style_options_completeness() {
-        assert_eq!(TOAST_STYLE_OPTIONS.len(), 9);
+        assert_eq!(TOAST_STYLE_OPTIONS.len(), 14);
         let ids: Vec<&str> = TOAST_STYLE_OPTIONS.iter().map(|s| s.id).collect();
-        assert!(ids.contains(&"opencode"));
-        assert!(ids.contains(&"rounded"));
-        assert!(ids.contains(&"rounded_padded"));
-        assert!(ids.contains(&"bracket"));
-        assert!(ids.contains(&"left_bar"));
-        assert!(ids.contains(&"cradle_round"));
-        assert!(ids.contains(&"cradle_square"));
-        assert!(ids.contains(&"l_round"));
-        assert!(ids.contains(&"l_square"));
+        for expected in [
+            "opencode",
+            "rounded",
+            "rounded_padded",
+            "bracket",
+            "left_bar",
+            "cradle_round",
+            "cradle_square",
+            "l_round",
+            "l_square",
+            "nerdfont",
+            "kaomoji",
+            "emoji",
+            "ascii",
+            "posh_pill",
+        ] {
+            assert!(ids.contains(&expected), "Missing toast style {expected}");
+        }
     }
 
     #[test]

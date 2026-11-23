@@ -342,6 +342,669 @@ pub fn render_swarm_flight_deck(
         SwarmDashboardStyle::Modern => render_modern(frame, area, theme, data),
         SwarmDashboardStyle::Minimal => render_minimal(frame, area, theme, data),
         SwarmDashboardStyle::Cockpit => render_cockpit(frame, area, theme, data),
+        SwarmDashboardStyle::NerdFont
+        | SwarmDashboardStyle::Kaomoji
+        | SwarmDashboardStyle::Emoji
+        | SwarmDashboardStyle::Ascii
+        | SwarmDashboardStyle::Posh => render_themed_swarm_deck(frame, area, theme, data),
+    }
+}
+
+/// Renders the themed Swarm Flight Deck variants (`NerdFont`, `Kaomoji`, `Emoji`, `Ascii`, `Posh`).
+pub fn render_themed_swarm_deck(
+    frame: &mut Frame,
+    area: Rect,
+    theme: &Theme,
+    data: &SwarmDeckData,
+) {
+    use crate::ui::icons::{nf, NerdIcon};
+    use ratatui::symbols::border;
+
+    let is_ascii = data.style == SwarmDashboardStyle::Ascii;
+    let ascii_border = border::Set {
+        top_left: "+",
+        top_right: "+",
+        bottom_left: "+",
+        bottom_right: "+",
+        vertical_left: "|",
+        vertical_right: "|",
+        horizontal_top: "-",
+        horizontal_bottom: "-",
+    };
+
+    let make_block = |title: Option<Span<'static>>| -> Block<'static> {
+        let mut b = Block::default()
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(theme.border))
+            .style(Style::default().bg(theme.bg_primary));
+        if is_ascii {
+            b = b.border_set(ascii_border);
+        } else {
+            b = b.border_type(BorderType::Rounded);
+        }
+        if let Some(t) = title {
+            b = b.title(t);
+        }
+        b
+    };
+
+    frame.render_widget(make_block(None), area);
+    let inner = area.inner(Margin {
+        vertical: 1,
+        horizontal: 2,
+    });
+    if inner.height < 6 || inner.width < 20 {
+        return;
+    }
+
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(2),
+            Constraint::Min(6),
+            Constraint::Length(7),
+            Constraint::Length(1),
+        ])
+        .split(inner);
+
+    let active_workers = data.workers.iter().filter(|w| w.status.is_alive()).count();
+    let swarm_title = data
+        .plan
+        .as_ref()
+        .map(|p| p.title.as_str())
+        .unwrap_or("Autonomous Multi-Agent Swarm");
+
+    let header_line = match data.style {
+        SwarmDashboardStyle::NerdFont => Line::from(vec![
+            Span::styled(
+                format!("{} SWARM FLIGHT DECK ", nf(NerdIcon::Bot)),
+                Style::default()
+                    .fg(theme.brand_accent)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled("· ", Style::default().fg(theme.muted)),
+            Span::styled(
+                format!("{swarm_title} "),
+                Style::default()
+                    .fg(theme.text_primary)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(
+                format!(
+                    "{} {}/{} Active",
+                    nf(NerdIcon::Rocket),
+                    active_workers,
+                    data.workers.len()
+                ),
+                Style::default().fg(theme.success),
+            ),
+        ]),
+        SwarmDashboardStyle::Kaomoji => Line::from(vec![
+            Span::styled(
+                "(◉_◉) SWARM SQUAD ",
+                Style::default()
+                    .fg(theme.brand_accent)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled("· ", Style::default().fg(theme.muted)),
+            Span::styled(
+                format!("{swarm_title} "),
+                Style::default()
+                    .fg(theme.text_primary)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(
+                format!("(ง°_°)ง {}/{} Active", active_workers, data.workers.len()),
+                Style::default().fg(theme.success),
+            ),
+        ]),
+        SwarmDashboardStyle::Emoji => Line::from(vec![
+            Span::styled(
+                "🤖 SWARM MISSION CONTROL ",
+                Style::default()
+                    .fg(theme.brand_accent)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled("· ", Style::default().fg(theme.muted)),
+            Span::styled(
+                format!("{swarm_title} "),
+                Style::default()
+                    .fg(theme.text_primary)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(
+                format!("🚀 {}/{} Active", active_workers, data.workers.len()),
+                Style::default().fg(theme.success),
+            ),
+        ]),
+        SwarmDashboardStyle::Ascii => Line::from(vec![
+            Span::styled(
+                "[SWARM DECK] ",
+                Style::default()
+                    .fg(theme.brand_accent)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(
+                format!("{swarm_title} | "),
+                Style::default().fg(theme.text_primary),
+            ),
+            Span::styled(
+                format!("{}/{} ACTIVE", active_workers, data.workers.len()),
+                Style::default().fg(theme.success),
+            ),
+        ]),
+        SwarmDashboardStyle::Posh => {
+            let pill_bg = theme.bg_elevated;
+            Line::from(vec![
+                Span::styled("\u{e0b6}", Style::default().fg(pill_bg)),
+                Span::styled(
+                    "❖ SWARM",
+                    Style::default()
+                        .fg(theme.brand_accent)
+                        .bg(pill_bg)
+                        .add_modifier(Modifier::BOLD),
+                ),
+                Span::styled("\u{e0b4} ", Style::default().fg(pill_bg)),
+                Span::styled(
+                    format!("{swarm_title} "),
+                    Style::default()
+                        .fg(theme.text_primary)
+                        .add_modifier(Modifier::BOLD),
+                ),
+                Span::styled("\u{e0b6}", Style::default().fg(pill_bg)),
+                Span::styled(
+                    format!("{}/{} active", active_workers, data.workers.len()),
+                    Style::default()
+                        .fg(theme.success)
+                        .bg(pill_bg)
+                        .add_modifier(Modifier::BOLD),
+                ),
+                Span::styled("\u{e0b4}", Style::default().fg(pill_bg)),
+            ])
+        }
+        _ => Line::from(""),
+    };
+    frame.render_widget(Paragraph::new(header_line), chunks[0]);
+
+    let body_chunks = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([Constraint::Percentage(55), Constraint::Percentage(45)])
+        .split(chunks[1]);
+
+    let themed_status = |status: &DevProcessStatus| -> (String, ratatui::style::Color) {
+        match data.style {
+            SwarmDashboardStyle::NerdFont => match status {
+                DevProcessStatus::Running | DevProcessStatus::Healthy => {
+                    (format!("{} RUN", nf(NerdIcon::Rocket)), theme.success)
+                }
+                DevProcessStatus::Degraded(_) => {
+                    (format!("{} WARN", nf(NerdIcon::Warning)), theme.warning)
+                }
+                DevProcessStatus::Stopped | DevProcessStatus::Exited(Some(0)) => {
+                    (format!("{} DONE", nf(NerdIcon::Check)), theme.info)
+                }
+                DevProcessStatus::Exited(_) | DevProcessStatus::Killed => {
+                    (format!("{} ERR", nf(NerdIcon::Error)), theme.destructive)
+                }
+            },
+            SwarmDashboardStyle::Kaomoji => match status {
+                DevProcessStatus::Running | DevProcessStatus::Healthy => {
+                    ("(ง°_°)ง RUN".to_string(), theme.success)
+                }
+                DevProcessStatus::Degraded(_) => ("(°△°) WARN".to_string(), theme.warning),
+                DevProcessStatus::Stopped | DevProcessStatus::Exited(Some(0)) => {
+                    ("(•‿•) DONE".to_string(), theme.info)
+                }
+                DevProcessStatus::Exited(_) | DevProcessStatus::Killed => {
+                    ("(×_×) ERR".to_string(), theme.destructive)
+                }
+            },
+            SwarmDashboardStyle::Emoji => match status {
+                DevProcessStatus::Running | DevProcessStatus::Healthy => {
+                    ("🚀 RUN".to_string(), theme.success)
+                }
+                DevProcessStatus::Degraded(_) => ("⚠️ WARN".to_string(), theme.warning),
+                DevProcessStatus::Stopped | DevProcessStatus::Exited(Some(0)) => {
+                    ("✅ DONE".to_string(), theme.info)
+                }
+                DevProcessStatus::Exited(_) | DevProcessStatus::Killed => {
+                    ("❌ ERR".to_string(), theme.destructive)
+                }
+            },
+            SwarmDashboardStyle::Ascii => match status {
+                DevProcessStatus::Running | DevProcessStatus::Healthy => {
+                    ("[RUN]".to_string(), theme.success)
+                }
+                DevProcessStatus::Degraded(_) => ("[WARN]".to_string(), theme.warning),
+                DevProcessStatus::Stopped | DevProcessStatus::Exited(Some(0)) => {
+                    ("[OK]".to_string(), theme.info)
+                }
+                DevProcessStatus::Exited(_) | DevProcessStatus::Killed => {
+                    ("[ERR]".to_string(), theme.destructive)
+                }
+            },
+            SwarmDashboardStyle::Posh => match status {
+                DevProcessStatus::Running | DevProcessStatus::Healthy => {
+                    ("❯ RUN".to_string(), theme.success)
+                }
+                DevProcessStatus::Degraded(_) => ("△ WARN".to_string(), theme.warning),
+                DevProcessStatus::Stopped | DevProcessStatus::Exited(Some(0)) => {
+                    ("✓ DONE".to_string(), theme.info)
+                }
+                DevProcessStatus::Exited(_) | DevProcessStatus::Killed => {
+                    ("✗ ERR".to_string(), theme.destructive)
+                }
+            },
+            _ => {
+                let (b, c) = worker_status_badge(status, theme);
+                (b.to_string(), c)
+            }
+        }
+    };
+
+    let mut fleet_lines = Vec::new();
+    if data.workers.is_empty() {
+        fleet_lines.push(Line::from(vec![Span::styled(
+            if is_ascii {
+                "  * No active swarm workers registered."
+            } else {
+                "  ◈ No active swarm workers registered."
+            },
+            Style::default().fg(theme.muted),
+        )]));
+    } else {
+        let max_workers_visible = ((body_chunks[0].height.saturating_sub(2) as usize) / 2).max(1);
+        let start_idx = if data.selected_index >= max_workers_visible {
+            data.selected_index + 1 - max_workers_visible
+        } else {
+            0
+        };
+        for (i, w) in data
+            .workers
+            .iter()
+            .enumerate()
+            .skip(start_idx)
+            .take(max_workers_visible)
+        {
+            let is_selected = i == data.selected_index;
+            let cursor = if is_selected {
+                if is_ascii {
+                    "> "
+                } else {
+                    "❯ "
+                }
+            } else {
+                "  "
+            };
+            let (badge, color) = themed_status(&w.status);
+            let short_id = short_worker_id(w.id.as_str());
+            let mut row_spans = vec![
+                Span::styled(
+                    cursor,
+                    Style::default()
+                        .fg(theme.brand_accent)
+                        .add_modifier(Modifier::BOLD),
+                ),
+                Span::styled(
+                    format!("{short_id:<10} "),
+                    Style::default().fg(theme.brand_accent),
+                ),
+            ];
+            if data.style == SwarmDashboardStyle::Posh {
+                let pill_bg = theme.bg_elevated;
+                row_spans.push(Span::styled("\u{e0b6}", Style::default().fg(pill_bg)));
+                row_spans.push(Span::styled(
+                    badge,
+                    Style::default()
+                        .fg(color)
+                        .bg(pill_bg)
+                        .add_modifier(Modifier::BOLD),
+                ));
+                row_spans.push(Span::styled("\u{e0b4} ", Style::default().fg(pill_bg)));
+            } else {
+                row_spans.push(Span::styled(
+                    format!("{badge:<12} "),
+                    Style::default().fg(color).add_modifier(Modifier::BOLD),
+                ));
+            }
+            row_spans.push(Span::styled(
+                w.name.clone(),
+                if is_selected {
+                    Style::default()
+                        .fg(theme.text_primary)
+                        .add_modifier(Modifier::BOLD)
+                } else {
+                    Style::default().fg(theme.text_primary)
+                },
+            ));
+            fleet_lines.push(Line::from(row_spans));
+
+            let metric_prefix = match data.style {
+                SwarmDashboardStyle::Ascii => "    +- ",
+                SwarmDashboardStyle::NerdFont => "    └─ ",
+                _ => "    └─ ",
+            };
+            let cpu_lbl = if data.style == SwarmDashboardStyle::NerdFont {
+                format!("{} CPU", nf(NerdIcon::Chip))
+            } else {
+                "CPU".to_string()
+            };
+            fleet_lines.push(Line::from(vec![Span::styled(
+                format!(
+                    "{metric_prefix}{cpu_lbl}: {:>4.1}%  RSS: {:>4.1}MB  Up: {}s",
+                    w.cpu_percent, w.memory_rss_mb, w.uptime_secs
+                ),
+                Style::default().fg(theme.muted),
+            )]));
+        }
+    }
+
+    let fleet_title = match data.style {
+        SwarmDashboardStyle::NerdFont => format!(" {} Worker Fleet ", nf(NerdIcon::Server)),
+        SwarmDashboardStyle::Kaomoji => " (◉_◉) Worker Squad ".to_string(),
+        SwarmDashboardStyle::Emoji => " 🤖 Worker Fleet ".to_string(),
+        SwarmDashboardStyle::Ascii => " [WORKERS] ".to_string(),
+        SwarmDashboardStyle::Posh => " ❖ Worker Fleet ".to_string(),
+        _ => " Worker Fleet ".to_string(),
+    };
+    frame.render_widget(
+        Paragraph::new(fleet_lines).block(make_block(Some(Span::styled(
+            fleet_title,
+            Style::default()
+                .fg(theme.brand_accent)
+                .add_modifier(Modifier::BOLD),
+        )))),
+        body_chunks[0],
+    );
+
+    let log_title = match (data.style, data.workers.get(data.selected_index)) {
+        (SwarmDashboardStyle::NerdFont, Some(w)) => {
+            format!(" {} Logs: {} ", nf(NerdIcon::Terminal), w.id)
+        }
+        (SwarmDashboardStyle::Emoji, Some(w)) => format!(" 📜 Logs: {} ", w.id),
+        (SwarmDashboardStyle::Ascii, Some(w)) => format!(" [LOGS: {}] ", w.id),
+        (_, Some(w)) => format!(" Log Tail: {} ", w.id),
+        _ => " Worker Output ".to_string(),
+    };
+    let mut log_lines = Vec::new();
+    if data.selected_worker_logs.is_empty() {
+        log_lines.push(Line::from(Span::styled(
+            "  No log output recorded yet.",
+            Style::default().fg(theme.muted),
+        )));
+    } else {
+        let tail_count = body_chunks[1].height.saturating_sub(2) as usize;
+        let start = data.selected_worker_logs.len().saturating_sub(tail_count);
+        for l in &data.selected_worker_logs[start..] {
+            log_lines.push(Line::from(Span::styled(
+                format!(" {l}"),
+                Style::default().fg(theme.text_primary),
+            )));
+        }
+    }
+    frame.render_widget(
+        Paragraph::new(log_lines).block(make_block(Some(Span::styled(
+            log_title,
+            Style::default().fg(theme.info).add_modifier(Modifier::BOLD),
+        )))),
+        body_chunks[1],
+    );
+
+    let bus_title = match data.style {
+        SwarmDashboardStyle::NerdFont => format!(" {} Message Bus ", nf(NerdIcon::Comment)),
+        SwarmDashboardStyle::Kaomoji => " (•_•)っ Message Bus ".to_string(),
+        SwarmDashboardStyle::Emoji => " 💬 Message Bus ".to_string(),
+        SwarmDashboardStyle::Ascii => " [MESSAGE BUS] ".to_string(),
+        SwarmDashboardStyle::Posh => " ◈ Message Bus ".to_string(),
+        _ => " Message Bus ".to_string(),
+    };
+    let mut bus_lines = Vec::new();
+    if data.recent_messages.is_empty() {
+        bus_lines.push(Line::from(Span::styled(
+            "  No messages on swarm bus yet.",
+            Style::default().fg(theme.muted),
+        )));
+    } else {
+        let max_msgs = chunks[2].height.saturating_sub(2) as usize;
+        let start = data.recent_messages.len().saturating_sub(max_msgs);
+        let arrow = if is_ascii { "->" } else { "→" };
+        for m in &data.recent_messages[start..] {
+            let (tag, col) = match m.intent {
+                SwarmMessageIntent::PublishContract => ("CONTRACT", theme.brand_accent),
+                SwarmMessageIntent::QueryInterface => ("QUERY", theme.warning),
+                SwarmMessageIntent::CoordinationNote => ("NOTE", theme.info),
+            };
+            let target = m.to_task.as_deref().unwrap_or("broadcast");
+            bus_lines.push(Line::from(vec![
+                Span::styled(
+                    format!("  [{tag:<8}] "),
+                    Style::default().fg(col).add_modifier(Modifier::BOLD),
+                ),
+                Span::styled(
+                    format!("{} {arrow} {}: ", m.from_task, target),
+                    Style::default().fg(theme.text_primary),
+                ),
+                Span::styled(
+                    format!("\"{}\"", m.topic),
+                    Style::default()
+                        .fg(theme.highlight)
+                        .add_modifier(Modifier::BOLD),
+                ),
+            ]));
+        }
+    }
+    frame.render_widget(
+        Paragraph::new(bus_lines).block(make_block(Some(Span::styled(
+            bus_title,
+            Style::default()
+                .fg(theme.warning)
+                .add_modifier(Modifier::BOLD),
+        )))),
+        chunks[2],
+    );
+
+    let footer_line = Line::from(vec![
+        Span::styled(
+            if is_ascii { "[j/k] " } else { "[↑/↓] " },
+            Style::default().fg(theme.brand_accent),
+        ),
+        Span::styled("Select  ", Style::default().fg(theme.text_primary)),
+        Span::styled("[Space] ", Style::default().fg(theme.brand_accent)),
+        Span::styled("Logs  ", Style::default().fg(theme.text_primary)),
+        Span::styled("[s] ", Style::default().fg(theme.info)),
+        Span::styled("Style  ", Style::default().fg(theme.text_primary)),
+        Span::styled("[Esc] ", Style::default().fg(theme.muted)),
+        Span::styled("Close", Style::default().fg(theme.muted)),
+    ]);
+    frame.render_widget(Paragraph::new(footer_line), chunks[3]);
+}
+
+/// Renders a live, theme-colored miniature preview of any [`SwarmDashboardStyle`] for `/theme`.
+pub fn render_swarm_style_preview(style: SwarmDashboardStyle, theme: &Theme) -> Vec<Line<'static>> {
+    use crate::ui::icons::{nf, NerdIcon};
+
+    let border_st = Style::default().fg(theme.border);
+    let accent_b = Style::default()
+        .fg(theme.brand_accent)
+        .add_modifier(Modifier::BOLD);
+    let ok_b = Style::default()
+        .fg(theme.success)
+        .add_modifier(Modifier::BOLD);
+    let info_b = Style::default().fg(theme.info).add_modifier(Modifier::BOLD);
+    let muted = Style::default().fg(theme.muted);
+    let text = Style::default().fg(theme.text_primary);
+    let pill_bg = theme.bg_elevated;
+
+    match style {
+        SwarmDashboardStyle::NerdFont => {
+            let bot = nf(NerdIcon::Bot);
+            let run = nf(NerdIcon::Rocket);
+            let chk = nf(NerdIcon::Check);
+            let chip = nf(NerdIcon::Chip);
+            let msg = nf(NerdIcon::Comment);
+            vec![
+                Line::from(vec![
+                    Span::styled("  ╭─ ", border_st),
+                    Span::styled(format!("{bot} SWARM FLIGHT DECK"), accent_b),
+                    Span::styled(" ─────────── ", border_st),
+                    Span::styled(format!("{run} 2 Active"), ok_b),
+                    Span::styled(" ─╮", border_st),
+                ]),
+                Line::from(vec![
+                    Span::styled("  │ ", border_st),
+                    Span::styled("❯ t1_calc  ", accent_b),
+                    Span::styled(format!("{run} RUN "), ok_b),
+                    Span::styled(format!(" {chip} 65% · 14.2k tok"), muted),
+                    Span::styled("      │", border_st),
+                ]),
+                Line::from(vec![
+                    Span::styled("  │ ", border_st),
+                    Span::styled("  t2_form  ", text),
+                    Span::styled(format!("{chk} DONE"), info_b),
+                    Span::styled(format!(" {chip} 100% · 11.8k tok"), muted),
+                    Span::styled("     │", border_st),
+                ]),
+                Line::from(vec![
+                    Span::styled("  │ ", border_st),
+                    Span::styled(format!("{msg} t1 → t2: \"ROISummary contract\""), text),
+                    Span::styled("        │", border_st),
+                ]),
+                Line::from(vec![Span::styled(
+                    "  ╰──────────────────────────────────────────────╯",
+                    border_st,
+                )]),
+            ]
+        }
+        SwarmDashboardStyle::Kaomoji => vec![
+            Line::from(vec![
+                Span::styled("  ╭─ ", border_st),
+                Span::styled("(◉_◉) SWARM SQUAD", accent_b),
+                Span::styled(" ──────── ", border_st),
+                Span::styled("(ง°_°)ง 2 Active", ok_b),
+                Span::styled(" ─╮", border_st),
+            ]),
+            Line::from(vec![
+                Span::styled("  │ ", border_st),
+                Span::styled("❯ t1_calc ", accent_b),
+                Span::styled("(ง°_°)ง RUN ", ok_b),
+                Span::styled("patch_file(calc.py)", text),
+                Span::styled("      │", border_st),
+            ]),
+            Line::from(vec![
+                Span::styled("  │ ", border_st),
+                Span::styled("  t2_form ", text),
+                Span::styled("(•‿•)  DONE ", info_b),
+                Span::styled("pytest passed (0.8s)", muted),
+                Span::styled("    │", border_st),
+            ]),
+            Line::from(vec![
+                Span::styled("  │ ", border_st),
+                Span::styled("(•_•)っ t1 → t2: \"ROISummary ready!\"", text),
+                Span::styled("          │", border_st),
+            ]),
+            Line::from(vec![Span::styled(
+                "  ╰────────────────────────────────────────────────╯",
+                border_st,
+            )]),
+        ],
+        SwarmDashboardStyle::Emoji => vec![
+            Line::from(vec![
+                Span::styled("  ╭─ ", border_st),
+                Span::styled("🤖 SWARM MISSION CONTROL", accent_b),
+                Span::styled(" ── ", border_st),
+                Span::styled("🚀 2 Active", ok_b),
+                Span::styled(" ─╮", border_st),
+            ]),
+            Line::from(vec![
+                Span::styled("  │ ", border_st),
+                Span::styled("❯ t1_calc ", accent_b),
+                Span::styled("🚀 RUN  ", ok_b),
+                Span::styled("patch_file(calc.py)", text),
+                Span::styled("         │", border_st),
+            ]),
+            Line::from(vec![
+                Span::styled("  │ ", border_st),
+                Span::styled("  t2_form ", text),
+                Span::styled("✅ DONE ", info_b),
+                Span::styled("pytest passed (11.8k)", muted),
+                Span::styled("       │", border_st),
+            ]),
+            Line::from(vec![
+                Span::styled("  │ ", border_st),
+                Span::styled("💬 t1 → t2: \"ROISummary contract\"", text),
+                Span::styled("             │", border_st),
+            ]),
+            Line::from(vec![Span::styled(
+                "  ╰────────────────────────────────────────────────╯",
+                border_st,
+            )]),
+        ],
+        SwarmDashboardStyle::Ascii => vec![
+            Line::from(vec![
+                Span::styled("  +-- ", border_st),
+                Span::styled("[SWARM DECK]", accent_b),
+                Span::styled(" ---------------- ", border_st),
+                Span::styled("2/2 ACTIVE", ok_b),
+                Span::styled(" --+", border_st),
+            ]),
+            Line::from(vec![
+                Span::styled("  | ", border_st),
+                Span::styled("> t1_calc ", accent_b),
+                Span::styled("[RUN] ", ok_b),
+                Span::styled("[======----] 65%  14.2k", muted),
+                Span::styled("    |", border_st),
+            ]),
+            Line::from(vec![
+                Span::styled("  | ", border_st),
+                Span::styled("  t2_form ", text),
+                Span::styled("[OK]  ", info_b),
+                Span::styled("[==========] 100% 11.8k", muted),
+                Span::styled("    |", border_st),
+            ]),
+            Line::from(vec![
+                Span::styled("  | ", border_st),
+                Span::styled("[CONTRACT] t1 -> t2: \"ROISummary\"", text),
+                Span::styled("          |", border_st),
+            ]),
+            Line::from(vec![Span::styled(
+                "  +---------------------------------------------+",
+                border_st,
+            )]),
+        ],
+        SwarmDashboardStyle::Posh => vec![
+            Line::from(vec![
+                Span::raw("  "),
+                Span::styled("\u{e0b6}", Style::default().fg(pill_bg)),
+                Span::styled("❖ SWARM", accent_b.bg(pill_bg)),
+                Span::styled("\u{e0b4} ", Style::default().fg(pill_bg)),
+                Span::styled("\u{e0b6}", Style::default().fg(pill_bg)),
+                Span::styled("2 Active", ok_b.bg(pill_bg)),
+                Span::styled("\u{e0b4} ", Style::default().fg(pill_bg)),
+                Span::styled("──────────────────────────", border_st),
+            ]),
+            Line::from(vec![
+                Span::styled("  ▎ ", accent_b),
+                Span::styled("t1_calc ", text),
+                Span::styled("\u{e0b6}", Style::default().fg(pill_bg)),
+                Span::styled("❯ RUN", ok_b.bg(pill_bg)),
+                Span::styled("\u{e0b4} ", Style::default().fg(pill_bg)),
+                Span::styled("patch_file(calc.py) · 14.2k", muted),
+            ]),
+            Line::from(vec![
+                Span::styled("  ▎ ", border_st),
+                Span::styled("t2_form ", text),
+                Span::styled("\u{e0b6}", Style::default().fg(pill_bg)),
+                Span::styled("✓ DONE", info_b.bg(pill_bg)),
+                Span::styled("\u{e0b4} ", Style::default().fg(pill_bg)),
+                Span::styled("pytest passed · 11.8k", muted),
+            ]),
+            Line::from(vec![
+                Span::styled("  ▎ ", border_st),
+                Span::styled("◈ t1 → t2: ", info_b),
+                Span::styled("\"ROISummary\"", text),
+            ]),
+        ],
+        _ => Vec::new(),
     }
 }
 
@@ -1432,6 +2095,11 @@ mod tests {
             SwarmDashboardStyle::Modern,
             SwarmDashboardStyle::Minimal,
             SwarmDashboardStyle::Cockpit,
+            SwarmDashboardStyle::NerdFont,
+            SwarmDashboardStyle::Kaomoji,
+            SwarmDashboardStyle::Emoji,
+            SwarmDashboardStyle::Ascii,
+            SwarmDashboardStyle::Posh,
         ];
 
         let theme = Theme::default();
@@ -1470,11 +2138,59 @@ mod tests {
         data.select_prev(); // Wrap backwards
         assert_eq!(data.selected_index, 1);
 
-        // Cycle style
+        // Cycle style across all 10 styles
         assert_eq!(data.cycle_style(), SwarmDashboardStyle::GitGraph);
         assert_eq!(data.cycle_style(), SwarmDashboardStyle::Modern);
         assert_eq!(data.cycle_style(), SwarmDashboardStyle::Minimal);
         assert_eq!(data.cycle_style(), SwarmDashboardStyle::Cockpit);
+        assert_eq!(data.cycle_style(), SwarmDashboardStyle::NerdFont);
+        assert_eq!(data.cycle_style(), SwarmDashboardStyle::Kaomoji);
+        assert_eq!(data.cycle_style(), SwarmDashboardStyle::Emoji);
+        assert_eq!(data.cycle_style(), SwarmDashboardStyle::Ascii);
+        assert_eq!(data.cycle_style(), SwarmDashboardStyle::Posh);
         assert_eq!(data.cycle_style(), SwarmDashboardStyle::Stylish);
+    }
+
+    #[test]
+    fn test_render_swarm_style_previews_and_zero_box_fallback() {
+        let theme = Theme::default();
+        for style in [
+            SwarmDashboardStyle::NerdFont,
+            SwarmDashboardStyle::Kaomoji,
+            SwarmDashboardStyle::Emoji,
+            SwarmDashboardStyle::Ascii,
+            SwarmDashboardStyle::Posh,
+        ] {
+            let preview = render_swarm_style_preview(style, &theme);
+            assert!(
+                preview.len() >= 4,
+                "style {:?} preview should have at least 4 rows",
+                style
+            );
+            let joined: String = preview
+                .iter()
+                .map(|l| {
+                    l.spans
+                        .iter()
+                        .map(|s| s.content.as_ref())
+                        .collect::<String>()
+                })
+                .collect::<Vec<_>>()
+                .join("\n");
+            if style == SwarmDashboardStyle::Ascii {
+                assert!(
+                    joined.is_ascii(),
+                    "ASCII swarm preview must be pure 7-bit ASCII: {joined}"
+                );
+            }
+            if style == SwarmDashboardStyle::NerdFont {
+                assert!(
+                    !joined
+                        .chars()
+                        .any(|c| ('\u{EA60}'..='\u{F8FF}').contains(&c)),
+                    "NerdFont swarm preview in auto/fallback test mode must emit zero PUA glyphs: {joined}"
+                );
+            }
+        }
     }
 }

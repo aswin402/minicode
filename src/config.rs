@@ -846,6 +846,11 @@ pub enum TodoWidgetStyle {
     Minimal,
     Checklist,
     Pipeline,
+    NerdFont,
+    Kaomoji,
+    Emoji,
+    Ascii,
+    Posh,
 }
 
 impl TodoWidgetStyle {
@@ -858,6 +863,11 @@ impl TodoWidgetStyle {
             Self::Minimal => "minimal",
             Self::Checklist => "checklist",
             Self::Pipeline => "pipeline",
+            Self::NerdFont => "nerdfont",
+            Self::Kaomoji => "kaomoji",
+            Self::Emoji => "emoji",
+            Self::Ascii => "ascii",
+            Self::Posh => "posh",
         }
     }
 }
@@ -878,6 +888,16 @@ pub enum SwarmDashboardStyle {
     Minimal,
     /// High-Density Cockpit (3-column split view: Workers, Message Bus, Live Logs)
     Cockpit,
+    /// Nerd Font Codicons Flight Deck (auto zero-box fallback via `ui::icons::nf`)
+    NerdFont,
+    /// Kaomoji Squad Deck with expressive worker faces `(ง°_°)ง`, `(•‿•)`, `(×_×)`
+    Kaomoji,
+    /// Emoji Mission Control (`🤖`, `🚀`, `✅`, `⚠️`, `💬`)
+    Emoji,
+    /// Strict 7-bit ASCII Telemetry Deck (`+---+---+`, `[RUN]`, `[OK]`)
+    Ascii,
+    /// Oh My Posh Capsule Flight Deck (`❖ SWARM` pills & tinted status capsules)
+    Posh,
 }
 
 #[allow(dead_code)]
@@ -889,15 +909,25 @@ impl SwarmDashboardStyle {
             Self::Modern => "modern",
             Self::Minimal => "minimal",
             Self::Cockpit => "cockpit",
+            Self::NerdFont => "nerdfont",
+            Self::Kaomoji => "kaomoji",
+            Self::Emoji => "emoji",
+            Self::Ascii => "ascii",
+            Self::Posh => "posh",
         }
     }
 
     pub fn from_str_loose(s: &str) -> Self {
-        match s.trim().to_lowercase().as_str() {
+        match s.trim().to_lowercase().replace('-', "_").as_str() {
             "gitgraph" | "git" | "dag" | "pipeline" => Self::GitGraph,
             "modern" | "cards" | "floating" => Self::Modern,
             "minimal" | "clean" | "tree" => Self::Minimal,
             "cockpit" | "dense" | "mission" => Self::Cockpit,
+            "nerdfont" | "nerd" | "nf" | "codicons" => Self::NerdFont,
+            "kaomoji" | "kamoji" | "faces" => Self::Kaomoji,
+            "emoji" | "emojis" => Self::Emoji,
+            "ascii" | "plain" | "retro" => Self::Ascii,
+            "posh" | "oh_my_posh" | "pill" | "pills" => Self::Posh,
             _ => Self::Stylish,
         }
     }
@@ -908,7 +938,12 @@ impl SwarmDashboardStyle {
             Self::GitGraph => Self::Modern,
             Self::Modern => Self::Minimal,
             Self::Minimal => Self::Cockpit,
-            Self::Cockpit => Self::Stylish,
+            Self::Cockpit => Self::NerdFont,
+            Self::NerdFont => Self::Kaomoji,
+            Self::Kaomoji => Self::Emoji,
+            Self::Emoji => Self::Ascii,
+            Self::Ascii => Self::Posh,
+            Self::Posh => Self::Stylish,
         }
     }
 }
@@ -936,6 +971,16 @@ pub enum ToastStyle {
     LRound,
     /// Asymmetric Left + Full-Bottom L-Frame (Square corner `└`)
     LSquare,
+    /// Nerd Font Rounded Card: rounded frame with auto zero-box Nerd Font Codicon icons
+    NerdFont,
+    /// Kaomoji Open Rounded Card: `╭─ (•‿•) ───╮` / `  body` / `╰──────────╯`
+    Kaomoji,
+    /// Emoji Rounded Banner: rounded card with full-color category emojis (`✅`, `💡`, `🤖`, `📋`)
+    Emoji,
+    /// Strict 7-bit ASCII Box Frame: `+----------+` / `| [OK] … |` / `+----------+`
+    Ascii,
+    /// Oh My Posh Pill Card: thick left rail + rounded capsule badge `27s`
+    PoshPill,
 }
 
 #[allow(dead_code)]
@@ -952,12 +997,17 @@ impl ToastStyle {
             Self::CradleSquare => "cradle_square",
             Self::LRound => "l_round",
             Self::LSquare => "l_square",
+            Self::NerdFont => "nerdfont",
+            Self::Kaomoji => "kaomoji",
+            Self::Emoji => "emoji",
+            Self::Ascii => "ascii",
+            Self::PoshPill => "posh_pill",
         }
     }
 
     #[must_use]
     pub fn from_str_loose(s: &str) -> Self {
-        match s.trim().to_lowercase().as_str() {
+        match s.trim().to_lowercase().replace('-', "_").as_str() {
             "rounded" | "card" | "nordic" => Self::Rounded,
             "rounded_padded" | "spacious_rounded" => Self::RoundedPadded,
             "bracket" | "square" | "corner_bracket" => Self::Bracket,
@@ -966,6 +1016,11 @@ impl ToastStyle {
             "cradle_square" => Self::CradleSquare,
             "l_round" | "l_frame" | "lframe" => Self::LRound,
             "l_square" => Self::LSquare,
+            "nerdfont" | "nerd" | "nf" | "codicons" => Self::NerdFont,
+            "kaomoji" | "kamoji" | "faces" => Self::Kaomoji,
+            "emoji" | "emojis" => Self::Emoji,
+            "ascii" | "plain" | "retro" => Self::Ascii,
+            "posh_pill" | "posh" | "pill" | "oh_my_posh" => Self::PoshPill,
             _ => Self::OpenCode,
         }
     }
@@ -2306,12 +2361,23 @@ pub struct UiConfig {
 
 impl UiConfig {
     pub fn todo_style_enum(&self) -> TodoWidgetStyle {
-        match self.todo_style.to_lowercase().as_str() {
+        match self
+            .todo_style
+            .trim()
+            .to_lowercase()
+            .replace('-', "_")
+            .as_str()
+        {
             "card" | "box" => TodoWidgetStyle::Card,
             "rail" | "gutter" => TodoWidgetStyle::Rail,
             "minimal" | "open" => TodoWidgetStyle::Minimal,
             "checklist" | "markdown" | "check" => TodoWidgetStyle::Checklist,
             "pipeline" | "steps" | "stepper" => TodoWidgetStyle::Pipeline,
+            "nerdfont" | "nerd" | "nf" | "codicons" => TodoWidgetStyle::NerdFont,
+            "kaomoji" | "kamoji" | "faces" => TodoWidgetStyle::Kaomoji,
+            "emoji" | "emojis" => TodoWidgetStyle::Emoji,
+            "ascii" | "plain" | "retro" => TodoWidgetStyle::Ascii,
+            "posh" | "oh_my_posh" | "pill" | "pills" => TodoWidgetStyle::Posh,
             _ => TodoWidgetStyle::Tree,
         }
     }

@@ -1080,21 +1080,39 @@ impl ToastManager {
         // Render newest at the top of the stack
         for item in self.items.iter().rev() {
             let accent = item.kind.accent_color(theme);
-            let glyph = item.kind.glyph_for(symbol_theme);
+            let effective_symbol_theme = match style {
+                crate::config::ToastStyle::NerdFont => crate::config::ToastSymbolTheme::NerdFont,
+                crate::config::ToastStyle::Kaomoji => crate::config::ToastSymbolTheme::Kaomoji,
+                crate::config::ToastStyle::Emoji => crate::config::ToastSymbolTheme::Emoji,
+                crate::config::ToastStyle::Ascii => crate::config::ToastSymbolTheme::Bracket,
+                _ => symbol_theme,
+            };
+            let glyph = item.kind.glyph_for(effective_symbol_theme);
             let glyph_w = UnicodeWidthStr::width(glyph);
             let badge_text = item.badge.as_deref().unwrap_or("");
+            let badge_extra = match style {
+                crate::config::ToastStyle::PoshPill if !badge_text.is_empty() => 4,
+                crate::config::ToastStyle::NerdFont if !badge_text.is_empty() => 4,
+                _ => 2,
+            };
             let badge_w = if badge_text.is_empty() {
                 0
             } else {
-                UnicodeWidthStr::width(badge_text) + 2
+                UnicodeWidthStr::width(badge_text) + badge_extra
             };
 
             let (left_border, right_border) = match style {
                 crate::config::ToastStyle::OpenCode => ("┃  ", "  ┃"),
                 crate::config::ToastStyle::Rounded
                 | crate::config::ToastStyle::RoundedPadded
-                | crate::config::ToastStyle::Bracket => ("│  ", "  │"),
-                crate::config::ToastStyle::LeftBar => ("┃  ", "   "),
+                | crate::config::ToastStyle::Bracket
+                | crate::config::ToastStyle::NerdFont
+                | crate::config::ToastStyle::Emoji => ("│  ", "  │"),
+                crate::config::ToastStyle::Kaomoji => ("   ", "   "),
+                crate::config::ToastStyle::Ascii => ("|  ", "  |"),
+                crate::config::ToastStyle::LeftBar | crate::config::ToastStyle::PoshPill => {
+                    ("┃  ", "   ")
+                }
                 crate::config::ToastStyle::CradleRound
                 | crate::config::ToastStyle::CradleSquare
                 | crate::config::ToastStyle::LRound
@@ -1155,24 +1173,56 @@ impl ToastManager {
             let mut lines = Vec::with_capacity(card_h as usize);
 
             // 1. Top Frame / Breathing Row(s)
-            Self::push_frame_lines(&mut lines, style, true, card_w, rail_style, bg_style);
+            Self::push_frame_lines(&mut lines, style, true, card_w, glyph, rail_style, bg_style);
 
             // 2. Header Row (`✔ Title ... badge`)
-            let glyph_prefix = format!("{glyph} ");
+            let show_inline_glyph = style != crate::config::ToastStyle::Kaomoji;
+            let glyph_prefix = if show_inline_glyph {
+                format!("{glyph} ")
+            } else {
+                String::new()
+            };
             let glyph_prefix_w = UnicodeWidthStr::width(glyph_prefix.as_str());
             let title_max_w = content_w.saturating_sub(glyph_prefix_w + badge_w);
             let (fitted_title, fitted_title_w) = Self::fit_width(&item.title, title_max_w);
             let used_header_w = glyph_prefix_w + fitted_title_w + badge_w;
             let spacer_w = content_w.saturating_sub(used_header_w);
 
-            let mut header_spans = vec![
-                Span::styled(left_border, rail_style),
-                Span::styled(glyph_prefix, glyph_style),
-                Span::styled(fitted_title, title_style),
-                Span::styled(" ".repeat(spacer_w), bg_style),
-            ];
+            let mut header_spans = vec![Span::styled(left_border, rail_style)];
+            if show_inline_glyph {
+                header_spans.push(Span::styled(glyph_prefix, glyph_style));
+            }
+            header_spans.push(Span::styled(fitted_title, title_style));
+            header_spans.push(Span::styled(" ".repeat(spacer_w), bg_style));
             if !badge_text.is_empty() {
-                header_spans.push(Span::styled(format!("  {badge_text}"), badge_style));
+                match style {
+                    crate::config::ToastStyle::PoshPill => {
+                        header_spans.push(Span::styled("  ", bg_style));
+                        header_spans.push(Span::styled(
+                            "\u{e0b6}",
+                            Style::default().fg(theme.border).bg(theme.bg_elevated),
+                        ));
+                        header_spans.push(Span::styled(
+                            badge_text.to_string(),
+                            Style::default()
+                                .fg(accent)
+                                .bg(theme.border)
+                                .add_modifier(Modifier::BOLD),
+                        ));
+                        header_spans.push(Span::styled(
+                            "\u{e0b4}",
+                            Style::default().fg(theme.border).bg(theme.bg_elevated),
+                        ));
+                    }
+                    crate::config::ToastStyle::NerdFont => {
+                        let clk = crate::ui::icons::nf(crate::ui::icons::NerdIcon::Clock);
+                        header_spans
+                            .push(Span::styled(format!("  {clk} {badge_text}"), badge_style));
+                    }
+                    _ => {
+                        header_spans.push(Span::styled(format!("  {badge_text}"), badge_style));
+                    }
+                }
             }
             header_spans.push(Span::styled(right_border, rail_style));
             lines.push(Line::from(header_spans));
@@ -1191,7 +1241,9 @@ impl ToastManager {
             }
 
             // 4. Bottom Frame / Breathing Row(s)
-            Self::push_frame_lines(&mut lines, style, false, card_w, rail_style, bg_style);
+            Self::push_frame_lines(
+                &mut lines, style, false, card_w, glyph, rail_style, bg_style,
+            );
 
             frame.render_widget(Clear, card_rect);
             let paragraph = Paragraph::new(lines).block(Block::default().style(bg_style));
@@ -1206,6 +1258,7 @@ impl ToastManager {
         style: crate::config::ToastStyle,
         is_top: bool,
         card_w: usize,
+        glyph: &str,
         rail_style: Style,
         bg_style: Style,
     ) {
@@ -1218,7 +1271,9 @@ impl ToastManager {
                     Span::styled("┃", rail_style),
                 ]));
             }
-            crate::config::ToastStyle::Rounded => {
+            crate::config::ToastStyle::Rounded
+            | crate::config::ToastStyle::NerdFont
+            | crate::config::ToastStyle::Emoji => {
                 let (l, r) = if is_top {
                     ("╭", "╮")
                 } else {
@@ -1228,6 +1283,32 @@ impl ToastManager {
                     Span::styled(l, rail_style),
                     Span::styled("─".repeat(inner_w), rail_style),
                     Span::styled(r, rail_style),
+                ]));
+            }
+            crate::config::ToastStyle::Kaomoji => {
+                if is_top {
+                    let prefix = format!("╭─ {glyph} ");
+                    let prefix_w = UnicodeWidthStr::width(prefix.as_str());
+                    let rem = card_w.saturating_sub(prefix_w + 1);
+                    lines.push(Line::from(vec![
+                        Span::styled("╭─ ", rail_style),
+                        Span::styled(format!("{glyph} "), rail_style.add_modifier(Modifier::BOLD)),
+                        Span::styled("─".repeat(rem), rail_style),
+                        Span::styled("╮", rail_style),
+                    ]));
+                } else {
+                    lines.push(Line::from(vec![
+                        Span::styled("╰", rail_style),
+                        Span::styled("─".repeat(inner_w), rail_style),
+                        Span::styled("╯", rail_style),
+                    ]));
+                }
+            }
+            crate::config::ToastStyle::Ascii => {
+                lines.push(Line::from(vec![
+                    Span::styled("+", rail_style),
+                    Span::styled("-".repeat(inner_w), rail_style),
+                    Span::styled("+", rail_style),
                 ]));
             }
             crate::config::ToastStyle::RoundedPadded => {
@@ -1261,7 +1342,7 @@ impl ToastManager {
                     Span::styled(r, rail_style),
                 ]));
             }
-            crate::config::ToastStyle::LeftBar => {
+            crate::config::ToastStyle::LeftBar | crate::config::ToastStyle::PoshPill => {
                 lines.push(Line::from(vec![
                     Span::styled("┃", rail_style),
                     Span::styled(" ".repeat(card_w.saturating_sub(1)), bg_style),
@@ -1298,6 +1379,134 @@ impl ToastManager {
                 }
             }
         }
+    }
+
+    /// Renders a live, theme-colored miniature toast preview for `/theme` → `5. Toast Styles`.
+    pub fn render_style_preview(
+        style: crate::config::ToastStyle,
+        symbol_theme: crate::config::ToastSymbolTheme,
+        theme: &Theme,
+    ) -> Vec<Line<'static>> {
+        let kind = ToastKind::Success;
+        let accent = kind.accent_color(theme);
+        let eff_sym = match style {
+            crate::config::ToastStyle::NerdFont => crate::config::ToastSymbolTheme::NerdFont,
+            crate::config::ToastStyle::Kaomoji => crate::config::ToastSymbolTheme::Kaomoji,
+            crate::config::ToastStyle::Emoji => crate::config::ToastSymbolTheme::Emoji,
+            crate::config::ToastStyle::Ascii => crate::config::ToastSymbolTheme::Bracket,
+            _ => symbol_theme,
+        };
+        let glyph = kind.glyph_for(eff_sym);
+        let card_w = 46usize;
+        let rail_st = Style::default().fg(accent).bg(theme.bg_elevated);
+        let bg_st = Style::default().bg(theme.bg_elevated);
+        let title_st = Style::default()
+            .fg(theme.text_primary)
+            .bg(theme.bg_elevated)
+            .add_modifier(Modifier::BOLD);
+        let glyph_st = Style::default()
+            .fg(accent)
+            .bg(theme.bg_elevated)
+            .add_modifier(Modifier::BOLD);
+        let badge_st = Style::default().fg(accent).bg(theme.bg_elevated);
+        let msg_st = Style::default().fg(theme.muted).bg(theme.bg_elevated);
+
+        let (lb, rb) = match style {
+            crate::config::ToastStyle::OpenCode => ("┃  ", "  ┃"),
+            crate::config::ToastStyle::Rounded
+            | crate::config::ToastStyle::RoundedPadded
+            | crate::config::ToastStyle::Bracket
+            | crate::config::ToastStyle::NerdFont
+            | crate::config::ToastStyle::Emoji => ("│  ", "  │"),
+            crate::config::ToastStyle::Kaomoji => ("   ", "   "),
+            crate::config::ToastStyle::Ascii => ("|  ", "  |"),
+            crate::config::ToastStyle::LeftBar | crate::config::ToastStyle::PoshPill => {
+                ("┃  ", "   ")
+            }
+            crate::config::ToastStyle::CradleRound
+            | crate::config::ToastStyle::CradleSquare
+            | crate::config::ToastStyle::LRound
+            | crate::config::ToastStyle::LSquare => ("│  ", "   "),
+        };
+        let side_pad = UnicodeWidthStr::width(lb) + UnicodeWidthStr::width(rb);
+        let content_w = card_w.saturating_sub(side_pad);
+
+        let mut raw = Vec::new();
+        Self::push_frame_lines(&mut raw, style, true, card_w, glyph, rail_st, bg_st);
+
+        let show_inline = style != crate::config::ToastStyle::Kaomoji;
+        let title = "Subagent Completed";
+        let badge = "27s";
+        let badge_w = match style {
+            crate::config::ToastStyle::PoshPill | crate::config::ToastStyle::NerdFont => {
+                badge.len() + 4
+            }
+            _ => badge.len() + 2,
+        };
+        let g_pfx = if show_inline {
+            format!("{glyph} ")
+        } else {
+            String::new()
+        };
+        let used = UnicodeWidthStr::width(g_pfx.as_str()) + title.len() + badge_w;
+        let sp = content_w.saturating_sub(used);
+
+        let mut h_spans = vec![Span::styled(lb, rail_st)];
+        if show_inline {
+            h_spans.push(Span::styled(g_pfx, glyph_st));
+        }
+        h_spans.push(Span::styled(title, title_st));
+        h_spans.push(Span::styled(" ".repeat(sp), bg_st));
+        match style {
+            crate::config::ToastStyle::PoshPill => {
+                h_spans.push(Span::styled("  ", bg_st));
+                h_spans.push(Span::styled(
+                    "\u{e0b6}",
+                    Style::default().fg(theme.border).bg(theme.bg_elevated),
+                ));
+                h_spans.push(Span::styled(
+                    badge,
+                    Style::default()
+                        .fg(accent)
+                        .bg(theme.border)
+                        .add_modifier(Modifier::BOLD),
+                ));
+                h_spans.push(Span::styled(
+                    "\u{e0b4}",
+                    Style::default().fg(theme.border).bg(theme.bg_elevated),
+                ));
+            }
+            crate::config::ToastStyle::NerdFont => {
+                let clk = crate::ui::icons::nf(crate::ui::icons::NerdIcon::Clock);
+                h_spans.push(Span::styled(format!("  {clk} {badge}"), badge_st));
+            }
+            _ => {
+                h_spans.push(Span::styled(format!("  {badge}"), badge_st));
+            }
+        }
+        h_spans.push(Span::styled(rb, rail_st));
+        raw.push(Line::from(h_spans));
+
+        let msg = "\"Security Auditor\" finished";
+        let pad_m = content_w.saturating_sub(2 + msg.len());
+        raw.push(Line::from(vec![
+            Span::styled(lb, rail_st),
+            Span::styled("  ", bg_st),
+            Span::styled(msg, msg_st),
+            Span::styled(" ".repeat(pad_m), bg_st),
+            Span::styled(rb, rail_st),
+        ]));
+
+        Self::push_frame_lines(&mut raw, style, false, card_w, glyph, rail_st, bg_st);
+
+        raw.into_iter()
+            .map(|l| {
+                let mut s = Vec::with_capacity(l.spans.len() + 1);
+                s.push(Span::raw("  "));
+                s.extend(l.spans);
+                Line::from(s)
+            })
+            .collect()
     }
 }
 
@@ -1340,6 +1549,11 @@ mod tests {
             ToastStyle::CradleSquare,
             ToastStyle::LRound,
             ToastStyle::LSquare,
+            ToastStyle::NerdFont,
+            ToastStyle::Kaomoji,
+            ToastStyle::Emoji,
+            ToastStyle::Ascii,
+            ToastStyle::PoshPill,
         ] {
             let backend = TestBackend::new(100, 24);
             let mut terminal = Terminal::new(backend).unwrap();
@@ -1469,5 +1683,67 @@ mod tests {
         assert_eq!(mgr2.items.len(), 2);
         assert_eq!(mgr2.items[1].kind, ToastKind::Task);
         assert_eq!(mgr2.items[1].badge.as_deref(), Some("Boulder"));
+    }
+
+    #[test]
+    fn test_toast_style_previews_cover_all_styles_and_zero_box_fallback() {
+        let theme = Theme::aura_dark();
+        let all_styles = [
+            ToastStyle::OpenCode,
+            ToastStyle::Rounded,
+            ToastStyle::RoundedPadded,
+            ToastStyle::Bracket,
+            ToastStyle::LeftBar,
+            ToastStyle::CradleRound,
+            ToastStyle::CradleSquare,
+            ToastStyle::LRound,
+            ToastStyle::LSquare,
+            ToastStyle::NerdFont,
+            ToastStyle::Kaomoji,
+            ToastStyle::Emoji,
+            ToastStyle::Ascii,
+            ToastStyle::PoshPill,
+        ];
+        for style in all_styles {
+            let preview = ToastManager::render_style_preview(
+                style,
+                crate::config::ToastSymbolTheme::default(),
+                &theme,
+            );
+            assert!(
+                preview.len() >= 3,
+                "style {:?} preview should have at least 3 rows",
+                style
+            );
+            let joined: String = preview
+                .iter()
+                .map(|l| {
+                    l.spans
+                        .iter()
+                        .map(|s| s.content.as_ref())
+                        .collect::<String>()
+                })
+                .collect::<Vec<_>>()
+                .join("\n");
+            assert!(
+                joined.contains("Subagent Completed"),
+                "style {:?} preview missing title",
+                style
+            );
+            if style == ToastStyle::Ascii {
+                assert!(
+                    joined.is_ascii(),
+                    "ASCII toast preview must be pure 7-bit ASCII: {joined}"
+                );
+            }
+            if style == ToastStyle::NerdFont {
+                assert!(
+                    !joined
+                        .chars()
+                        .any(|c| ('\u{EA60}'..='\u{F8FF}').contains(&c)),
+                    "NerdFont toast preview in auto/fallback test mode must emit zero PUA glyphs: {joined}"
+                );
+            }
+        }
     }
 }

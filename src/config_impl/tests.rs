@@ -120,8 +120,66 @@ fn test_todo_widget_style_enum_mapping() {
     ui.todo_style = "open".to_string();
     assert_eq!(ui.todo_style_enum(), TodoWidgetStyle::Minimal);
 
+    ui.todo_style = "nerdfont".to_string();
+    assert_eq!(ui.todo_style_enum(), TodoWidgetStyle::NerdFont);
+    ui.todo_style = "codicons".to_string();
+    assert_eq!(ui.todo_style_enum(), TodoWidgetStyle::NerdFont);
+
+    ui.todo_style = "kaomoji".to_string();
+    assert_eq!(ui.todo_style_enum(), TodoWidgetStyle::Kaomoji);
+    ui.todo_style = "kamoji".to_string();
+    assert_eq!(ui.todo_style_enum(), TodoWidgetStyle::Kaomoji);
+
+    ui.todo_style = "emoji".to_string();
+    assert_eq!(ui.todo_style_enum(), TodoWidgetStyle::Emoji);
+
+    ui.todo_style = "ascii".to_string();
+    assert_eq!(ui.todo_style_enum(), TodoWidgetStyle::Ascii);
+
+    ui.todo_style = "posh".to_string();
+    assert_eq!(ui.todo_style_enum(), TodoWidgetStyle::Posh);
+    ui.todo_style = "oh-my-posh".to_string();
+    assert_eq!(ui.todo_style_enum(), TodoWidgetStyle::Posh);
+
     ui.todo_style = "unknown".to_string();
     assert_eq!(ui.todo_style_enum(), TodoWidgetStyle::Tree);
+
+    // SwarmDashboardStyle new styles + loose parsing + next() cycle
+    assert_eq!(
+        SwarmDashboardStyle::from_str_loose("nerdfont"),
+        SwarmDashboardStyle::NerdFont
+    );
+    assert_eq!(
+        SwarmDashboardStyle::from_str_loose("kamoji"),
+        SwarmDashboardStyle::Kaomoji
+    );
+    assert_eq!(
+        SwarmDashboardStyle::from_str_loose("emoji"),
+        SwarmDashboardStyle::Emoji
+    );
+    assert_eq!(
+        SwarmDashboardStyle::from_str_loose("ascii"),
+        SwarmDashboardStyle::Ascii
+    );
+    assert_eq!(
+        SwarmDashboardStyle::from_str_loose("oh-my-posh"),
+        SwarmDashboardStyle::Posh
+    );
+    assert_eq!(
+        SwarmDashboardStyle::Posh.next(),
+        SwarmDashboardStyle::Stylish
+    );
+
+    // ToastStyle new styles + loose parsing
+    assert_eq!(ToastStyle::from_str_loose("nerdfont"), ToastStyle::NerdFont);
+    assert_eq!(ToastStyle::from_str_loose("kamoji"), ToastStyle::Kaomoji);
+    assert_eq!(ToastStyle::from_str_loose("emoji"), ToastStyle::Emoji);
+    assert_eq!(ToastStyle::from_str_loose("ascii"), ToastStyle::Ascii);
+    assert_eq!(ToastStyle::from_str_loose("posh"), ToastStyle::PoshPill);
+    assert_eq!(
+        ToastStyle::from_str_loose("posh_pill"),
+        ToastStyle::PoshPill
+    );
 }
 
 #[test]
