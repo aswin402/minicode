@@ -377,6 +377,7 @@ pub struct WebKitGtkApi {
 unsafe impl Send for WebKitGtkApi {}
 unsafe impl Sync for WebKitGtkApi {}
 
+#[cfg(target_os = "linux")]
 fn dlopen_any(candidates: &[&str]) -> Option<*mut c_void> {
     for &name in candidates {
         let Ok(cstr) = CString::new(name) else {
@@ -391,6 +392,12 @@ fn dlopen_any(candidates: &[&str]) -> Option<*mut c_void> {
     None
 }
 
+#[cfg(not(target_os = "linux"))]
+fn dlopen_any(_candidates: &[&str]) -> Option<*mut c_void> {
+    None
+}
+
+#[cfg(target_os = "linux")]
 unsafe fn load_sym<T: Copy>(handles: &[*mut c_void], name: &str) -> Result<T, String> {
     let cstr = CString::new(name).map_err(|e| e.to_string())?;
     for &h in handles {
@@ -400,6 +407,14 @@ unsafe fn load_sym<T: Copy>(handles: &[*mut c_void], name: &str) -> Result<T, St
         }
     }
     Err(format!("Missing dynamic symbol: {name}"))
+}
+
+#[cfg(not(target_os = "linux"))]
+unsafe fn load_sym<T: Copy>(_handles: &[*mut c_void], name: &str) -> Result<T, String> {
+    let _ = CString::new(name);
+    Err(format!(
+        "WebKit2GTK dynamic loading is only supported on Linux (symbol: {name})"
+    ))
 }
 
 unsafe fn load_opt_sym<T: Copy>(handles: &[*mut c_void], name: &str) -> Option<T> {

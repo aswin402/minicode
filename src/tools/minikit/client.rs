@@ -65,7 +65,7 @@ impl MiniKitClient {
 
         let mut cmd = Command::new(&binary);
         cmd.current_dir(workspace_root).args(args);
-        #[cfg(unix)]
+        #[cfg(target_os = "linux")]
         unsafe {
             use std::os::unix::process::CommandExt;
             cmd.pre_exec(|| {

@@ -1,211 +1,138 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 800 800" width="100%" height="100%">
-  <defs>
-    <!-- Neon Gradients -->
-    <linearGradient id="neonCyan" x1="0%" y1="0%" x2="100%" y2="100%">
-      <stop offset="0%" stop-color="#00f3ff" />
-      <stop offset="100%" stop-color="#0066ff" />
-    </linearGradient>
-    
-    <linearGradient id="neonPurple" x1="0%" y1="0%" x2="100%" y2="100%">
-      <stop offset="0%" stop-color="#ff00cc" />
-      <stop offset="100%" stop-color="#9900ff" />
-    </linearGradient>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+  <!-- Rounded Squircle Aura Dark Badge -->
+  <rect x="16" y="16" width="480" height="480" rx="112" ry="112" fill="#a277ff"/>
+  <rect x="28" y="28" width="456" height="456" rx="100" ry="100" fill="#15141b"/>
+  <rect x="40" y="40" width="432" height="432" rx="88" ry="88" fill="#1b1828"/>
 
-    <linearGradient id="cyanPurple" x1="0%" y1="0%" x2="100%" y2="100%">
-      <stop offset="0%" stop-color="#00f3ff" />
-      <stop offset="50%" stop-color="#ab00ff" />
-      <stop offset="100%" stop-color="#ff00cc" />
-    </linearGradient>
+  <!-- Soft Aura Glow Disc Behind Mascot -->
+  <circle cx="256" cy="226" r="168" fill="#25203b"/>
+  <circle cx="256" cy="226" r="136" fill="#2e274a"/>
 
-    <!-- Glow Filters -->
-    <filter id="glow" x="-20%" y="-20%" width="140%" height="140%">
-      <feGaussianBlur stdDeviation="8" result="blur" />
-      <feMerge>
-        <feMergeNode in="blur" />
-        <feMergeNode in="SourceGraphic" />
-      </feMerge>
-    </filter>
+  <!-- Playful Sparkles & Stars -->
+  <polygon points="94,86 100,104 118,110 100,116 94,134 88,116 70,110 88,104" fill="#61ffca"/>
+  <polygon points="418,86 422,98 434,102 422,106 418,118 414,106 402,102 414,98" fill="#f694ff"/>
+  <circle cx="430" cy="142" r="6" fill="#82e2ff"/>
+  <circle cx="82" cy="154" r="5" fill="#a277ff"/>
 
-    <filter id="glow-intense" x="-50%" y="-50%" width="200%" height="200%">
-      <feGaussianBlur stdDeviation="15" result="blur1" />
-      <feGaussianBlur stdDeviation="5" result="blur2" />
-      <feMerge>
-        <feMergeNode in="blur1" />
-        <feMergeNode in="blur2" />
-        <feMergeNode in="SourceGraphic" />
-      </feMerge>
-    </filter>
-  </defs>
+  <!-- Cute Curled Tail on Right (Clear of Whiskers!) -->
+  <path d="M358 348 C416 346 446 312 434 274 C428 256 404 260 407 278 C410 296 396 318 356 320 Z"
+        fill="#edecee" stroke="#15141b" stroke-width="11" stroke-linejoin="round"/>
+  <circle cx="420" cy="268" r="12" fill="#a277ff" stroke="#15141b" stroke-width="7"/>
 
-  <style>
-    /* Isometric Box Style */
-    .box-edge {
-      stroke: url(#cyanPurple);
-      stroke-width: 3.5;
-      fill: none;
-      stroke-linecap: round;
-      stroke-linejoin: round;
-      filter: url(#glow);
-      opacity: 0.9;
-    }
-    
-    .box-back {
-      stroke: url(#neonPurple);
-      stroke-dasharray: 6 6;
-      opacity: 0.4;
-      stroke-width: 2;
-    }
-    
-    /* Circuits */
-    .circuit-line {
-      fill: none;
-      stroke-width: 3;
-      stroke-linecap: round;
-      filter: url(#glow);
-      stroke-dasharray: 300;
-      stroke-dashoffset: 300;
-      animation: drawCircuit 4s cubic-bezier(0.4, 0, 0.2, 1) infinite;
-    }
+  <!-- Cozy Aura-Purple Coder Hoodie Torso -->
+  <path d="M138 358 C142 290 184 264 256 264 C328 264 370 290 374 358 Z"
+        fill="#a277ff" stroke="#15141b" stroke-width="12" stroke-linejoin="round"/>
+  <!-- Hoodie Center Shadow Accent -->
+  <path d="M174 358 C178 308 206 286 256 286 C306 286 334 308 338 358 Z"
+        fill="#8c5cf7"/>
+  <!-- Mint Collar Rim -->
+  <ellipse cx="256" cy="306" rx="58" ry="18" fill="#61ffca" stroke="#15141b" stroke-width="8"/>
 
-    .cyan-line {
-      stroke: url(#neonCyan);
-    }
+  <!-- Left Pointed Cartoon Cat Ear -->
+  <path d="M134 202 L114 92 C112 76 130 66 144 76 L224 132 Z"
+        fill="#edecee" stroke="#15141b" stroke-width="12" stroke-linejoin="round"/>
+  <polygon points="145,178 135,108 198,145" fill="#f694ff"/>
+  <polygon points="151,168 145,124 186,147" fill="#a277ff"/>
 
-    .purple-line {
-      stroke: url(#neonPurple);
-    }
-    
-    /* Glowing Dots */
-    .glow-dot {
-      fill: #fff;
-      filter: url(#glow-intense);
-      opacity: 0;
-      animation: pulseDot 4s ease-in-out infinite;
-    }
-    
-    /* Particles */
-    .particle {
-      fill: #00f3ff;
-      filter: url(#glow);
-      opacity: 0;
-      animation: floatUp 5s ease-in-out infinite;
-    }
+  <!-- Right Pointed Cartoon Cat Ear -->
+  <path d="M378 202 L398 92 C400 76 382 66 368 76 L288 132 Z"
+        fill="#edecee" stroke="#15141b" stroke-width="12" stroke-linejoin="round"/>
+  <polygon points="367,178 377,108 314,145" fill="#f694ff"/>
+  <polygon points="361,168 367,124 326,147" fill="#a277ff"/>
 
-    /* Keyframes */
-    @keyframes drawCircuit {
-      0% {
-        stroke-dashoffset: 300;
-      }
-      50% {
-        stroke-dashoffset: 0;
-      }
-      100% {
-        stroke-dashoffset: -300;
-      }
-    }
+  <!-- Plump Round Cartoon Cat Head -->
+  <ellipse cx="256" cy="216" rx="126" ry="102" fill="#edecee" stroke="#15141b" stroke-width="12"/>
 
-    @keyframes pulseDot {
-      0%, 100% {
-        opacity: 0;
-        transform: scale(0.3);
-      }
-      30%, 70% {
-        opacity: 1;
-        transform: scale(1.1);
-      }
-    }
+  <!-- Soft Lavender Bottom Cheek Shading -->
+  <path d="M142 232 C156 286 202 310 256 310 C310 310 356 286 370 232 C346 274 304 294 256 294 C208 294 166 274 142 232 Z"
+        fill="#d8d1f5"/>
 
-    @keyframes floatUp {
-      0% {
-        transform: translate(0, 0) scale(0.8);
-        opacity: 0;
-      }
-      20% {
-        opacity: 0.8;
-      }
-      80% {
-        opacity: 0.8;
-      }
-      100% {
-        transform: translate(var(--tx), var(--ty)) scale(0.3);
-        opacity: 0;
-      }
-    }
-    
-    /* Typography */
-    .text-title {
-      font-family: 'Outfit', 'Montserrat', 'Inter', sans-serif;
-      font-size: 76px;
-      font-weight: 800;
-      fill: url(#cyanPurple);
-      letter-spacing: 5px;
-      filter: url(#glow);
-    }
+  <!-- Cute Aura Purple Tabby Forehead Stripes (Smooth Rounded Ends) -->
+  <rect x="250" y="118" width="12" height="32" rx="6" fill="#a277ff"/>
+  <path d="M229 124 C232 121 238 122 239 126 L244 146 C245 150 241 153 237 152 C234 151 233 149 232 146 L227 128 C226 126 227 125 229 124 Z" fill="#a277ff"/>
+  <path d="M283 124 C280 121 274 122 273 126 L268 146 C267 150 271 153 275 152 C278 151 279 149 280 146 L285 128 C286 126 285 125 283 124 Z" fill="#a277ff"/>
 
-    .text-subtitle {
-      font-family: 'Inter', sans-serif;
-      font-size: 18px;
-      font-weight: 600;
-      fill: #94a3b8;
-      letter-spacing: 7px;
-      opacity: 0.8;
-    }
-  </style>
+  <!-- Rosy Cartoon Cheek Blushes -->
+  <ellipse cx="166" cy="252" rx="20" ry="11" fill="#f694ff" opacity="0.65"/>
+  <ellipse cx="346" cy="252" rx="20" ry="11" fill="#f694ff" opacity="0.65"/>
 
-  <g transform="translate(400, 360)">
-    <!-- Circuit Lines (Emerging from the Box) -->
-    <!-- Center Left -->
-    <path class="circuit-line cyan-line" d="M 0, -5 L -40, -65 L -120, -65 L -150, -115" style="animation-delay: 0s;" />
-    <!-- Center Right -->
-    <path class="circuit-line purple-line" d="M 0, -5 L 40, -65 L 120, -65 L 150, -115" style="animation-delay: 0.5s;" />
-    <!-- Mid Left Up -->
-    <path class="circuit-line purple-line" d="M -20, 15 L -80, -45 L -80, -125 L -130, -175" style="animation-delay: 1s;" />
-    <!-- Mid Right Up -->
-    <path class="circuit-line cyan-line" d="M 20, 15 L 80, -45 L 80, -125 L 130, -175" style="animation-delay: 1.5s;" />
-    <!-- Center Straight Up -->
-    <path class="circuit-line cyan-line" d="M 0, -10 L 0, -155 L -30, -205" style="animation-delay: 0.8s;" />
-    <path class="circuit-line purple-line" d="M 0, -10 L 0, -125 L 30, -175" style="animation-delay: 1.2s;" />
+  <!-- Cute Whiskers (3 Left, 3 Right — Explicit Paths with Rounded Caps, Zero Transform Dependency) -->
+  <path d="M98 232 L138 238 C142 239 142 245 137 245 L97 239 C93 238 94 231 98 232 Z" fill="#82e2ff"/>
+  <rect x="90" y="250" width="46" height="7" rx="3.5" fill="#82e2ff"/>
+  <path d="M97 268 L137 261 C142 260 142 267 138 268 L98 275 C94 276 93 269 97 268 Z" fill="#82e2ff"/>
 
-    <!-- Glowing Dots at endpoints -->
-    <circle class="glow-dot" cx="-150" cy="-115" r="6" style="animation-delay: 2.0s; fill: #00f3ff;" />
-    <circle class="glow-dot" cx="150" cy="-115" r="6" style="animation-delay: 2.5s; fill: #ff00cc;" />
-    <circle class="glow-dot" cx="-130" cy="-175" r="6" style="animation-delay: 3.0s; fill: #ff00cc;" />
-    <circle class="glow-dot" cx="130" cy="-175" r="6" style="animation-delay: 3.5s; fill: #00f3ff;" />
-    <circle class="glow-dot" cx="-30" cy="-205" r="5" style="animation-delay: 2.8s; fill: #00f3ff;" />
-    <circle class="glow-dot" cx="30" cy="-175" r="5" style="animation-delay: 3.2s; fill: #ff00cc;" />
+  <path d="M414 232 L374 238 C370 239 370 245 375 245 L415 239 C419 238 418 231 414 232 Z" fill="#82e2ff"/>
+  <rect x="376" y="250" width="46" height="7" rx="3.5" fill="#82e2ff"/>
+  <path d="M415 268 L375 261 C370 260 370 267 374 268 L414 275 C418 276 419 269 415 268 Z" fill="#82e2ff"/>
 
-    <!-- Floating Particles -->
-    <circle class="particle" cx="-20" cy="-50" r="3.5" style="--tx: -60px; --ty: -150px; animation-delay: 0s;" />
-    <circle class="particle" cx="30" cy="-30" r="2.5" style="--tx: 90px; --ty: -180px; animation-delay: 1.2s; fill: #ff00cc;" />
-    <circle class="particle" cx="-10" cy="-70" r="3" style="--tx: -40px; --ty: -200px; animation-delay: 2.4s;" />
-    <circle class="particle" cx="15" cy="-60" r="3.5" style="--tx: 50px; --ty: -130px; animation-delay: 3.6s; fill: #ff00cc;" />
+  <!-- Sleek Minimal Round Coder Glasses (Solid Outer Ring + Inner Dark Lens) -->
+  <!-- Temples -->
+  <rect x="134" y="206" width="32" height="9" rx="4.5" fill="#15141b"/>
+  <rect x="346" y="206" width="32" height="9" rx="4.5" fill="#15141b"/>
+  <!-- Bridge -->
+  <rect x="240" y="206" width="32" height="9" rx="4.5" fill="#15141b"/>
+  <!-- Left Lens Frame -->
+  <circle cx="204" cy="214" r="41" fill="#15141b"/>
+  <circle cx="204" cy="214" r="33" fill="#231e38"/>
+  <!-- Right Lens Frame -->
+  <circle cx="308" cy="214" r="41" fill="#15141b"/>
+  <circle cx="308" cy="214" r="33" fill="#231e38"/>
 
-    <!-- Isometric Box (Package) -->
-    <!-- Back wireframe (inside the box) -->
-    <path class="box-edge box-back" d="M 0, -30 L 0, 60 M -90, 110 L 0, 60 L 90, 110" />
-    
-    <!-- Front Face Left -->
-    <path class="box-edge" d="M -90, 20 L -90, 110 L 0, 160 M 0, 160 L 0, 70" />
-    <!-- Front Face Right -->
-    <path class="box-edge" d="M 90, 20 L 90, 110 L 0, 160" />
-    <!-- Top Rim (Opening) -->
-    <path class="box-edge" d="M -90, 20 L 0, 70 L 90, 20 L 0, -30 Z" />
+  <!-- Bright Expressive Mint/Cyan Cartoon Eyes -->
+  <circle cx="204" cy="215" r="24" fill="#61ffca"/>
+  <circle cx="308" cy="215" r="24" fill="#61ffca"/>
+  <!-- Top Cyan Eye Highlight Crescent -->
+  <circle cx="204" cy="211" r="19" fill="#82e2ff"/>
+  <circle cx="308" cy="211" r="19" fill="#82e2ff"/>
+  <!-- Deep Glossy Pupils -->
+  <circle cx="206" cy="217" r="14" fill="#15141b"/>
+  <circle cx="310" cy="217" r="14" fill="#15141b"/>
+  <!-- Big Sparkle Catchlights -->
+  <circle cx="196" cy="206" r="7" fill="#ffffff"/>
+  <circle cx="214" cy="224" r="3.5" fill="#ffffff"/>
+  <circle cx="300" cy="206" r="7" fill="#ffffff"/>
+  <circle cx="318" cy="224" r="3.5" fill="#ffffff"/>
 
-    <!-- Left-Back Flap -->
-    <path class="box-edge" d="M -90, 20 L -140, -10 L -50, -60 L 0, -30" />
-    <!-- Right-Back Flap -->
-    <path class="box-edge" d="M 90, 20 L 140, -10 L 50, -60 L 0, -30" />
-    <!-- Front-Left Flap -->
-    <path class="box-edge" d="M -90, 20 L -140, 50 L -50, 100 L 0, 70" />
-    <!-- Front-Right Flap -->
-    <path class="box-edge" d="M 90, 20 L 140, 50 L 50, 100 L 0, 70" />
-  </g>
+  <!-- Cute Pink Triangle Nose -->
+  <polygon points="246,248 266,248 256,261" fill="#f694ff" stroke="#15141b" stroke-width="5" stroke-linejoin="round"/>
 
-  <!-- Text Branding -->
-  <g transform="translate(400, 610)" text-anchor="middle">
-    <!-- Stylized "onpkg" text -->
-    <text class="text-title" x="0" y="0">onpkg</text>
-    <!-- Subtitle -->
-    <text class="text-subtitle" x="0" y="45">AI AGENT PACKAGE MANAGER</text>
-  </g>
+  <!-- Adorable Solid Cartoon `:3` Cat Smile (Two Clean U-Curves Drawn via Circles + Mask) -->
+  <circle cx="245" cy="264" r="13" fill="#15141b"/>
+  <circle cx="267" cy="264" r="13" fill="#15141b"/>
+  <circle cx="245" cy="261" r="8" fill="#edecee"/>
+  <circle cx="267" cy="261" r="8" fill="#edecee"/>
+  <rect x="228" y="247" width="56" height="17" fill="#edecee"/>
+  <!-- Re-stamp nose cleanly on top of smile mask -->
+  <polygon points="246,247 266,247 256,260" fill="#f694ff" stroke="#15141b" stroke-width="5" stroke-linejoin="round"/>
+
+  <!-- Minimal Dark Coding Terminal Deck in Foreground -->
+  <!-- Mint Outer Border -->
+  <rect x="82" y="336" width="348" height="114" rx="28" ry="28" fill="#61ffca"/>
+  <!-- Inner Terminal Body -->
+  <rect x="90" y="344" width="332" height="98" rx="22" ry="22" fill="#15141b"/>
+  <!-- Top Header Strip -->
+  <rect x="90" y="344" width="332" height="26" rx="16" ry="16" fill="#211c33"/>
+  <rect x="90" y="356" width="332" height="14" fill="#211c33"/>
+
+  <!-- Terminal Window Traffic Dots (Clear of Left Paw) -->
+  <circle cx="110" cy="357" r="5" fill="#ff6767"/>
+  <circle cx="126" cy="357" r="5" fill="#ffca85"/>
+  <circle cx="142" cy="357" r="5" fill="#61ffca"/>
+
+  <!-- Iconic Geometric `>_` Terminal Prompt (100% Solid Polygons — Zero Font Dependency!) -->
+  <!-- `>` Chevron in Aura Mint -->
+  <polygon points="204,381 213,373 252,400 213,427 204,419 231,400" fill="#61ffca"/>
+  <!-- `_` Block Cursor in Aura Purple -->
+  <rect x="262" y="411" width="46" height="14" rx="7" fill="#a277ff"/>
+
+  <!-- Cute Rounded White Cartoon Cat Paws Resting on Terminal Edge -->
+  <!-- Left Paw -->
+  <ellipse cx="182" cy="338" rx="28" ry="18" fill="#edecee" stroke="#15141b" stroke-width="10"/>
+  <rect x="170" y="333" width="5.5" height="16" rx="2.75" fill="#15141b"/>
+  <rect x="188" y="333" width="5.5" height="16" rx="2.75" fill="#15141b"/>
+
+  <!-- Right Paw -->
+  <ellipse cx="330" cy="338" rx="28" ry="18" fill="#edecee" stroke="#15141b" stroke-width="10"/>
+  <rect x="318" y="333" width="5.5" height="16" rx="2.75" fill="#15141b"/>
+  <rect x="336" y="333" width="5.5" height="16" rx="2.75" fill="#15141b"/>
 </svg>

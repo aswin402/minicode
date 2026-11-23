@@ -4,13 +4,19 @@ on:
   push:
     tags:
       - 'v*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Existing git tag to attach release assets to (defaults to current ref)'
+        required: false
+        type: string
 
 permissions:
   contents: write
 
 jobs:
   build-release:
-    name: Build Release Binary (${{ matrix.target }})
+    name: Build (${{ matrix.target }})
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -18,20 +24,24 @@ jobs:
         include:
           - os: ubuntu-latest
             target: x86_64-unknown-linux-gnu
-            artifact_name: minicode
-            asset_name: minicode-x86_64-unknown-linux-gnu.tar.gz
+            archive_ext: tar.gz
+            bin_ext: ""
+          - os: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-gnu
+            archive_ext: tar.gz
+            bin_ext: ""
           - os: macos-latest
             target: aarch64-apple-darwin
-            artifact_name: minicode
-            asset_name: minicode-aarch64-apple-darwin.tar.gz
-          - os: macos-13
+            archive_ext: tar.gz
+            bin_ext: ""
+          - os: macos-latest
             target: x86_64-apple-darwin
-            artifact_name: minicode
-            asset_name: minicode-x86_64-apple-darwin.tar.gz
+            archive_ext: tar.gz
+            bin_ext: ""
           - os: windows-latest
             target: x86_64-pc-windows-msvc
-            artifact_name: minicode.exe
-            asset_name: minicode-x86_64-pc-windows-msvc.zip
+            archive_ext: zip
+            bin_ext: ".exe"
 
     steps:
       - name: Checkout repository
@@ -45,33 +55,110 @@ jobs:
       - name: Rust Cache
         uses: Swatinem/rust-cache@v2
         with:
-          key: ${{ matrix.target }}
+          key: release-${{ matrix.target }}
 
-      - name: Build release binary
-        run: cargo build --release --locked --target ${{ matrix.target }}
+      - name: Build release binaries (workspace)
+        run: cargo build --release --workspace --locked --target ${{ matrix.target }}
 
-      - name: Package binary (Unix)
-        if: matrix.os != 'windows-latest'
-        run: |
-          cd target/${{ matrix.target }}/release
-          tar -czf ../../../${{ matrix.asset_name }} ${{ matrix.artifact_name }}
-          cd ../../..
-          shasum -a 256 ${{ matrix.asset_name }} > ${{ matrix.asset_name }}.sha256
-
-      - name: Package binary (Windows)
-        if: matrix.os == 'windows-latest'
+      - name: Package binaries (Unix)
+        if: matrix.archive_ext == 'tar.gz'
         shell: bash
         run: |
-          cd target/${{ matrix.target }}/release
-          7z a ../../../${{ matrix.asset_name }} ${{ matrix.artifact_name }}
-          cd ../../..
-          certutil -hashfile ${{ matrix.asset_name }} SHA256 > ${{ matrix.asset_name }}.sha256
+          set -euo pipefail
+          ASSET_NAME="minicode-${{ matrix.target }}.tar.gz"
+          STAGE_DIR="dist/stage-${{ matrix.target }}"
+          mkdir -p "$STAGE_DIR" dist
 
-      - name: Upload Release Assets
+          cp "target/${{ matrix.target }}/release/minicode" "$STAGE_DIR/minicode"
+          for extra in minidoctor minibrowse; do
+            if [ -f "target/${{ matrix.target }}/release/${extra}" ]; then
+              cp "target/${{ matrix.target }}/release/${extra}" "$STAGE_DIR/${extra}"
+            fi
+          done
+          cp LICENSE-MIT LICENSE-APACHE README.md "$STAGE_DIR/" 2>/dev/null || cp README.md "$STAGE_DIR/"
+
+          tar -C "$STAGE_DIR" -czf "dist/${ASSET_NAME}" .
+          (
+            cd dist
+            if command -v sha256sum >/dev/null 2>&1; then
+              sha256sum "${ASSET_NAME}" > "${ASSET_NAME}.sha256"
+            else
+              shasum -a 256 "${ASSET_NAME}" > "${ASSET_NAME}.sha256"
+            fi
+          )
+          cat "dist/${ASSET_NAME}.sha256"
+
+      - name: Package binaries (Windows)
+        if: matrix.archive_ext == 'zip'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $target = "${{ matrix.target }}"
+          $assetName = "minicode-$target.zip"
+          $stageDir = "dist\stage-$target"
+          New-Item -ItemType Directory -Force -Path $stageDir, "dist" | Out-Null
+
+          Copy-Item "target\$target\release\minicode.exe" "$stageDir\minicode.exe"
+          foreach ($extra in @("minidoctor.exe", "minibrowse.exe")) {
+            $src = "target\$target\release\$extra"
+            if (Test-Path $src) {
+              Copy-Item $src "$stageDir\$extra"
+            }
+          }
+          if (Test-Path "README.md") { Copy-Item "README.md" "$stageDir\README.md" }
+
+          Compress-Archive -Path "$stageDir\*" -DestinationPath "dist\$assetName" -Force
+          $hash = (Get-FileHash -Path "dist\$assetName" -Algorithm SHA256).Hash.ToLowerInvariant()
+          "$hash  $assetName" | Out-File -FilePath "dist\$assetName.sha256" -Encoding ascii -NoNewline
+          Add-Content -Path "dist\$assetName.sha256" -Value "" -Encoding ascii
+          Get-Content "dist\$assetName.sha256"
+
+      - name: Upload built artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-${{ matrix.target }}
+          path: |
+            dist/minicode-${{ matrix.target }}.${{ matrix.archive_ext }}
+            dist/minicode-${{ matrix.target }}.${{ matrix.archive_ext }}.sha256
+
+  publish-release:
+    name: Publish GitHub Release
+    needs: build-release
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Download all platform archives
+        uses: actions/download-artifact@v4
+        with:
+          path: release-assets
+          merge-multiple: true
+
+      - name: Generate unified checksums.txt and copy installers
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd release-assets
+          cat *.sha256 | sort -k2 > checksums.txt
+          cp ../install.sh ./install.sh
+          cp ../install.ps1 ./install.ps1
+          ls -la
+          echo "--- checksums.txt ---"
+          cat checksums.txt
+
+      - name: Create GitHub Release & Upload Assets
         uses: softprops/action-gh-release@v2
         with:
+          tag_name: ${{ inputs.tag || github.ref_name }}
+          generate_release_notes: true
           files: |
-            ${{ matrix.asset_name }}
-            ${{ matrix.asset_name }}.sha256
+            release-assets/minicode-*.tar.gz
+            release-assets/minicode-*.tar.gz.sha256
+            release-assets/minicode-*.zip
+            release-assets/minicode-*.zip.sha256
+            release-assets/checksums.txt
+            release-assets/install.sh
+            release-assets/install.ps1
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

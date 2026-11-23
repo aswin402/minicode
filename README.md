@@ -1,232 +1,392 @@
-<p align="center">
-  <img src="assets/logo.png" alt="minicode logo" width="180" style="border-radius: 24px;" />
-</p>
+<a id="readme-top"></a>
 
-<h1 align="center">minicode</h1>
+<div align="center">
 
-<p align="center">
-  <strong>Fast, Minimalist AI Coding Agent in Pure Rust — Built for Both Humans and AI Swarms.</strong>
-</p>
+[![Release][release-shield]][release-url]
+[![CI][ci-shield]][ci-url]
+[![Rust][rust-shield]][rust-url]
+[![Platforms][platforms-shield]][release-url]
+[![License][license-shield]][license-url]
+[![Stars][stars-shield]][stars-url]
+[![Issues][issues-shield]][issues-url]
 
-<p align="center">
-  <a href="https://github.com/aswin402/minicode/actions/workflows/ci.yml"><img src="https://github.com/aswin402/minicode/actions/workflows/ci.yml/badge.svg" alt="CI" /></a>
-  <a href="https://github.com/daltonmenezes/aura-theme"><img src="https://img.shields.io/badge/Theme-Aura_Dark-a277ff?style=flat-square" alt="Aura Theme" /></a>
-  <a href="https://www.rust-lang.org/"><img src="https://img.shields.io/badge/Rust-2021_Edition-dea584?style=flat-square&logo=rust" alt="Rust 2021" /></a>
-  <a href="https://github.com/ratatui/ratatui"><img src="https://img.shields.io/badge/TUI-Ratatui-61ffca?style=flat-square" alt="Ratatui" /></a>
-  <a href="https://github.com/VoltAgent/awesome-design-md"><img src="https://img.shields.io/badge/Design_System-DESIGN.md-ffca85?style=flat-square" alt="DESIGN.md" /></a>
-  <a href="#license"><img src="https://img.shields.io/badge/License-MIT-82e2ff?style=flat-square" alt="License" /></a>
-  <a href="#verification--tests"><img src="https://img.shields.io/badge/Tests-132_Passing-61ffca?style=flat-square" alt="Tests" /></a>
-</p>
+</div>
 
----
+<br />
+<div align="center">
+  <a href="https://github.com/aswin402/minicode">
+    <img src="assets/logo.png" alt="minicode mascot logo" width="180" height="180">
+  </a>
 
-## 🏛️ Three-Pillar Agent-First Repository Standard
+  <h1 align="center">minicode</h1>
 
-`minicode` natively implements the Three-Pillar Repository Contract inspired by [VoltAgent/awesome-design-md](https://github.com/VoltAgent/awesome-design-md) and Google Stitch, ensuring every project built or upgraded with `minicode` has crystal-clear documentation for humans, coding agents, and UI design systems:
+  <p align="center">
+    <strong>Fast, minimalist Rust-native TUI + CLI AI coding agent built for humans and autonomous agents.</strong>
+    <br />
+    Zero Node/Python runtime overhead · 215 built-in tools · 23 LLM providers · Universal stack doctor · Parallel agent swarms
+    <br />
+    <br />
+    <a href="#one-command-installation"><strong>Quick Install »</strong></a>
+    &nbsp;·&nbsp;
+    <a href="#usage">Usage</a>
+    &nbsp;·&nbsp;
+    <a href="#minidoctor-universal-stack-health">MiniDoctor</a>
+    &nbsp;·&nbsp;
+    <a href="#interactive-theme-studio">Theme Studio</a>
+    &nbsp;·&nbsp;
+    <a href="https://github.com/aswin402/minicode/issues/new?labels=bug">Report Bug</a>
+    &nbsp;·&nbsp;
+    <a href="https://github.com/aswin402/minicode/issues/new?labels=enhancement">Request Feature</a>
+  </p>
+</div>
 
-| File | Primary Reader | Authoritative Scope |
-| :--- | :--- | :--- |
-| **[`README.md`](README.md)** | Humans & contributors | Project overview, architecture anatomy, feature catalog, and zero-friction quickstart (`awesome-readme` skill) |
-| **[`.minicode/minicode.md`](AGENTS.md) / [`AGENTS.md`](AGENTS.md)** | Coding agents (`minicode`) | Build/test commands, module boundaries, AST conventions, and engineering invariants |
-| **[`DESIGN.md`](minikit_docs/core/design.md) / [`minikit_docs/core/design.md`](minikit_docs/core/design.md)** | Design & UI agents | 9-section Stitch/VoltAgent visual system, YAML color/typography tokens, elevation ladder, and component rules (`design-md` skill) |
-
-### 🎨 Native `VoltAgent/awesome-design-md` & `awesome-readme` Integration
-* **Root `DESIGN.md` Auto-Discovery**: Drop any `DESIGN.md` file into your workspace root (or generate one via `minicode`) and `VaultStore` automatically parses its Stitch/VoltAgent YAML design tokens (`colors`, `typography`, `rounded`, `spacing`, `components`) and 9 markdown sections as an authoritative `Core` specification.
-* **One-Command Brand Design System Import**: Import any of the 84+ real-world brand design systems (`linear.app`, `vercel`, `stripe`, `claude`, `raycast`, `supabase`, `cursor`, `warp`, `resend`, `mintlify`, `notion`, etc.) directly via shorthand URLs (`vault_import(url="awesome-design-md/linear.app")` or `design-md:vercel`).
-* **Flagship `README.md` Generation (`awesome-readme`)**: Built-in `awesome-readme` skill and `MiniKitSyncEngine::generate_awesome_readme_template` automatically craft high-conversion, scannable `README.md` files with centered hero headers, dynamic badges, contract tables, and verified quickstarts.
-
----
-
-## ⚡ Highlights
-
-* **Dual-Mode Operation**: Seamlessly switch between an interactive full-screen **Ratatui TUI** for human developers and a machine-readable **NDJSON streaming protocol** (`--json-stream`) for AI agent orchestrators.
-* **Dynamic Multi-Branch Hypothesis Search & Speculative Rollout**: Explore competing implementation hypotheses in parallel isolated Git worktrees and auto-select the highest fitness diff.
-* **Multi-Turn Context Observation Deduplication**: Automatic fingerprint deduplication for repetitive tool observations and compiler outputs across long sessions.
-* **Tree-sitter AST Pattern Matching & Symbol Extraction**: Query AST nodes across Rust, Python, JavaScript, and TypeScript with node kind filters, visibility modifiers, and exact symbol extraction.
-* **Sub-millisecond Offline Semantic Code Search**: 100% pure-Rust 128-dim embedding projections (Model2Vec/FastText style) with sliding chunking and cosine similarity for instant natural language codebase discovery.
-* **Dynamic Skill Creation & Hot-Reloading**: Create, validate, and hot-load project-specific skill packages (`.minicode/skills/<name>/SKILL.md`) with YAML frontmatter without restarting the session.
-* **Interactive Embedded PTY Drawer (`Ctrl+T`)**: Embedded bottom terminal pane inside Ratatui with a 1000-line bounded ring buffer to run live shell commands, watch dev servers, and test REPLs without leaving the TUI.
-* **ARIA Web Browser & Local UI Dev Inspector**: Pure-Rust accessibility tree generator and page inspector that maps interactive elements into numbered references (`@e1`, `@e2`) to test and debug local web applications (`http://localhost:3000`).
-
-**Browser engine priority: MiniBrowse → Chrome → Firefox → Safari.**
-- **MiniBrowse** (recommended primary default): adaptive two-gear pure-Rust + WebKit2GTK/Cairo agentic browser (`~7 MB` Gear-0 Arena DOM + `~32–77 MB` Zero-LLVM 2D rendering, isolated `BrowserSpace` contexts, and built-in ad/tracker blocking).
-- **Chrome/Chromium/Brave**: full CDP fallback and `DevToolsActivePort` live session attach.
-- **Firefox / Safari**: W3C WebDriver BiDi & WebDriver HTTP support (`safaridriver` / `geckodriver` / Firefox 141+ BiDi). Force an engine with `MINICODE_BROWSER=minibrowse|chrome|firefox|safari`.
-* **Cognitive Memory Decay & Repository Knowledge Wiki**: Biological Ebbinghaus exponential memory retention math combined with a persistent Markdown repository knowledge wiki (`.minicode/wiki/`) and automated index cataloging.
-* **Sequential Thinking & Graph of Thoughts (GoT)**: Petgraph-tracked dynamic hypothesis branching, revision tracking, confidence scoring, and solution synthesis for complex architectural tasks.
-* **Topological Task DAG & Actor-Critic Loop**: Petgraph-powered dependency DAG engine with topological execution sorting, complexity scoring heuristics (1–10), and automated compiler/linter quality gates.
-* **Interactive Diff Inspector & Permission Modal**: Syntax-highlighted Aura Theme unified diff viewer with an interactive 4-option permission gate (`Accept`, `Reject`, `Allow Session`, `Type Custom Instructions`).
-* **Language Server Protocol & Compiler Self-Healing**: 2-Tier diagnostics (instant < 200ms CLI checks + deep semantic LSP via `rust-analyzer`, `pyright`, `tsc`, and `gopls`) that automatically inspects and heals compiler errors after file modifications.
-* **Autonomous Git Engine**: Fully autonomous git operations with automatic post-turn Conventional Commits, lockfile filtering, branch management, and reversible undo rollbacks.
-* **Multi-Agent Worktree Orchestration**: Delegate tasks to isolated parallel AI subagents in dedicated Git Worktrees (`subagent/<id>`) without file lock race conditions.
-* **Aura Theme Design**: Sleek, distraction-free inline streaming timeline inspired by Dalton Menezes' [Aura Theme](https://github.com/daltonmenezes/aura-theme). Zero cluttered dashboard widgets.
-* **Universal Multi-Provider Engine**: Native support for **OpenRouter** (including free-tier models), **Google Gemini**, **OpenAI**, **DeepSeek**, **Groq**, **Together AI**, and local **Ollama/vLLM** endpoints with automatic rate-limit backoff retries.
-* **210 Built-in Agent Tools**: Specialized primitives across multi-branch hypothesis search, context deduplication, Tree-sitter AST queries, offline semantic code search, dynamic skill creation & inspection, web browser ARIA trees, repository knowledge wikis, cognitive memory decay, sequential thinking DAGs, topological task DAGs, Actor-Critic validation, web search & scraping, file editing, LSP diagnostics & code navigation, AST repository mapping, fact memories, plan workflows, git operations, and subagent delegation.
-* **AST Code Graph Engineering**: Multi-language Tree-sitter parsers (Rust, Python, JS, TS) with Petgraph dependency graphs and Personalized PageRank for precise repository mapping.
-* **OS-Level Kernel Sandbox**: Confinement powered by Linux kernel **Landlock**, workspace path canonicalization, and strict environment variable sanitization.
-* **Turn-Level Safety & Undo**: Automatic pre-mutation file snapshots with an instantaneous `/undo` rollback engine.
-
----
-
-## 📸 Interactive TUI Aesthetic
-
-```text
-• Ran git status --short --branch
-  └ ## main...origin/main [ahead 1]
-    M src/grounding.rs
-
-• Running rustfmt --edition 2021 src/grounding.rs
-✔ You approved minicode to run rustfmt --edition 2021 src/grounding.rs this time
-
-• Ran rustfmt --edition 2021 src/grounding.rs
-  └ (no output)
-
-• Working (4s • esc to interrupt)
-─────────────────────────────────────────────────────────────────────────────
-› Implement {feature}
-  liquid/lfm-2.5-2.6b:free · ~/programming/my_project · main [default]
-```
+<details>
+  <summary>Table of Contents</summary>
+  <ol>
+    <li>
+      <a href="#about-the-project">About The Project</a>
+      <ul>
+        <li><a href="#feature-highlights">Feature Highlights</a></li>
+        <li><a href="#built-with">Built With</a></li>
+      </ul>
+    </li>
+    <li>
+      <a href="#one-command-installation">Getting Started &amp; Installation</a>
+      <ul>
+        <li><a href="#linux--macos">Linux &amp; macOS (Single Command)</a></li>
+        <li><a href="#windows-powershell">Windows PowerShell (Single Command)</a></li>
+        <li><a href="#build-from-source-cargo">Build From Source (Cargo)</a></li>
+        <li><a href="#first-run-setup">First-Run Setup</a></li>
+      </ul>
+    </li>
+    <li>
+      <a href="#usage">Usage</a>
+      <ul>
+        <li><a href="#interactive-tui--slash-commands">Interactive TUI &amp; Slash Commands</a></li>
+        <li><a href="#headless-cli-ndjson--mcp-server">Headless CLI, NDJSON &amp; MCP Server</a></li>
+        <li><a href="#minidoctor-universal-stack-health">MiniDoctor: Universal Stack Health</a></li>
+        <li><a href="#interactive-theme-studio">Interactive 21-Tab Theme Studio</a></li>
+      </ul>
+    </li>
+    <li><a href="#architecture--workspace-crates">Architecture &amp; Workspace Crates</a></li>
+    <li><a href="#roadmap">Roadmap</a></li>
+    <li><a href="#contributing">Contributing</a></li>
+    <li><a href="#license">License</a></li>
+    <li><a href="#contact">Contact</a></li>
+    <li><a href="#acknowledgments">Acknowledgments</a></li>
+  </ol>
+</details>
 
 ---
 
-## 🚀 Quick Start
+## About The Project
 
-### 1. Installation
+**`minicode`** is a single-binary, pure-Rust AI coding agent that brings full autonomous engineering directly into your terminal without Electron bloat, Python virtualenvs, or OpenSSL system dependencies.
 
-#### One-Line Binary Installer (Linux & macOS)
+Instead of splitting your screen into rigid dashboard panes, `minicode` streams a clean, low-latency inline timeline (`ratatui`) for human pairing **and** switches seamlessly into machine-readable NDJSON (`--json-stream`) or Model Context Protocol (`minicode serve`) when driven by CI pipelines or external orchestrators.
+
+### Feature Highlights
+
+| Pillar | What Ships Out of the Box |
+| :--- | :--- |
+| **215 Built-In Tools** | Lazy-activated domain toolpacks covering AST code edits, ripgrep/Tree-sitter code graphs, git workflows, shell sandboxing, browser automation, memory, wiki, vault, and dev-server supervision. |
+| **23 LLM Providers** | Anthropic, OpenRouter, Gemini, OpenAI, DeepSeek, Groq, z.ai, Kimi, HuggingFace, NVIDIA, OpenCode, Cerebras, Mistral, Together, MiniMax, Agnes, Nara, OFox, AIHubMix, plus local **Ollama**, **LM Studio**, **vLLM**, and **Localhost** — all over pure-Rust `rustls` TLS. |
+| **MiniDoctor (`minidoctor`)** | Native Rust universal codebase health engine (**44 AST + heuristic rules** across React, Next.js, TypeScript/JS, Hono, Rust, Python, Flutter/Dart, Go, and universal security/quality). Produces a `0–100` health score, dead-code analysis, git-diff scans, SARIF/JSON exports, and `.minicode/minidoctor/NEEDEDFIX.md` for human + AI agent handoff. |
+| **MiniPubs Swarm (14 Roles)** | Autonomous multi-agent waves (`Scout`, `Architect`, `Planner`, `Designer`, `Frontend`, `Backend`, `Coder`, `Vision`, `ContentWriter`, `Debugger`, `Reviewer`, `Security`, `Tester`, `Simplifier`) with isolated git worktrees and cooperative file leases. |
+| **MiniBrowse (`minibrowse`)** | Ultra-low-RAM two-gear agentic browser: fast pure-Rust HTTP + DOM + Markdown extractor paired with CDP / WebKit live inspection and Flutter VM hot-reload diagnostics. |
+| **MiniKit (13 Stacks + Blocks)** | One-command project scaffolding (`react-vite`, `react-vite-full`, `react-vite-gsap`, `next-template`, `hono-api`, `hono-full`, `express-api`, `fastapi`, `mern`, `pern`, `rust-cli`, `flutter-riverpod`, `static-website`), modular `MiniBlocks`, and multi-registry package search (`npm`, `PyPI`, `crates.io`, `pub.dev`). |
+| **MiniPower & Safe Rollbacks** | Persistent `/goal` autonomous loops, background dev-server & port supervisor (`/tasks`), Linux Landlock + rlimit sandboxing, and atomic `/undo` workspace transaction snapshots. |
+| **21-Tab `/theme` Studio** | Live TUI customization for palettes, thinking animations, todo/swarm/toast/tool/output/turn-summary cards, **10 Doctor styles × 6 live working animations**, and per-element Show/Hide toggles. |
+
+### Built With
+
+[![Rust][rust-badge]][rust-url]
+[![Tokio][tokio-badge]][tokio-url]
+[![Ratatui][ratatui-badge]][ratatui-url]
+[![Tree-sitter][treesitter-badge]][treesitter-url]
+[![Rustls][rustls-badge]][rustls-url]
+
+<p align="right">(<a href="#readme-top">back to top</a>)</p>
+
+---
+
+## One-Command Installation
+
+Prebuilt release archives bundle **`minicode`**, **`minidoctor`**, and **`minibrowse`** together, verify **SHA-256 checksums** automatically, configure your `PATH`, and fall back gracefully to `cargo` if needed.
+
+### Linux & macOS
+
+Works on **Linux (`x86_64`, `aarch64`)**, **macOS (`Apple Silicon`, `Intel`)**, **WSL**, and **Git Bash**:
+
 ```bash
 curl -fsSL https://raw.githubusercontent.com/aswin402/minicode/main/install.sh | bash
 ```
 
-#### Build From Source (Cargo)
-```bash
-# Install directly from GitHub
-cargo install --git https://github.com/aswin402/minicode.git
+<details>
+<summary>Installer options &amp; environment variables (Linux / macOS)</summary>
 
-# Or clone and build
+```bash
+# Pin a specific version
+MINICODE_VERSION=v0.5.83 curl -fsSL https://raw.githubusercontent.com/aswin402/minicode/main/install.sh | bash
+
+# Custom install directory
+MINICODE_INSTALL_DIR=/usr/local/bin curl -fsSL https://raw.githubusercontent.com/aswin402/minicode/main/install.sh | bash
+
+# Dry-run (inspect detected target & release URL without modifying files)
+MINICODE_DRY_RUN=1 curl -fsSL https://raw.githubusercontent.com/aswin402/minicode/main/install.sh | bash
+
+# Skip optional Obscura helper or shell rc PATH edits
+SKIP_OBSCURA=1 MINICODE_NO_PATH=1 curl -fsSL https://raw.githubusercontent.com/aswin402/minicode/main/install.sh | bash
+```
+
+</details>
+
+### Windows (PowerShell)
+
+Run in **Windows Terminal** or **PowerShell 5.1 / 7+**:
+
+```powershell
+irm https://raw.githubusercontent.com/aswin402/minicode/main/install.ps1 | iex
+```
+
+<details>
+<summary>Installer options &amp; environment variables (Windows)</summary>
+
+```powershell
+# Pin a specific version or custom directory
+$env:MINICODE_VERSION = "v0.5.83"
+$env:MINICODE_INSTALL_DIR = "$env:USERPROFILE\bin"
+irm https://raw.githubusercontent.com/aswin402/minicode/main/install.ps1 | iex
+```
+
+</details>
+
+### Build From Source (Cargo)
+
+Requires Rust 1.80+ (`rustup`):
+
+```bash
+cargo install --git https://github.com/aswin402/minicode.git --locked minicode
+```
+
+Or clone and install the full workspace (`minicode`, `minidoctor`, `minibrowse`):
+
+```bash
 git clone https://github.com/aswin402/minicode.git
 cd minicode
-cargo build --release
+bash localupdate.sh --clean
 ```
 
-### 2. Interactive Configuration
+### First-Run Setup
 
-Run the configuration wizard to set your default provider, model, and API keys:
+Verify your installation, connect an LLM provider, and launch:
 
 ```bash
-minicode configure
-# or
-just configure
+minicode --version
+minicode setup      # Interactive wizard for API keys, models & local Ollama/LM Studio
+minicode            # Launch the interactive TUI in the current repository
 ```
 
-Alternatively, configure your environment in `.env`:
+<p align="right">(<a href="#readme-top">back to top</a>)</p>
 
-```env
-# OpenRouter (Supports 100+ models: Claude 3.5 Sonnet, DeepSeek-R1, Qwen2.5-Coder, etc.)
-OPENROUTER_API_KEY=sk-or-v1-your-openrouter-key-here
-MINICODE_PROVIDER=openrouter
-MINICODE_MODEL=liquid/lfm-2.5-2.6b:free
-```
+---
 
-### 3. Launching minicode
+## Usage
+
+### Interactive TUI & Slash Commands
+
+Launch `minicode` inside any project directory to enter the streaming Ratatui timeline:
 
 ```bash
-# Launch interactive Aura TUI in the current workspace
+cd your-project
 minicode
-
-# Or run with a one-shot autonomous task
-minicode run "Inspect src/main.rs and add comprehensive error handling"
-
-# Or run in accessible plain REPL mode
-minicode --plain
 ```
 
----
-
-## 🕹️ TUI Keyboard Controls
-
-| Key Shortcut | Action |
+| Command | Action |
 | :--- | :--- |
-| **`Enter`** | Submit prompt or task to minicode |
-| **`Ctrl+J`** / **`Alt+Enter`** | Insert a newline for multi-line prompts |
-| **`PageUp`** / **`PageDown`** | Scroll conversation timeline up/down |
-| **`Esc`** / **`Ctrl+C`** | Interrupt running execution or exit |
-| **`/clear`** | Clear conversation timeline buffer |
-| **`/exit`** / **`/quit`** | Gracefully quit session |
+| `/doctor [flags \| fix]` | Run MiniDoctor health audit (inline animated card + `.minicode/minidoctor/NEEDEDFIX.md`) |
+| `/doctor-style [name]` | Switch between 10 Doctor visual chrome styles (`aura`, `cyber`, `neon`, `kaomoji`, `ascii`, …) |
+| `/doctor-anim [name]` | Switch between 6 live Doctor working animations (`pulse`, `radar`, `orbit`, `kaomoji`, `blocks`, `ascii`) |
+| `/theme [preset]` | Open the 21-tab live TUI Theme & Style Studio |
+| `/model` | Hot-swap active provider & model mid-session |
+| `/goal [add \| done \| run]` | Drive persistent multi-step autonomous goal loops |
+| `/todo` (`F8`) | Inspect and track structured session task checklists |
+| `/diff [--cached]` | Inspect syntax-colored workspace git diffs inline |
+| `/review` | Run multi-agent adversarial code review on pending changes |
+| `/undo` | Roll back the latest atomic workspace transaction |
+| `/blocks` / `/tasks` | Manage MiniBlocks and live background dev servers |
+| `/resume [last \| id]` | Browse and resume persisted JSONL sessions |
+| `/copy [all]` | Copy latest response or full transcript to OS clipboard |
 
----
+### Headless CLI, NDJSON & MCP Server
 
-## 🤖 Dual-Mode Architecture
-
-### 1. Human Mode (Interactive Ratatui TUI)
-Full-screen terminal interface with smooth 20 FPS redraws, live execution timers, collapsible tool outputs, and syntax-highlighted Markdown rendering.
-
-### 2. AI Mode (Machine-Readable NDJSON Streaming)
-Designed for AI orchestrators (e.g., Claude Code, Antigravity, OpenCode, Codex). Communicates via newline-delimited JSON over `stdin` and `stdout`:
+Automate tasks in CI/CD, scripts, or orchestrator pipelines:
 
 ```bash
-minicode --json-stream
+# One-shot autonomous task execution
+minicode run "Fix the failing unit tests in src/auth and verify cargo test passes"
+
+# Machine-readable NDJSON event streaming for scripts & sub-orchestrators
+minicode --json-stream run "Audit API routes for missing auth guards"
+
+# Expose minicode workspace tools as a Model Context Protocol (MCP) server over stdio
+minicode serve --dir ./my-repo
+
+# Scaffold a production-ready MiniKit stack
+minicode stack list
+minicode init my-api --stack hono-api
+
+# Multi-ecosystem package lookup (npm, PyPI, crates.io, pub.dev)
+minicode info axum --runtime cargo
 ```
 
-```json
-{"type":"heartbeat","timestamp":"2026-08-14T20:00:00Z","status":"ready"}
-{"type":"stream_delta","turn_id":1,"delta":"Searching codebase..."}
-{"type":"tool_call","turn_id":1,"tool":"grep_search","args":{"query":"Theme"}}
-{"type":"tool_result","turn_id":1,"tool":"grep_search","success":true,"output":"src/ui/theme.rs:8","duration_ms":58}
-{"type":"turn_end","turn_id":1,"total_tokens_used":3408,"files_modified":[]}
+### MiniDoctor: Universal Stack Health
+
+Run **`minicode doctor`** (or the standalone **`minidoctor`** binary) on any repository for instant native-Rust static diagnostics:
+
+```bash
+# Full project audit + generate .minicode/minidoctor/NEEDEDFIX.md
+minicode doctor
+
+# Audit only git-changed files against main (great for PR CI gates)
+minicode doctor --diff main --threshold 80
+
+# Emit numeric health score (0-100) or SARIF for GitHub Code Scanning
+minicode doctor --score
+minicode doctor --format sarif > minidoctor.sarif
+
+# Explain any specific rule ID
+minicode doctor --explain rust/no-unwrap-prod
 ```
+
+Every scan writes an actionable, severity-sorted remediation guide to **`.minicode/minidoctor/NEEDEDFIX.md`** so both humans and AI agents (including `minicode` itself via `/doctor fix`) share the exact same fix checklist.
+
+### Interactive 21-Tab Theme Studio
+
+Run **`/theme`** inside the TUI to customize every visual layer live with instant miniature previews:
+
+- **Palettes & Motion**: Built-in themes (Aura Dark, Catppuccin, Tokyo Night, Dracula, Gruvbox, Nord, Solarized, …) + thinking animations.
+- **Component Chrome**: Dedicated tabs for Todo Lists, Agent Swarms, Toasts, Activity Bar, Menus, Input Box, Status Bar, Context/KV Meter, Mode Badges, Tool Cards & Icons, Output Frames/Badges, Turn Summaries, and **Doctor Styles + Animations** (`[a]`, `[`, `]`).
+- **21. Show / Hide**: Granular toggles for every status segment, hint, KV cache telemetry, and inline Doctor card detail drawer.
+
+<p align="right">(<a href="#readme-top">back to top</a>)</p>
 
 ---
 
-## 🛠️ The 6 Core Coding Tools
+## Architecture & Workspace Crates
 
-| Tool | Description | Security & Guards |
-| :--- | :--- | :--- |
-| `read_file` | Reads file content with optional line ranges (`start_line`, `end_line`) | Path traversal blocked; bounds checked |
-| `write_file` | Writes full file content atomically with auto-parent directory creation | Automatic backup snapshot in `.minicode/backups/` |
-| `patch_file` | Search-and-replace block replacement (Exact → Whitespace → Fuzzy) | Confidence threshold validation |
-| `exec_cmd` | Executes shell commands in workspace root | Landlock FS confinement + TCP deny + 30s timeout |
-| `grep_search` | Ripgrep-speed regex matching across workspace files | Respects `.gitignore` and hidden file rules |
-| `fetch_or_browse` | Scrapes external URL documentation to clean Markdown | HTML readability extraction + size bounds |
-
----
-
-## 🏗️ Architecture & Subsystems
+`minicode` is structured as a lean 3-crate Rust workspace with strict modularity and zero C OpenSSL dependencies:
 
 ```text
-minicode
-├── src/
-│   ├── main.rs              # CLI parser, command dispatcher & REPL
-│   ├── app.rs               # Ratatui application runner & async event pump
-│   ├── error.rs             # thiserror error taxonomy
-│   ├── config.rs            # TOML loader, .env & env var override hierarchy
-│   ├── logging.rs           # Non-blocking file logger (~/.config/minicode/logs/)
-│   ├── lsp/                 # JSON-RPC 2.0 stdio client & 2-tier compiler diagnostics
-│   ├── git/                 # Git service, worktrees, token-budgeted diff filters & commits
-│   ├── agent/               # ReAct loop, providers (OpenRouter, Gemini, OpenAI) & subagents
-│   ├── tools/               # 6 core coding tool implementations & ToolRegistry
-│   ├── sandbox/             # Landlock kernel isolation, env sanitization & path boundaries
-│   ├── context/             # Tree-sitter AST queries, Petgraph PageRank & token compactor
-│   ├── session/             # Turn backup snapshots, /undo engine & JSONL store
-│   └── ui/                  # Aura Theme, timeline view, input dock & configure wizard
+minicode/
+├── src/                        # Core minicode binary (TUI + CLI + MCP server)
+│   ├── main.rs                 # Interactive Ratatui TUI, headless --json-stream, CLI & MCP dispatch
+│   ├── agent/                  # Autonomous loop, MiniPubs swarm (14 roles), verification & memory
+│   ├── context/                # Tree-sitter AST repomap, petgraph code graph, token/KV optimizer
+│   ├── llm/                    # 23-provider pure-Rust streaming HTTP/SSE client (rustls)
+│   ├── tools/                  # 215 modular tools (fs, AST, git, shell, browser, doctor, MiniKit)
+│   ├── sandbox/                # Landlock (Linux), rlimit budgets, git worktrees, rollback tx
+│   ├── dev/                    # Background dev-server supervisor, port/RSS telemetry
+│   └── ui/                     # Inline streaming Ratatui timeline, 21-tab /theme studio, modals
+├── crates/
+│   ├── minidoctor/             # Universal multi-stack native Rust codebase doctor (lib + CLI)
+│   └── minibrowse/             # Ultra-low-RAM agentic browser, markdown extractor & Flutter inspector
+├── .github/workflows/          # Cross-platform CI & 5-target release pipeline
+├── install.sh                  # Single-command installer for Linux, macOS, WSL & Git Bash
+└── install.ps1                 # Single-command installer for Windows PowerShell
 ```
+
+<p align="right">(<a href="#readme-top">back to top</a>)</p>
 
 ---
 
-## 💻 Developer & Contributor Guide
+## Roadmap
 
-The repository includes a dedicated [`Justfile`](file://./Justfile) configured for **low-resource compilation** (`-j 2` concurrency limits):
+- [x] Pure-Rust dual-mode TUI (`ratatui`) + headless `--json-stream` + MCP `serve`
+- [x] 215 lazy-activated built-in tools & 23 cloud/local LLM providers over `rustls`
+- [x] `MiniPubs` parallel specialist swarm (14 roles) with git worktrees & file leases
+- [x] `MiniDoctor` native Rust universal codebase health engine + `.minicode/minidoctor/NEEDEDFIX.md`
+- [x] `MiniBrowse` low-RAM two-gear browser & Flutter VM hot-reload inspector
+- [x] 21-tab `/theme` customization studio (including 10 Doctor styles & 6 working animations)
+- [x] Single-command cross-platform release installers (`Linux`, `macOS`, `Windows`)
+- [ ] Homebrew tap (`brew install aswin402/tap/minicode`) & Winget / Scoop manifests
+- [ ] Additional `MiniDoctor` AST packs (Java/Kotlin, C#, Swift, Elixir)
+- [ ] Plugin SDK for community-authored MiniKit stacks and custom toolpacks
 
-```bash
-just check          # Fast compilation check (2 jobs)
-just test           # Run all unit/integration tests (2 jobs, 2 threads)
-just clippy         # Run clippy with strict zero-warning policy (-D warnings)
-just fmt            # Auto-format all Rust source code
-just ci             # Full pre-commit verification suite
-```
+See the [open issues](https://github.com/aswin402/minicode/issues) for a full list of proposed features and known issues.
+
+<p align="right">(<a href="#readme-top">back to top</a>)</p>
 
 ---
 
-## 📄 License
+## Contributing
 
-Distributed under the **MIT License**. See [`LICENSE`](file://./LICENSE) for details.
+Contributions make the open-source community thrive — PRs, bug reports, new `MiniDoctor` rules, and `MiniKit` stacks are warmly welcome!
+
+1. Fork the repository and create your feature branch (`git checkout -b feat/amazing-feature`).
+2. Keep local builds laptop-friendly and enforce zero warnings:
+   ```bash
+   cargo fmt --check
+   nice -n 19 cargo clippy -j 1 -- -D warnings
+   nice -n 19 cargo test -j 1
+   ```
+3. Commit your changes (`git commit -m 'feat: add amazing feature'`).
+4. Push your branch (`git push origin feat/amazing-feature`) and open a Pull Request.
+
+See [AGENTS.md](AGENTS.md) for architecture conventions and invariants (no `.unwrap()`/`.expect()` in non-test code, `tracing` logging instead of `println!`, pure-Rust TLS).
+
+<p align="right">(<a href="#readme-top">back to top</a>)</p>
+
+---
+
+## License
+
+Dual-licensed under **MIT** or **Apache-2.0**, at your option. See `Cargo.toml` for metadata.
+
+<p align="right">(<a href="#readme-top">back to top</a>)</p>
+
+---
+
+## Contact
+
+**Aswin** — [@aswin402](https://github.com/aswin402)
+
+Project Link: [https://github.com/aswin402/minicode](https://github.com/aswin402/minicode)
+
+<p align="right">(<a href="#readme-top">back to top</a>)</p>
+
+---
+
+## Acknowledgments
+
+- [Ratatui](https://ratatui.rs) — Modern Rust terminal UI rendering
+- [Tree-sitter](https://tree-sitter.github.io) — Incremental multi-language AST parsing
+- [Tokio](https://tokio.rs) & [Rustls](https://github.com/rustls/rustls) — Pure-Rust async runtime & TLS
+- [Best-README-Template](https://github.com/othneildrew/Best-README-Template) — Clean README layout inspiration
+
+<p align="right">(<a href="#readme-top">back to top</a>)</p>
+
+<!-- MARKDOWN LINKS & IMAGES -->
+[release-shield]: https://img.shields.io/github/v/release/aswin402/minicode?style=for-the-badge&color=a277ff&labelColor=15141b
+[release-url]: https://github.com/aswin402/minicode/releases
+[ci-shield]: https://img.shields.io/github/actions/workflow/status/aswin402/minicode/ci.yml?branch=main&style=for-the-badge&label=CI&labelColor=15141b
+[ci-url]: https://github.com/aswin402/minicode/actions/workflows/ci.yml
+[rust-shield]: https://img.shields.io/badge/Rust-2021-61ffca?style=for-the-badge&logo=rust&logoColor=15141b&labelColor=15141b
+[rust-url]: https://www.rust-lang.org/
+[platforms-shield]: https://img.shields.io/badge/Platforms-Linux%20%7C%20macOS%20%7C%20Windows-82e2ff?style=for-the-badge&labelColor=15141b
+[license-shield]: https://img.shields.io/badge/License-MIT%20%7C%20Apache--2.0-f694ff?style=for-the-badge&labelColor=15141b
+[license-url]: https://github.com/aswin402/minicode/blob/main/Cargo.toml
+[stars-shield]: https://img.shields.io/github/stars/aswin402/minicode?style=for-the-badge&color=ffca85&labelColor=15141b
+[stars-url]: https://github.com/aswin402/minicode/stargazers
+[issues-shield]: https://img.shields.io/github/issues/aswin402/minicode?style=for-the-badge&color=ff6767&labelColor=15141b
+[issues-url]: https://github.com/aswin402/minicode/issues
+
+[rust-badge]: https://img.shields.io/badge/Rust-15141b?style=for-the-badge&logo=rust&logoColor=61ffca
+[tokio-badge]: https://img.shields.io/badge/Tokio-15141b?style=for-the-badge&logo=rust&logoColor=82e2ff
+[tokio-url]: https://tokio.rs/
+[ratatui-badge]: https://img.shields.io/badge/Ratatui_TUI-15141b?style=for-the-badge&logo=gnometerminal&logoColor=a277ff
+[ratatui-url]: https://ratatui.rs/
+[treesitter-badge]: https://img.shields.io/badge/Tree--sitter_AST-15141b?style=for-the-badge&logo=treehouse&logoColor=61ffca
+[treesitter-url]: https://tree-sitter.github.io/
+[rustls-badge]: https://img.shields.io/badge/Pure_Rust_TLS-15141b?style=for-the-badge&logo=letsencrypt&logoColor=f694ff
+[rustls-url]: https://github.com/rustls/rustls
