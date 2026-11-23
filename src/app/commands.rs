@@ -850,6 +850,46 @@ impl<'a> App<'a> {
             return Ok(CommandAction::Continue);
         }
 
+        if prompt_lower == "/doctor-anim" || prompt_lower.starts_with("/doctor-anim ") {
+            let arg = prompt_trimmed
+                .strip_prefix("/doctor-anim")
+                .unwrap_or("")
+                .trim();
+            if arg.is_empty() {
+                self.open_theme_modal(Some(crate::ui::modals::ThemeModalTab::DoctorStyles));
+            } else {
+                let lower = arg.to_ascii_lowercase().replace('-', "_");
+                if let Some(&anim) = crate::config::DoctorAnimStyle::all().iter().find(|a| {
+                    a.as_str() == lower || a.label().to_ascii_lowercase().contains(&lower)
+                }) {
+                    self.config.ui.doctor_anim_style = anim.as_str().to_string();
+                    let _ = self.config.save(Some(&self.workspace_root));
+                    let _ = self.config.save(None);
+                    self.toasts.push(
+                        crate::ui::ToastKind::Success,
+                        "MiniDoctor Animation Updated",
+                        format!(
+                            "Switched MiniDoctor live working animation to \"{}\".",
+                            anim.label()
+                        ),
+                        Some(anim.as_str().to_string()),
+                        Some("doctor_anim_preview".to_string()),
+                    );
+                } else {
+                    let valid = crate::config::DoctorAnimStyle::all()
+                        .iter()
+                        .map(|a| a.as_str())
+                        .collect::<Vec<_>>()
+                        .join(", ");
+                    self.add_timeline_status(format!(
+                        "! Unknown doctor animation '{}'. Available: {}",
+                        arg, valid
+                    ));
+                }
+            }
+            return Ok(CommandAction::Continue);
+        }
+
         if prompt_lower == "/tool-icons" || prompt_lower.starts_with("/tool-icons ") {
             let arg = prompt_trimmed
                 .strip_prefix("/tool-icons")

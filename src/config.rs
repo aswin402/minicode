@@ -2211,7 +2211,7 @@ impl Default for TurnSummaryConfig {
 }
 
 /// Visual style presets for the interactive MiniDoctor (`/doctor`) TUI modal.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum DoctorStyle {
     /// Aura Rounded card with smooth `━`/`─` gauge bar & trend sparkline (Default)
@@ -2303,6 +2303,125 @@ impl DoctorStyle {
     }
 }
 
+/// Live working animation style rendered inside the inline MiniDoctor card while scanning.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum DoctorAnimStyle {
+    /// Scrolling ECG heartbeat trace (`♥ ───╱╲──╱╲───`) (Default)
+    #[default]
+    Pulse,
+    /// Back-and-forth Kitt radar scanner beam (`◈ ░░░▒▓█▓▒░░░`)
+    Radar,
+    /// Braille orbital spinner + flowing accent gauge (`⠋ ━━━━━━╸────`)
+    Orbit,
+    /// Animated expressive Kaomoji doctor faces (`(◉_◉)` / `(•̀ᴗ•́)` / `(✧_✧)`)
+    Kaomoji,
+    /// Equalizer spectrum wave (`▮ ▁▂▃▄▅▆▇█▇▆▅▄`)
+    Blocks,
+    /// Pure 7-bit ASCII spinner & bar (`[/] [====>-----]`)
+    Ascii,
+}
+
+impl DoctorAnimStyle {
+    pub const ALL: &'static [Self] = &[
+        Self::Pulse,
+        Self::Radar,
+        Self::Orbit,
+        Self::Kaomoji,
+        Self::Blocks,
+        Self::Ascii,
+    ];
+
+    #[must_use]
+    pub const fn all() -> &'static [Self] {
+        Self::ALL
+    }
+
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Pulse => "pulse",
+            Self::Radar => "radar",
+            Self::Orbit => "orbit",
+            Self::Kaomoji => "kaomoji",
+            Self::Blocks => "blocks",
+            Self::Ascii => "ascii",
+        }
+    }
+
+    #[must_use]
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Pulse => "Pulse ECG",
+            Self::Radar => "Radar Sweep",
+            Self::Orbit => "Orbit Wave",
+            Self::Kaomoji => "Kaomoji",
+            Self::Blocks => "Spectrum",
+            Self::Ascii => "ASCII",
+        }
+    }
+
+    #[must_use]
+    pub fn from_str_loose(s: &str) -> Self {
+        match s.trim().to_ascii_lowercase().replace('-', "_").as_str() {
+            "radar" | "sweep" | "scanner" | "beam" | "kitt" => Self::Radar,
+            "orbit" | "braille" | "wave" | "spinner" => Self::Orbit,
+            "kaomoji" | "kamoji" | "faces" => Self::Kaomoji,
+            "blocks" | "spectrum" | "equalizer" | "eq" | "bars" => Self::Blocks,
+            "ascii" | "plain" | "retro" => Self::Ascii,
+            _ => Self::Pulse,
+        }
+    }
+
+    #[must_use]
+    pub const fn next(self) -> Self {
+        match self {
+            Self::Pulse => Self::Radar,
+            Self::Radar => Self::Orbit,
+            Self::Orbit => Self::Kaomoji,
+            Self::Kaomoji => Self::Blocks,
+            Self::Blocks => Self::Ascii,
+            Self::Ascii => Self::Pulse,
+        }
+    }
+
+    #[must_use]
+    pub const fn prev(self) -> Self {
+        match self {
+            Self::Pulse => Self::Ascii,
+            Self::Radar => Self::Pulse,
+            Self::Orbit => Self::Radar,
+            Self::Kaomoji => Self::Orbit,
+            Self::Blocks => Self::Kaomoji,
+            Self::Ascii => Self::Blocks,
+        }
+    }
+}
+
+/// Bundled inline MiniDoctor timeline card preferences passed into `TimelineContext`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct DoctorInlineConfig {
+    pub style: DoctorStyle,
+    pub anim: DoctorAnimStyle,
+    pub enabled: bool,
+    pub show_sparkline: bool,
+    pub show_subscores: bool,
+    pub show_findings: bool,
+}
+
+impl Default for DoctorInlineConfig {
+    fn default() -> Self {
+        Self {
+            style: DoctorStyle::default(),
+            anim: DoctorAnimStyle::default(),
+            enabled: true,
+            show_sparkline: true,
+            show_subscores: true,
+            show_findings: true,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct UiConfig {
     #[serde(default = "default_theme")]
@@ -2382,6 +2501,15 @@ pub struct UiConfig {
 
     #[serde(default = "default_doctor_style")]
     pub doctor_style: String,
+
+    #[serde(default = "default_doctor_anim_style")]
+    pub doctor_anim_style: String,
+
+    #[serde(default = "default_true")]
+    pub show_doctor_inline_card: bool,
+
+    #[serde(default = "default_true")]
+    pub show_doctor_inline_findings: bool,
 
     #[serde(default = "default_true")]
     pub show_doctor_sparkline: bool,
@@ -2631,6 +2759,23 @@ impl UiConfig {
     pub fn doctor_style_enum(&self) -> DoctorStyle {
         DoctorStyle::from_str_loose(&self.doctor_style)
     }
+
+    #[must_use]
+    pub fn doctor_anim_style_enum(&self) -> DoctorAnimStyle {
+        DoctorAnimStyle::from_str_loose(&self.doctor_anim_style)
+    }
+
+    #[must_use]
+    pub fn doctor_inline_config(&self) -> DoctorInlineConfig {
+        DoctorInlineConfig {
+            style: self.doctor_style_enum(),
+            anim: self.doctor_anim_style_enum(),
+            enabled: self.show_doctor_inline_card,
+            show_sparkline: self.show_doctor_sparkline,
+            show_subscores: self.show_doctor_subscores,
+            show_findings: self.show_doctor_inline_findings,
+        }
+    }
 }
 
 impl Default for UiConfig {
@@ -2662,6 +2807,9 @@ impl Default for UiConfig {
             turn_summary_style: default_turn_summary_style(),
             turn_summary_position: default_turn_summary_position(),
             doctor_style: default_doctor_style(),
+            doctor_anim_style: default_doctor_anim_style(),
+            show_doctor_inline_card: true,
+            show_doctor_inline_findings: true,
             show_doctor_sparkline: true,
             show_doctor_subscores: true,
             show_doctor_detail_drawer: true,
@@ -2707,6 +2855,10 @@ fn default_swarm_style() -> String {
 
 fn default_doctor_style() -> String {
     "aura".to_string()
+}
+
+fn default_doctor_anim_style() -> String {
+    "pulse".to_string()
 }
 
 fn default_todo_style() -> String {

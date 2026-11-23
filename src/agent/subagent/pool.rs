@@ -1834,6 +1834,12 @@ impl SubagentPool {
                         info.id
                     );
                 }
+                if dev_registry.is_async_idle_wakeup_enabled() {
+                    return format!(
+                        "⏳ MiniPub Subagent `{}` is still executing in the background after {}s check window.\n• Current Status: {}\n• Do NOT poll `await`/`status` in a loop or run `sleep` in `exec_cmd` — conclude this turn briefly now and `minicode` will automatically wake you via Boomerang notification the instant `{}` finishes.",
+                        info.id, timeout_secs, detail, info.id
+                    );
+                }
                 return format!(
                     "⏳ MiniPub Subagent `{}` is still executing after {}s wait window.\n• Current Status: {}\n• Use `minitask(action=\"await\", id=\"{}\")` or `manage_subagents(action=\"await\", subagent_id=\"{}\")` to continue waiting.",
                     info.id, timeout_secs, detail, info.id, info.id

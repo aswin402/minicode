@@ -165,6 +165,7 @@ fn test_paragraph_rendering_alignment() {
         output_style: crate::config::OutputStyle::default(),
         output_badge_style: crate::config::OutputBadgeStyle::default(),
         turn_summary: crate::config::TurnSummaryConfig::default(),
+        doctor_inline: crate::config::DoctorInlineConfig::default(),
     };
 
     // Render with auto_scroll=true (which will scroll down)
@@ -575,6 +576,7 @@ fn test_wide_table_and_scroll_alignment_in_timeline_render() {
                     output_style: crate::config::OutputStyle::default(),
                     output_badge_style: crate::config::OutputBadgeStyle::default(),
                     turn_summary: crate::config::TurnSummaryConfig::default(),
+                    doctor_inline: crate::config::DoctorInlineConfig::default(),
                 };
                 view.render(frame, area, &ctx);
             })
@@ -633,6 +635,7 @@ fn test_clicking_bottom_line_does_not_show_back_to_bottom_pill() {
                 output_style: crate::config::OutputStyle::default(),
                 output_badge_style: crate::config::OutputBadgeStyle::default(),
                 turn_summary: crate::config::TurnSummaryConfig::default(),
+                doctor_inline: crate::config::DoctorInlineConfig::default(),
             };
             v.render(frame, area, &ctx);
         })
@@ -702,6 +705,7 @@ fn test_long_pasted_user_prompt_shows_full_lines_and_sticky_header_wraps_full_wo
                 output_style: crate::config::OutputStyle::default(),
                 output_badge_style: crate::config::OutputBadgeStyle::default(),
                 turn_summary: crate::config::TurnSummaryConfig::default(),
+                doctor_inline: crate::config::DoctorInlineConfig::default(),
             };
             view.render(frame, area, &ctx);
         })
@@ -741,6 +745,7 @@ fn test_long_pasted_user_prompt_shows_full_lines_and_sticky_header_wraps_full_wo
                 output_style: crate::config::OutputStyle::default(),
                 output_badge_style: crate::config::OutputBadgeStyle::default(),
                 turn_summary: crate::config::TurnSummaryConfig::default(),
+                doctor_inline: crate::config::DoctorInlineConfig::default(),
             };
             view.render(frame, area, &ctx);
         })
@@ -945,6 +950,7 @@ fn test_minitest65_git_commit_timeline_entry_and_toast_short_hash_rendering() {
                 output_style: crate::config::OutputStyle::default(),
                 output_badge_style: crate::config::OutputBadgeStyle::default(),
                 turn_summary: crate::config::TurnSummaryConfig::default(),
+                doctor_inline: crate::config::DoctorInlineConfig::default(),
             };
             view.render(frame, frame.area(), &ctx);
         })
@@ -1043,6 +1049,7 @@ fn test_thought_blocks_freeze_on_tool_and_stream_transitions_never_all_ticking()
                     output_style: crate::config::OutputStyle::default(),
                     output_badge_style: crate::config::OutputBadgeStyle::default(),
                     turn_summary: crate::config::TurnSummaryConfig::default(),
+                    doctor_inline: crate::config::DoctorInlineConfig::default(),
                 };
                 view.render(frame, frame.area(), &ctx);
             })
@@ -1167,6 +1174,7 @@ fn test_thought_block_inline_token_usage_toggle_and_cache_invalidation() {
                 output_style: crate::config::OutputStyle::default(),
                 output_badge_style: crate::config::OutputBadgeStyle::default(),
                 turn_summary: crate::config::TurnSummaryConfig::default(),
+                doctor_inline: crate::config::DoctorInlineConfig::default(),
             };
             view.render(frame, frame.area(), &ctx);
         })
@@ -1242,6 +1250,7 @@ fn test_tool_card_styles_and_icon_packs_render_and_invalidate_cache() {
                     output_style: crate::config::OutputStyle::default(),
                     output_badge_style: crate::config::OutputBadgeStyle::default(),
                     turn_summary: crate::config::TurnSummaryConfig::default(),
+                    doctor_inline: crate::config::DoctorInlineConfig::default(),
                 };
                 view.render(frame, frame.area(), &ctx);
             })
@@ -1364,6 +1373,7 @@ fn test_output_frame_styles_and_output_styles_render_and_invalidate_cache() {
                 output_style: out_st,
                 output_badge_style: crate::config::OutputBadgeStyle::default(),
                 turn_summary: crate::config::TurnSummaryConfig::default(),
+                doctor_inline: crate::config::DoctorInlineConfig::default(),
             };
             view.render(frame, frame.area(), &ctx);
         })
@@ -1521,6 +1531,7 @@ fn test_output_badge_styles_animated_kaomoji_and_turn_summary_footer() {
                 output_style: OutputStyle::Default,
                 output_badge_style: badge,
                 turn_summary: summary,
+                doctor_inline: crate::config::DoctorInlineConfig::default(),
             };
             view.render(frame, frame.area(), &ctx);
         })
@@ -1612,6 +1623,7 @@ fn test_output_badge_styles_animated_kaomoji_and_turn_summary_footer() {
                     output_style: OutputStyle::Default,
                     output_badge_style: OutputBadgeStyle::KaomojiAnimated,
                     turn_summary: TurnSummaryConfig::default(),
+                    doctor_inline: crate::config::DoctorInlineConfig::default(),
                 };
                 streaming_view.render(frame, frame.area(), &ctx);
             })
@@ -1734,4 +1746,132 @@ fn test_output_badge_styles_animated_kaomoji_and_turn_summary_footer() {
         "NerdFont forced PUA unexpected:\n{nf_pua}"
     );
     crate::ui::icons::set_nerd_font_pua_override(None);
+}
+
+#[test]
+fn test_inline_doctor_timeline_card_animates_and_renders_score() {
+    use crate::config::{DoctorAnimStyle, DoctorInlineConfig, DoctorStyle};
+    use ratatui::backend::TestBackend;
+    use ratatui::Terminal;
+    use std::path::PathBuf;
+
+    let theme = Theme::default();
+    let ws = PathBuf::from("/tmp/doctor-timeline");
+    let backend = TestBackend::new(100, 20);
+    let mut terminal = Terminal::new(backend).unwrap();
+
+    // 1. Live animated ToolStart("project_doctor") transitions across frames while working
+    let mut running_view = TimelineView::new();
+    running_view.entries.push(TimelineEntry::ToolStart {
+        name: "project_doctor".to_string(),
+        command_or_path: "scope=full".to_string(),
+    });
+    let render_running =
+        |term: &mut Terminal<TestBackend>, millis: u64, cfg: DoctorInlineConfig| {
+            term.draw(|frame| {
+                let ctx = TimelineContext {
+                    theme: &theme,
+                    is_working: true,
+                    working_millis: millis,
+                    current_activity: None,
+                    spinner_style: crate::ui::animation::SpinnerStyle::default(),
+                    workspace: &ws,
+                    provider: "minimax",
+                    model: "MiniMax-M3.1-Flash",
+                    show_thought_tokens: false,
+                    tool_card_style: crate::config::ToolCardStyle::default(),
+                    tool_icon_style: crate::config::ToolIconStyle::default(),
+                    output_frame_style: crate::config::OutputFrameStyle::default(),
+                    output_style: crate::config::OutputStyle::default(),
+                    output_badge_style: crate::config::OutputBadgeStyle::default(),
+                    turn_summary: crate::config::TurnSummaryConfig::default(),
+                    doctor_inline: cfg,
+                };
+                running_view.render(frame, frame.area(), &ctx);
+            })
+            .unwrap();
+            let buf = term.backend().buffer();
+            let mut s = String::new();
+            for y in 0..buf.area.height {
+                for x in 0..buf.area.width {
+                    s.push_str(buf[(x, y)].symbol());
+                }
+                s.push('\n');
+            }
+            s
+        };
+
+    let cfg = DoctorInlineConfig {
+        style: DoctorStyle::Aura,
+        anim: DoctorAnimStyle::Pulse,
+        enabled: true,
+        show_sparkline: true,
+        show_subscores: true,
+        show_findings: true,
+    };
+    let t0 = render_running(&mut terminal, 0, cfg);
+    let t1 = render_running(&mut terminal, 360, cfg);
+    assert!(
+        t0.contains("MINIDOCTOR"),
+        "Expected MINIDOCTOR header:\n{t0}"
+    );
+    assert!(
+        t0 != t1,
+        "Inline MiniDoctor working animation must advance frames:\nt0={t0}\nt1={t1}"
+    );
+
+    // 2. Completed ToolFinished("project_doctor") renders score, stacks, NEEDEDFIX.md, and top findings
+    let mut done_view = TimelineView::new();
+    done_view.entries.push(TimelineEntry::ToolFinished {
+        name: "project_doctor".to_string(),
+        command_or_path: "scope=full".to_string(),
+        output: "\
+MiniDoctor Health Score: 92/100 (A, Excellent) (+6) · Scope: full workspace · Stacks: Rust · React · Files: 14 (22ms)
+Counts: 0 critical, 1 errors, 1 warnings, 0 dead code | Sub-scores: Correctness 94, Security 96, Perf 90, Arch 92, Maint 88
+Workspace Checklist: `.minicode/minidoctor/NEEDEDFIX.md`
+
+Top Prioritized Findings:
+- [ERR] `react/dangerously-set-inner-html` src/Card.tsx:14 — Unsanitized innerHTML | Fix: Sanitize"
+            .to_string(),
+        success: true,
+        duration_ms: Some(22),
+    });
+    terminal
+        .draw(|frame| {
+            let ctx = TimelineContext {
+                theme: &theme,
+                is_working: false,
+                working_millis: 0,
+                current_activity: None,
+                spinner_style: crate::ui::animation::SpinnerStyle::default(),
+                workspace: &ws,
+                provider: "minimax",
+                model: "MiniMax-M3.1-Flash",
+                show_thought_tokens: false,
+                tool_card_style: crate::config::ToolCardStyle::default(),
+                tool_icon_style: crate::config::ToolIconStyle::default(),
+                output_frame_style: crate::config::OutputFrameStyle::default(),
+                output_style: crate::config::OutputStyle::default(),
+                output_badge_style: crate::config::OutputBadgeStyle::default(),
+                turn_summary: crate::config::TurnSummaryConfig::default(),
+                doctor_inline: cfg,
+            };
+            done_view.render(frame, frame.area(), &ctx);
+        })
+        .unwrap();
+    let buf = terminal.backend().buffer();
+    let mut done_screen = String::new();
+    for y in 0..buf.area.height {
+        for x in 0..buf.area.width {
+            done_screen.push_str(buf[(x, y)].symbol());
+        }
+        done_screen.push('\n');
+    }
+    assert!(
+        done_screen.contains("92/100 (A)")
+            && done_screen.contains("Rust · React")
+            && done_screen.contains("NEEDEDFIX.md")
+            && done_screen.contains("react/dangerously-set-inner-html"),
+        "Completed inline MiniDoctor card missing expected fields:\n{done_screen}"
+    );
 }

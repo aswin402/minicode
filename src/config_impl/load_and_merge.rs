@@ -120,6 +120,9 @@ pub struct RawUiConfig {
     pub turn_summary_style: Option<String>,
     pub turn_summary_position: Option<String>,
     pub doctor_style: Option<String>,
+    pub doctor_anim_style: Option<String>,
+    pub show_doctor_inline_card: Option<bool>,
+    pub show_doctor_inline_findings: Option<bool>,
     pub show_doctor_sparkline: Option<bool>,
     pub show_doctor_subscores: Option<bool>,
     pub show_doctor_detail_drawer: Option<bool>,
@@ -985,6 +988,15 @@ impl Config {
         if let Some(doctor_style) = other.ui.doctor_style {
             self.ui.doctor_style = doctor_style;
         }
+        if let Some(doctor_anim_style) = other.ui.doctor_anim_style {
+            self.ui.doctor_anim_style = doctor_anim_style;
+        }
+        if let Some(v) = other.ui.show_doctor_inline_card {
+            self.ui.show_doctor_inline_card = v;
+        }
+        if let Some(v) = other.ui.show_doctor_inline_findings {
+            self.ui.show_doctor_inline_findings = v;
+        }
         if let Some(v) = other.ui.show_doctor_sparkline {
             self.ui.show_doctor_sparkline = v;
         }
@@ -1308,6 +1320,15 @@ impl Config {
         }
         if let Some(ref doctor_style) = global.ui.doctor_style {
             self.ui.doctor_style = doctor_style.clone();
+        }
+        if let Some(ref doctor_anim_style) = global.ui.doctor_anim_style {
+            self.ui.doctor_anim_style = doctor_anim_style.clone();
+        }
+        if let Some(v) = global.ui.show_doctor_inline_card {
+            self.ui.show_doctor_inline_card = v;
+        }
+        if let Some(v) = global.ui.show_doctor_inline_findings {
+            self.ui.show_doctor_inline_findings = v;
         }
         if let Some(v) = global.ui.show_doctor_sparkline {
             self.ui.show_doctor_sparkline = v;

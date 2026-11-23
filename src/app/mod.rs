@@ -657,6 +657,7 @@ impl<'a> App<'a> {
                             output_style: self.config.ui.output_style_enum(),
                             output_badge_style: self.config.ui.output_badge_style_enum(),
                             turn_summary: self.config.ui.turn_summary_config(),
+                            doctor_inline: self.config.ui.doctor_inline_config(),
                         };
                         self.timeline.render(frame, chunks[0], &timeline_ctx);
 
@@ -3198,8 +3199,16 @@ mod tests {
         assert_eq!(reloaded5.ui.turn_summary_position, "bottom_left");
         assert_eq!(reloaded5.ui.turn_summary_style, "compact");
 
-        // 9. Doctor Styles (20) + /doctor-style command + Doctor toggles in Visibility (21)
+        // 9. Doctor Styles (20) + 'a' animation cycling + /doctor-style + /doctor-anim + Visibility toggles (21)
         app.open_theme_modal(Some(crate::ui::modals::ThemeModalTab::DoctorStyles));
+        assert!(app.modal.has_live_animation());
+        // Press 'a' to cycle live working animation from pulse -> radar
+        app.handle_modal_key(
+            KeyEvent::new(KeyCode::Char('a'), KeyModifiers::NONE),
+            &control_tx,
+        )
+        .await;
+        assert_eq!(app.config.ui.doctor_anim_style, "radar");
         app.handle_modal_key(
             KeyEvent::new(KeyCode::Down, KeyModifiers::NONE),
             &control_tx,
@@ -3218,7 +3227,13 @@ mod tests {
             .expect("doctor-style command");
         assert_eq!(app.config.ui.doctor_style, "cyber");
 
-        // Toggle show_doctor_sparkline via visibility helper and persist
+        let _ = app
+            .handle_command_or_prompt("/doctor-anim kaomoji", None, &control_tx)
+            .await
+            .expect("doctor-anim command");
+        assert_eq!(app.config.ui.doctor_anim_style, "kaomoji");
+
+        // Toggle show_doctor_sparkline & show_doctor_inline_card via visibility helper and persist
         let spark_idx = crate::ui::modals::theme_select::VISIBILITY_TOGGLE_OPTIONS
             .iter()
             .position(|o| o.id == "doctor_sparkline")
@@ -3240,6 +3255,8 @@ mod tests {
 
         let reloaded6 = Config::load(Some(temp_dir.path()), None).expect("reload config 6");
         assert_eq!(reloaded6.ui.doctor_style, "cyber");
+        assert_eq!(reloaded6.ui.doctor_anim_style, "kaomoji");
         assert!(!reloaded6.ui.show_doctor_sparkline);
+        assert!(reloaded6.ui.show_doctor_inline_card);
     }
 }

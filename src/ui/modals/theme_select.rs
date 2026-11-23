@@ -1321,6 +1321,20 @@ pub static VISIBILITY_TOGGLE_OPTIONS: &[VisibilityToggleOption] = &[
         description: "Show turn-level prompt KV cache hit rate ('kv 92%') in the summary footer",
     },
     VisibilityToggleOption {
+        id: "doctor_inline_card",
+        group: "Doctor",
+        name: "Inline Doctor Timeline Card",
+        description:
+            "Render animated MiniDoctor scanning card & score gauge inline when project_doctor runs",
+    },
+    VisibilityToggleOption {
+        id: "doctor_inline_findings",
+        group: "Doctor",
+        name: "Inline Doctor Top Findings",
+        description:
+            "Show top priority CRIT/ERR/WARN findings preview inside the inline MiniDoctor card",
+    },
+    VisibilityToggleOption {
         id: "doctor_sparkline",
         group: "Doctor",
         name: "Doctor Trend Sparkline",
@@ -1370,6 +1384,8 @@ pub fn visibility_toggle_is_enabled(id: &str, ui: &crate::config::UiConfig) -> b
         "turn_cost" => ui.show_turn_cost,
         "turn_model" => ui.show_turn_model,
         "turn_kv_cache" => ui.show_turn_kv_cache,
+        "doctor_inline_card" => ui.show_doctor_inline_card,
+        "doctor_inline_findings" => ui.show_doctor_inline_findings,
         "doctor_sparkline" => ui.show_doctor_sparkline,
         "doctor_subscores" => ui.show_doctor_subscores,
         "doctor_detail_drawer" => ui.show_doctor_detail_drawer,
@@ -1404,6 +1420,14 @@ pub fn toggle_visibility_option(
         "turn_cost" => (&mut ui.show_turn_cost, "Turn Cost ($ USD)"),
         "turn_model" => (&mut ui.show_turn_model, "Turn Model Name"),
         "turn_kv_cache" => (&mut ui.show_turn_kv_cache, "Turn KV Cache %"),
+        "doctor_inline_card" => (
+            &mut ui.show_doctor_inline_card,
+            "Inline Doctor Timeline Card",
+        ),
+        "doctor_inline_findings" => (
+            &mut ui.show_doctor_inline_findings,
+            "Inline Doctor Top Findings",
+        ),
         "doctor_sparkline" => (&mut ui.show_doctor_sparkline, "Doctor Trend Sparkline"),
         "doctor_subscores" => (&mut ui.show_doctor_subscores, "Doctor Dimension Scores"),
         "doctor_detail_drawer" => (&mut ui.show_doctor_detail_drawer, "Doctor Detail Drawer"),
@@ -3445,9 +3469,40 @@ pub fn render_theme_select(
             );
         }
         crate::ui::modals::ThemeModalTab::DoctorStyles => {
+            let active_anim = ui_prefs.doctor_anim_style_enum();
+            let mut anim_spans = vec![Span::styled(
+                "    Working Anim [a / [ ]]: ",
+                Style::default()
+                    .fg(theme.brand_accent)
+                    .add_modifier(Modifier::BOLD),
+            )];
+            for &anim in crate::config::DoctorAnimStyle::all() {
+                let is_cur = anim == active_anim;
+                let lbl = format!(" {} ", anim.label());
+                if is_cur {
+                    anim_spans.push(Span::styled(
+                        lbl,
+                        Style::default()
+                            .fg(theme.bg_primary)
+                            .bg(theme.brand_accent)
+                            .add_modifier(Modifier::BOLD),
+                    ));
+                } else {
+                    anim_spans.push(Span::styled(lbl, Style::default().fg(theme.muted)));
+                }
+                anim_spans.push(Span::raw(" "));
+            }
+            content_lines.push(Line::from(anim_spans));
+            content_lines.push(Line::from(""));
+
             let live_doctor_preview = |style_id: &str| -> Vec<Line<'static>> {
                 let st = crate::config::DoctorStyle::from_str_loose(style_id);
-                crate::ui::modals::doctor::render_doctor_style_preview(st, ui_prefs, theme)
+                crate::ui::view::doctor_card::render_doctor_inline_theme_preview(
+                    st,
+                    active_anim,
+                    ui_prefs,
+                    theme,
+                )
             };
             render_style_preview_list(
                 &mut content_lines,
@@ -3457,7 +3512,7 @@ pub fn render_theme_select(
                 doctor_style_selected_index,
                 ui_prefs.doctor_style_enum().as_str(),
                 36,
-                list_max_visible,
+                list_max_visible.saturating_sub(2).max(4),
                 right_w,
                 theme,
                 Some(&live_doctor_preview),
@@ -3718,6 +3773,15 @@ pub fn render_theme_select(
         ));
         footer_spans.push(Span::styled(
             "placement   ",
+            Style::default().fg(theme.muted),
+        ));
+    } else if active_tab == crate::ui::modals::ThemeModalTab::DoctorStyles {
+        footer_spans.push(Span::styled(
+            "a/[ ] ",
+            Style::default().fg(theme.brand_accent),
+        ));
+        footer_spans.push(Span::styled(
+            "animation   ",
             Style::default().fg(theme.muted),
         ));
     }

@@ -185,7 +185,14 @@ pub const PALETTE_COMMANDS: &[PaletteCommand] = &[
     PaletteCommand {
         slash_name: "/doctor-style",
         title: "MiniDoctor UI Style",
-        description: "Switch /doctor TUI style (aura, nerdfont, kaomoji, emoji, ascii, posh, flutter, minimal, cyber, compact) or open 20. Doctor Styles",
+        description: "Switch /doctor & inline MiniDoctor card style (aura, nerdfont, kaomoji, emoji, ascii, posh, flutter, minimal, cyber, compact)",
+        category: CommandCategory::System,
+        shortcut: None,
+    },
+    PaletteCommand {
+        slash_name: "/doctor-anim",
+        title: "MiniDoctor Working Animation",
+        description: "Switch MiniDoctor live scanning animation (pulse, radar, orbit, kaomoji, blocks, ascii)",
         category: CommandCategory::System,
         shortcut: None,
     },

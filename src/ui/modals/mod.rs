@@ -248,12 +248,12 @@ impl ThemeModalTab {
                 "Style total turn tokens & duration below responses (press 'p' to change placement; toggle fields in 21. Show / Hide)",
             ),
             ThemeModalTab::DoctorStyles => (
-                "MiniDoctor Health Dashboard Styles (/doctor)",
-                "Customize /doctor card chrome, gauge bars & badges (Aura, NerdFont, Kaomoji, Emoji, ASCII, Posh, Flutter, Minimal, Cyber, Compact)",
+                "MiniDoctor Dashboard & Inline Timeline Card (/doctor)",
+                "Style /doctor & inline project_doctor cards (press 'a' or '['/']' for live working animation; toggle fields in 21. Show / Hide)",
             ),
             ThemeModalTab::Visibility => (
                 "Show / Hide TUI Elements & Doctor Options",
-                "Toggle status elements, turn summary fields, MiniDoctor sparkline/sub-scores/drawer/animation, and thought tokens",
+                "Toggle status elements, turn summary fields, inline MiniDoctor card/findings/sparkline/sub-scores, and thought tokens",
             ),
         }
     }
@@ -430,6 +430,7 @@ impl ModalState {
                     | ThemeModalTab::ActivityHintStyles
                     | ThemeModalTab::OutputFrameStyles
                     | ThemeModalTab::OutputBadgeStyles
+                    | ThemeModalTab::DoctorStyles
                     | ThemeModalTab::Visibility
             ),
             ModalState::ModelSelect { loading: true, .. } => true,

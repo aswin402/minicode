@@ -10,6 +10,8 @@ use std::hash::{Hash, Hasher};
 use std::sync::Arc;
 use unicode_width::UnicodeWidthStr;
 
+#[path = "view_impl/doctor_card.rs"]
+pub mod doctor_card;
 #[path = "view_impl/entry_renderers.rs"]
 mod entry_renderers;
 #[path = "view_impl/output_frames.rs"]
@@ -428,6 +430,7 @@ pub struct TimelineContext<'a> {
     pub output_style: crate::config::OutputStyle,
     pub output_badge_style: crate::config::OutputBadgeStyle,
     pub turn_summary: crate::config::TurnSummaryConfig,
+    pub doctor_inline: crate::config::DoctorInlineConfig,
 }
 
 impl Default for TimelineView {
@@ -1387,8 +1390,14 @@ impl TimelineView {
             TimelineEntry::ToolStart {
                 name,
                 command_or_path,
+            } => {
+                name.hash(&mut h);
+                command_or_path.hash(&mut h);
+                if is_working && doctor_card::is_doctor_tool(name) {
+                    spinner_tick.hash(&mut h);
+                }
             }
-            | TimelineEntry::ToolApproved {
+            TimelineEntry::ToolApproved {
                 name,
                 command_or_path,
             } => {
@@ -1755,20 +1764,35 @@ impl TimelineView {
                 name,
                 command_or_path,
             } => {
-                lines.extend(tool_cards::render_tool_block_lines(
-                    name,
-                    command_or_path,
-                    None,
-                    true,
-                    true,
-                    None,
-                    area_width,
-                    ctx.tool_card_style,
-                    ctx.tool_icon_style,
-                    theme.bg_primary,
-                    None,
-                    theme,
-                ));
+                if ctx.doctor_inline.enabled && doctor_card::is_doctor_tool(name) {
+                    lines.extend(doctor_card::render_inline_doctor_card(
+                        name,
+                        command_or_path,
+                        None,
+                        true,
+                        true,
+                        None,
+                        area_width,
+                        ctx.doctor_inline,
+                        ctx.working_millis,
+                        theme,
+                    ));
+                } else {
+                    lines.extend(tool_cards::render_tool_block_lines(
+                        name,
+                        command_or_path,
+                        None,
+                        true,
+                        true,
+                        None,
+                        area_width,
+                        ctx.tool_card_style,
+                        ctx.tool_icon_style,
+                        theme.bg_primary,
+                        None,
+                        theme,
+                    ));
+                }
                 lines.push(Line::from(String::new()));
             }
             TimelineEntry::ToolApproved {
@@ -1807,20 +1831,35 @@ impl TimelineView {
                 duration_ms,
                 ..
             } => {
-                lines.extend(tool_cards::render_tool_block_lines(
-                    name,
-                    command_or_path,
-                    Some(output),
-                    false,
-                    *success,
-                    *duration_ms,
-                    area_width,
-                    ctx.tool_card_style,
-                    ctx.tool_icon_style,
-                    theme.bg_primary,
-                    None,
-                    theme,
-                ));
+                if ctx.doctor_inline.enabled && doctor_card::is_doctor_tool(name) {
+                    lines.extend(doctor_card::render_inline_doctor_card(
+                        name,
+                        command_or_path,
+                        Some(output),
+                        false,
+                        *success,
+                        *duration_ms,
+                        area_width,
+                        ctx.doctor_inline,
+                        ctx.working_millis,
+                        theme,
+                    ));
+                } else {
+                    lines.extend(tool_cards::render_tool_block_lines(
+                        name,
+                        command_or_path,
+                        Some(output),
+                        false,
+                        *success,
+                        *duration_ms,
+                        area_width,
+                        ctx.tool_card_style,
+                        ctx.tool_icon_style,
+                        theme.bg_primary,
+                        None,
+                        theme,
+                    ));
+                }
                 lines.push(Line::from(String::new()));
             }
             TimelineEntry::SubagentTree(block) => {
@@ -1936,6 +1975,7 @@ impl TimelineView {
             ctx.output_style,
             ctx.output_badge_style,
             ctx.turn_summary,
+            ctx.doctor_inline,
             crate::ui::icons::use_raw_nerd_font_pua(),
         )
             .hash(&mut layout_hasher);

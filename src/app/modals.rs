@@ -759,6 +759,44 @@ impl<'a> App<'a> {
                         Some("turn_summary_position_preview".to_string()),
                     );
                 }
+                KeyCode::Char('a') | KeyCode::Char('A') | KeyCode::Char(']')
+                    if *active_tab == crate::ui::modals::ThemeModalTab::DoctorStyles =>
+                {
+                    let next_anim = self.config.ui.doctor_anim_style_enum().next();
+                    self.config.ui.doctor_anim_style = next_anim.as_str().to_string();
+                    *ui_prefs = self.config.ui.clone();
+                    let _ = self.config.save(Some(&self.workspace_root));
+                    let _ = self.config.save(None);
+                    self.toasts.push(
+                        crate::ui::ToastKind::Success,
+                        "MiniDoctor Animation Updated",
+                        format!(
+                            "Switched MiniDoctor live working animation to \"{}\".",
+                            next_anim.label()
+                        ),
+                        Some(next_anim.as_str().to_string()),
+                        Some("doctor_anim_preview".to_string()),
+                    );
+                }
+                KeyCode::Char('[')
+                    if *active_tab == crate::ui::modals::ThemeModalTab::DoctorStyles =>
+                {
+                    let prev_anim = self.config.ui.doctor_anim_style_enum().prev();
+                    self.config.ui.doctor_anim_style = prev_anim.as_str().to_string();
+                    *ui_prefs = self.config.ui.clone();
+                    let _ = self.config.save(Some(&self.workspace_root));
+                    let _ = self.config.save(None);
+                    self.toasts.push(
+                        crate::ui::ToastKind::Success,
+                        "MiniDoctor Animation Updated",
+                        format!(
+                            "Switched MiniDoctor live working animation to \"{}\".",
+                            prev_anim.label()
+                        ),
+                        Some(prev_anim.as_str().to_string()),
+                        Some("doctor_anim_preview".to_string()),
+                    );
+                }
                 KeyCode::Up | KeyCode::Char('k') => match *active_tab {
                     crate::ui::modals::ThemeModalTab::Themes => {
                         *theme_selected_index = theme_selected_index.saturating_sub(1);

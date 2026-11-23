@@ -94,8 +94,16 @@ pub const COMMAND_CATALOG_ITEMS: &[CommandCatalogItem] = &[
         category: "Display & Aesthetics",
         shortcut: "",
         description:
-            "Customize MiniDoctor TUI visual style (10 styles: aura, nerdfont, kaomoji, emoji, ascii, posh, flutter, minimal, cyber, compact)",
+            "Customize MiniDoctor modal & inline timeline card style (10 styles: aura, nerdfont, kaomoji, emoji, ascii, posh, flutter, minimal, cyber, compact)",
         example: "/doctor-style | /doctor-style cyber | /doctor-style kaomoji",
+    },
+    CommandCatalogItem {
+        name: "/doctor-anim",
+        category: "Display & Aesthetics",
+        shortcut: "",
+        description:
+            "Customize MiniDoctor live working animation in the timeline (pulse, radar, orbit, kaomoji, blocks, ascii)",
+        example: "/doctor-anim | /doctor-anim radar | /doctor-anim kaomoji",
     },
     CommandCatalogItem {
         name: "/copy",

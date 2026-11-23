@@ -1799,12 +1799,12 @@ impl AgentLoop {
                                         turn_id,
                                         tool_call.name
                                     );
-                                    Self::emit_rejected_tool_result(
+                                    Self::emit_cancelled_tool_result(
                                         self,
                                         &event_sender,
                                         turn_id,
                                         &tool_call,
-                                        "cancelled before dispatch",
+                                        0,
                                         &mut turn_tool_results,
                                     );
                                     continue;
@@ -2251,18 +2251,25 @@ impl AgentLoop {
                     // Guarantee that every tool call in pending_tool_calls has a corresponding tool result in self.messages
                     for call in &pending_tool_calls {
                         if !turn_tool_results.iter().any(|r| r.tool_id == call.id) {
-                            Self::emit_rejected_tool_result(
-                                self,
-                                &event_sender,
-                                turn_id,
-                                call,
-                                if circuit_tripped {
-                                    "aborted due to circuit breaker trip"
-                                } else {
-                                    "cancelled before dispatch"
-                                },
-                                &mut turn_tool_results,
-                            );
+                            if circuit_tripped {
+                                Self::emit_rejected_tool_result(
+                                    self,
+                                    &event_sender,
+                                    turn_id,
+                                    call,
+                                    "aborted due to circuit breaker trip",
+                                    &mut turn_tool_results,
+                                );
+                            } else {
+                                Self::emit_cancelled_tool_result(
+                                    self,
+                                    &event_sender,
+                                    turn_id,
+                                    call,
+                                    0,
+                                    &mut turn_tool_results,
+                                );
+                            }
                         }
                     }
                     break;

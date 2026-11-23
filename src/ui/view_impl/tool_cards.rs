@@ -19,6 +19,7 @@ enum ToolCategory {
     Git,
     Subagent,
     Skill,
+    Doctor,
     Generic,
 }
 
@@ -72,6 +73,8 @@ fn classify_tool_category(raw_name: &str) -> ToolCategory {
         ToolCategory::Subagent
     } else if lower.contains("vault") || lower.contains("skill") {
         ToolCategory::Skill
+    } else if lower.contains("doctor") {
+        ToolCategory::Doctor
     } else {
         ToolCategory::Generic
     }
@@ -100,6 +103,7 @@ pub fn tool_lead_icon(raw_name: &str, icon_style: ToolIconStyle, success: bool) 
             ToolCategory::Plan | ToolCategory::Git => "⎇",
             ToolCategory::Subagent => "❖",
             ToolCategory::Skill => "✦",
+            ToolCategory::Doctor => "⚕",
             ToolCategory::Generic => "◈",
         },
         ToolIconStyle::Ascii => match cat {
@@ -110,6 +114,7 @@ pub fn tool_lead_icon(raw_name: &str, icon_style: ToolIconStyle, success: bool) 
             ToolCategory::Read | ToolCategory::Search => "?",
             ToolCategory::Plan | ToolCategory::Git => "#",
             ToolCategory::Subagent => "&",
+            ToolCategory::Doctor => "+",
             ToolCategory::Skill | ToolCategory::Generic => "*",
         },
         ToolIconStyle::Emoji => match cat {
@@ -123,6 +128,7 @@ pub fn tool_lead_icon(raw_name: &str, icon_style: ToolIconStyle, success: bool) 
             ToolCategory::Git => "🌿",
             ToolCategory::Subagent => "🤖",
             ToolCategory::Skill => "🧠",
+            ToolCategory::Doctor => "🩺",
             ToolCategory::Generic => "✨",
         },
         ToolIconStyle::Kaomoji => match cat {
@@ -134,6 +140,7 @@ pub fn tool_lead_icon(raw_name: &str, icon_style: ToolIconStyle, success: bool) 
             ToolCategory::Plan | ToolCategory::Git => "( °_°)◈",
             ToolCategory::Subagent => "( ◉_◉)⊃",
             ToolCategory::Skill => "( ✧_✧)",
+            ToolCategory::Doctor => "(◉_◉)🩺",
             ToolCategory::Generic => "( •_•)",
         },
         ToolIconStyle::NerdFont => {
@@ -149,6 +156,7 @@ pub fn tool_lead_icon(raw_name: &str, icon_style: ToolIconStyle, success: bool) 
                 ToolCategory::Git => nf(NerdIcon::GitBranch),
                 ToolCategory::Subagent => nf(NerdIcon::Bot),
                 ToolCategory::Skill => nf(NerdIcon::Think),
+                ToolCategory::Doctor => nf(NerdIcon::Sparkle),
                 ToolCategory::Generic => nf(NerdIcon::Gear),
             }
         }
