@@ -707,7 +707,7 @@ if [ -f "$MINIDOCTOR_SOURCE_BIN" ]; then
     echo -e "    ${MUTED}minidoctor    ${RESET} ${GREEN}${MINIDOCTOR_TARGET_BIN}${RESET} ${CYAN}(${MD_SIZE})${RESET}"
 fi
 
-"$TARGET_BIN" stack list --json >/dev/null 2>&1 || true
+"$TARGET_BIN" stack list --json-stream >/dev/null 2>&1 || true
 STACK_DB_COUNT=$(ls -1 "$CONFIG_DIR/stacks/"*.json 2>/dev/null | wc -l || echo 0)
 echo -e "    ${MUTED}stack db      ${RESET} ${GREEN}${STACK_DB_COUNT} templates (${CONFIG_DIR}/stacks)${RESET}"
 

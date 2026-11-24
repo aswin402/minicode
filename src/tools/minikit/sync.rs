@@ -2058,8 +2058,9 @@ impl MiniKitSyncEngine {
         let bullets = Self::format_decision_bullets(workspace_root);
         let primary_hex = crate::agent::decisions::extract_decided_primary_hex(workspace_root);
         let css_vars = Self::extract_workspace_css_variables(workspace_root);
+        let (live_runtime, _) = Self::detect_runtime(workspace_root);
 
-        for file_name in ["design.md", "prd.md", "coreidea.md"] {
+        for file_name in ["design.md", "prd.md", "coreidea.md", "content.md"] {
             let path = core_dir.join(file_name);
             let Ok(mut content) = fs::read_to_string(&path) else {
                 continue;
@@ -2067,13 +2068,28 @@ impl MiniKitSyncEngine {
             let original = content.clone();
             let mut modified = false;
 
+            if live_runtime != "generic" {
+                let stale_paren = "(`generic` runtime)";
+                let fresh_paren = format!("(`{live_runtime}` runtime)");
+                if content.contains(stale_paren) {
+                    content = content.replace(stale_paren, &fresh_paren);
+                    modified = true;
+                }
+                let stale_conv = "idiomatic `generic` conventions";
+                let fresh_conv = format!("idiomatic `{live_runtime}` conventions");
+                if content.contains(stale_conv) {
+                    content = content.replace(stale_conv, &fresh_conv);
+                    modified = true;
+                }
+            }
+
             if file_name == "design.md"
                 && Self::sync_design_doc_tokens(&mut content, primary_hex.as_deref(), &css_vars)
             {
                 modified = true;
             }
 
-            if !bullets.is_empty() {
+            if !bullets.is_empty() && file_name != "content.md" {
                 if let Some(sec_start) = content.find("## Recorded User Decisions") {
                     let after_heading = sec_start + "## Recorded User Decisions".len();
                     let sec_end = content[after_heading..]
@@ -3995,6 +4011,43 @@ export function App() {
         assert!(
             !design.contains("Habit &amp; Focus"),
             "raw HTML entity leaked into design.md:\n{design}"
+        );
+    }
+
+    #[test]
+    fn test_sync_refreshes_stale_generic_runtime_after_stack_scaffold() {
+        let temp = tempfile::tempdir().unwrap();
+        let ws = temp.path();
+
+        // 1. Plan created BEFORE stack exists -> coreidea.md & content.md get `generic` runtime
+        MiniKitSyncEngine::ensure_core_docs_for_plan(
+            ws,
+            "Ledger & Pulse",
+            &["Scaffold React Vite app".to_string()],
+            None,
+            None,
+            None,
+            None,
+            &[],
+        );
+        assert!(fs::read_to_string(ws.join("minikit_docs/core/coreidea.md"))
+            .unwrap()
+            .contains("(`generic` runtime)"));
+
+        // 2. Stack scaffolded with package.json + bun.lock, then sync runs -> upgrades to `bun` runtime
+        fs::write(ws.join("package.json"), r#"{"name":"ledger"}"#).unwrap();
+        fs::write(ws.join("bun.lock"), "").unwrap();
+        MiniKitSyncEngine::sync_decisions_into_core_docs(ws);
+
+        let coreidea = fs::read_to_string(ws.join("minikit_docs/core/coreidea.md")).unwrap();
+        let content = fs::read_to_string(ws.join("minikit_docs/core/content.md")).unwrap();
+        assert!(
+            coreidea.contains("(`bun` runtime)") && !coreidea.contains("`generic`"),
+            "coreidea.md still had generic runtime:\n{coreidea}"
+        );
+        assert!(
+            content.contains("(`bun` runtime)") && !content.contains("`generic`"),
+            "content.md still had generic runtime:\n{content}"
         );
     }
 }

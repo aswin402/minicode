@@ -381,8 +381,8 @@ pub fn review_structural(workspace_root: &Path, input: PlanReviewInput<'_>) -> P
 
 /// Maximum characters of spec text included in the LLM review prompt.
 const LLM_REVIEW_SPEC_CHARS: usize = 6000;
-/// Upper bound on the LLM review call.
-const LLM_REVIEW_TIMEOUT_SECS: u64 = 60;
+/// Upper bound on the lightweight advisory LLM plan review call.
+const LLM_REVIEW_TIMEOUT_SECS: u64 = 20;
 
 fn build_llm_prompt(
     workspace_root: &Path,
@@ -459,7 +459,10 @@ pub async fn review_semantic(
         ),
         crate::agent::types::Message::user(prompt),
     ];
-    let options = crate::agent::provider::CompletionOptions::new(model);
+    let mut options = crate::agent::provider::CompletionOptions::new(model);
+    options.max_tokens = 1024;
+    options.temperature = 0.0;
+    options.reasoning_effort = Some("low".to_string());
     let call = provider.completion(&messages, &[], &options);
     match tokio::time::timeout(
         std::time::Duration::from_secs(LLM_REVIEW_TIMEOUT_SECS),

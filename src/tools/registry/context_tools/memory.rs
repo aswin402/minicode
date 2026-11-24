@@ -958,6 +958,9 @@ pub async fn dispatch(
             let topology_note = plan_dag.format_topology_note();
             let _ = std::fs::remove_file(workspace_root.join(".minicode/plan/last_verify.json"));
             let _ = std::fs::remove_file(workspace_root.join(".minicode/plan/last_review.json"));
+            let _ = std::fs::remove_file(
+                workspace_root.join(".minicode/plan/review_subagent_runs.json"),
+            );
             let mut dag_target_files: Vec<String> = Vec::new();
             for node in &plan_dag.nodes {
                 for tf in &node.target_files {
@@ -1328,6 +1331,9 @@ pub async fn dispatch(
             match wm.archive_plan() {
                 Ok(Some(archive_path)) => {
                     crate::agent::boulder::BoulderState::clear(workspace_root);
+                    let _ = std::fs::remove_file(
+                        workspace_root.join(".minicode/plan/review_subagent_runs.json"),
+                    );
                     let rel_archive = archive_path
                         .strip_prefix(workspace_root)
                         .unwrap_or(&archive_path)

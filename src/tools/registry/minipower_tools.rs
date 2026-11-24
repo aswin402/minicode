@@ -737,7 +737,7 @@ async fn run_reviewer_subagent(
     // code review out to 20-30 turns, and strip browser_* tools so code reviewers never clobber
     // the parent session's pooled browser instance.
     let turn_cap = if is_rereview {
-        config.max_turns.min(5)
+        config.max_turns.min(4)
     } else {
         config.max_turns.min(8)
     };
@@ -762,6 +762,39 @@ async fn run_reviewer_subagent(
         ),
         Err(e) => format!("\n! Reviewer subagent could not run: {}\n", e),
     }
+}
+
+/// Durable file tracking how many Reviewer MiniPub subagents have already executed during the
+/// current active plan. Unlike `last_review.json` (which is invalidated on every source edit),
+/// this counter persists across fix edits and is only reset on `create_plan` / `power_plan` /
+/// `archive_plan`, guaranteeing that repeated `power_review(stage="both")` calls cannot cause an
+/// unbounded reviewer loop.
+const REVIEW_SUBAGENT_RUNS_FILE: &str = ".minicode/plan/review_subagent_runs.json";
+
+fn read_review_subagent_runs(workspace_root: &Path) -> u8 {
+    std::fs::read_to_string(workspace_root.join(REVIEW_SUBAGENT_RUNS_FILE))
+        .ok()
+        .and_then(|raw| serde_json::from_str::<serde_json::Value>(&raw).ok())
+        .and_then(|v| v.get("runs").and_then(|n| n.as_u64()))
+        .map(|n| n.min(u8::MAX as u64) as u8)
+        .unwrap_or(0)
+}
+
+fn increment_review_subagent_runs(workspace_root: &Path) -> u8 {
+    let next = read_review_subagent_runs(workspace_root).saturating_add(1);
+    let path = workspace_root.join(REVIEW_SUBAGENT_RUNS_FILE);
+    if let Some(parent) = path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    let payload = json!({
+        "runs": next,
+        "timestamp": chrono::Utc::now().to_rfc3339(),
+    });
+    let _ = std::fs::write(
+        path,
+        serde_json::to_string_pretty(&payload).unwrap_or_default(),
+    );
+    next
 }
 
 /// Decides whether `power_review` should dispatch a Reviewer MiniPub subagent.
@@ -1269,6 +1302,7 @@ pub async fn dispatch(
                     let _ = std::fs::remove_file(
                         workspace_root.join(".minicode/plan/last_review.json"),
                     );
+                    let _ = std::fs::remove_file(workspace_root.join(REVIEW_SUBAGENT_RUNS_FILE));
                     let has_existing_roadmap = wm.read_active_plan_summary().is_some();
                     if has_existing_roadmap {
                         wm.init_tactical_subplan(topic, &steps)?;
@@ -1592,12 +1626,15 @@ pub async fn dispatch(
                 let existing_active_reviewer =
                     crate::agent::subagent::try_get_global_subagent_pool()
                         .is_some_and(|p| p.has_active_worker_with_role(SubagentRole::Reviewer));
+                let prior_subagent_runs = read_review_subagent_runs(workspace_root);
+                let effective_is_rereview = is_rereview || prior_subagent_runs >= 1;
+                let effective_fix_round = fix_round.max(prior_subagent_runs);
                 let should_run_subagent_review = should_spawn_power_review_subagent(
                     explicit_subagent,
                     report.files_audited,
                     actionable_count,
-                    is_rereview,
-                    fix_round,
+                    effective_is_rereview,
+                    effective_fix_round,
                     has_live_runtime,
                 );
                 if existing_active_reviewer {
@@ -1623,22 +1660,23 @@ pub async fn dispatch(
                             workspace_root,
                             &stage_arg,
                             staged_only,
-                            is_rereview,
+                            effective_is_rereview,
                             &subagent_payload,
                             &reviewer_target_files,
                             has_tracked_diff,
                         )
                         .await,
                     );
+                    let _ = increment_review_subagent_runs(workspace_root);
                 } else if explicit_subagent.is_none()
                     && has_live_runtime
                     && report.files_audited >= 3
-                    && is_rereview
+                    && effective_is_rereview
                     && actionable_count == 0
-                    && fix_round >= 2
+                    && effective_fix_round >= 2
                 {
                     formatted.push_str(&format!(
-                        "\n✔ **Re-Review Gate Complete (fix_round={fix_round})**: Static audit passed with 0 HIGH/MEDIUM findings — skipping another Reviewer subagent pass to prevent endless nitpick loops (pass `subagent_review=true` to force). Proceed directly to `power_verify` / `archive_plan`.\n"
+                        "\n✔ **Re-Review Gate Complete (fix_round={effective_fix_round}, prior_reviewer_runs={prior_subagent_runs})**: Static audit passed with 0 HIGH/MEDIUM findings — skipping another Reviewer subagent pass to prevent endless nitpick loops (pass `subagent_review=true` to force). Proceed directly to `power_verify` / `archive_plan`.\n"
                     ));
                 }
                 let reviewer_still_running = crate::agent::subagent::try_get_global_subagent_pool()
@@ -2509,5 +2547,48 @@ diff --git a/old.ts b/old.ts
             desc.contains("auto-enabled") && !desc.contains("Default false"),
             "subagent_review schema description must match actual default behavior, got: {desc}"
         );
+    }
+
+    #[test]
+    fn test_durable_review_subagent_runs_caps_repeated_stage_both_calls() {
+        let temp = tempfile::tempdir().unwrap();
+        let ws = temp.path();
+
+        assert_eq!(read_review_subagent_runs(ws), 0);
+        // Round 0: full review spawns subagent
+        let prior0 = read_review_subagent_runs(ws);
+        assert!(should_spawn_power_review_subagent(
+            None,
+            10,
+            0,
+            prior0 >= 1,
+            0u8.max(prior0),
+            true
+        ));
+        assert_eq!(increment_review_subagent_runs(ws), 1);
+
+        // Round 1 (even if caller passes stage="both" with fix_round=0): auto-downgraded to scoped re-review, allowed once
+        let prior1 = read_review_subagent_runs(ws);
+        assert!(prior1 >= 1);
+        assert!(should_spawn_power_review_subagent(
+            None,
+            10,
+            0,
+            prior1 >= 1,
+            0u8.max(prior1),
+            true
+        ));
+        assert_eq!(increment_review_subagent_runs(ws), 2);
+
+        // Round 2+ with 0 actionable static findings: MUST skip spawning reviewer-3 / reviewer-4 even when stage="both" & fix_round=0
+        let prior2 = read_review_subagent_runs(ws);
+        assert!(!should_spawn_power_review_subagent(
+            None,
+            10,
+            0,
+            prior2 >= 1,
+            0u8.max(prior2),
+            true
+        ));
     }
 }
