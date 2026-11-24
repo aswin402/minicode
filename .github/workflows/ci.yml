@@ -30,7 +30,15 @@ jobs:
         run: cargo check --workspace --all-targets --all-features --locked
 
       - name: Clippy Lints
-        run: cargo clippy --workspace --lib --bins --all-features --locked -- -D warnings
+        shell: bash
+        run: |
+          set -o pipefail
+          if ! cargo clippy --workspace --lib --bins --all-features --locked -- -D warnings 2>&1 | tee /tmp/clippy.log; then
+            grep -E '^(error|  --> )' /tmp/clippy.log | head -n 20 | while IFS= read -r line; do
+              echo "::error::${line}"
+            done
+            exit 1
+          fi
 
   test-linux:
     name: Test Suite (Ubuntu)

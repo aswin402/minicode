@@ -58,20 +58,42 @@ jobs:
           key: release-${{ matrix.target }}
 
       - name: Build companion binaries (minidoctor, minibrowse)
+        shell: bash
         env:
           CARGO_INCREMENTAL: "0"
           CARGO_PROFILE_RELEASE_OPT_LEVEL: "2"
           CARGO_PROFILE_RELEASE_LTO: "false"
           CARGO_PROFILE_RELEASE_CODEGEN_UNITS: "64"
-        run: cargo build --release --locked --target ${{ matrix.target }} -j 2 -p minidoctor -p minibrowse
+        run: |
+          set -o pipefail
+          if ! cargo build --release --locked --target ${{ matrix.target }} -j 2 -p minidoctor -p minibrowse 2>&1 | tee /tmp/build-companions.log; then
+            grep -E '^(error|Caused by:|  --> )' /tmp/build-companions.log | head -n 15 | while IFS= read -r line; do
+              echo "::error::${line}"
+            done
+            tail -n 20 /tmp/build-companions.log | head -n 5 | while IFS= read -r line; do
+              echo "::error::${line}"
+            done
+            exit 1
+          fi
 
       - name: Build minicode release binary
+        shell: bash
         env:
           CARGO_INCREMENTAL: "0"
           CARGO_PROFILE_RELEASE_OPT_LEVEL: "2"
           CARGO_PROFILE_RELEASE_LTO: "false"
           CARGO_PROFILE_RELEASE_CODEGEN_UNITS: "64"
-        run: cargo build --release --locked --target ${{ matrix.target }} -j 1 --bin minicode
+        run: |
+          set -o pipefail
+          if ! cargo build --release --locked --target ${{ matrix.target }} -j 1 --bin minicode 2>&1 | tee /tmp/build-minicode.log; then
+            grep -E '^(error|Caused by:|  --> )' /tmp/build-minicode.log | head -n 15 | while IFS= read -r line; do
+              echo "::error::${line}"
+            done
+            tail -n 20 /tmp/build-minicode.log | head -n 5 | while IFS= read -r line; do
+              echo "::error::${line}"
+            done
+            exit 1
+          fi
 
       - name: Package binaries (Unix)
         if: matrix.archive_ext == 'tar.gz'
@@ -137,6 +159,7 @@ jobs:
   publish-release:
     name: Publish GitHub Release
     needs: build-release
+    if: always() && (needs.build-release.result == 'success' || needs.build-release.result == 'failure')
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
@@ -153,7 +176,13 @@ jobs:
         run: |
           set -euo pipefail
           cd release-assets
-          cat *.sha256 | sort -k2 > checksums.txt
+          shopt -s nullglob
+          sha_files=(*.sha256)
+          if [ "${#sha_files[@]}" -eq 0 ]; then
+            echo "::error::No platform archives were produced; aborting release publish."
+            exit 1
+          fi
+          cat "${sha_files[@]}" | sort -k2 > checksums.txt
           cp ../install.sh ./install.sh
           cp ../install.ps1 ./install.ps1
           ls -la

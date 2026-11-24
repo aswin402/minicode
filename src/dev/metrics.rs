@@ -177,7 +177,7 @@ pub fn sample_process_metrics(pid: u32) -> DevProcessResourceUsage {
     #[cfg(not(target_os = "linux"))]
     {
         if !is_self {
-            usage.open_ports = find_open_process_ports(pid);
+            usage.open_ports = crate::dev::ports::find_open_process_ports(pid);
         }
     }
 
