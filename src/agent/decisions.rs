@@ -241,7 +241,8 @@ pub fn upsert_decision(
 /// or defined via the resolved CSS custom property graph (`--*`) in workspace stylesheets.
 #[must_use]
 pub fn extract_decided_primary_hex(workspace_root: &Path) -> Option<String> {
-    // 1. Check `.minicode/decisions.md` (latest entries first) for an explicit `#RRGGBB` token on accent/palette lines.
+    // 1. Check `.minicode/decisions.md` (latest entries first) for an explicit `#RRGGBB` token
+    //    associated with an accent/primary role (never mistaking background/surface hexes on the same line).
     if let Ok(content) = std::fs::read_to_string(decisions_path(workspace_root)) {
         if let Some(hex) = content
             .lines()
@@ -252,7 +253,7 @@ pub fn extract_decided_primary_hex(workspace_root: &Path) -> Option<String> {
                     .iter()
                     .any(|cue| lower.contains(cue))
             })
-            .find_map(extract_first_hex_color)
+            .find_map(extract_accent_hex_from_decision_line)
         {
             return Some(hex);
         }
@@ -322,6 +323,109 @@ pub fn extract_decided_primary_hex(workspace_root: &Path) -> Option<String> {
     }
 
     None
+}
+
+/// Extracts the `#RRGGBB` hex token on a `.minicode/decisions.md` line that is most strongly tied
+/// to an accent/primary/brand role, skipping hex codes explicitly labeled as background/ground/page/
+/// surface/border/text (e.g. `obsidian ground (#07080A page) with mint accent (#5EEAD4 primary)`).
+fn extract_accent_hex_from_decision_line(line: &str) -> Option<String> {
+    let bytes = line.as_bytes();
+    let mut hex_spans: Vec<(usize, usize, String)> = Vec::new();
+    let mut idx = 0;
+    while idx + 7 <= bytes.len() {
+        if bytes[idx] == b'#'
+            && bytes[idx + 1..idx + 7].iter().all(u8::is_ascii_hexdigit)
+            && bytes.get(idx + 7).is_none_or(|b| !b.is_ascii_hexdigit())
+        {
+            hex_spans.push((idx, idx + 7, line[idx..idx + 7].to_ascii_lowercase()));
+            idx += 7;
+        } else {
+            idx += 1;
+        }
+    }
+    if hex_spans.is_empty() {
+        return None;
+    }
+
+    const NEGATIVE_ROLE_WORDS: &[&str] = &[
+        "ground",
+        "page",
+        "canvas",
+        "background",
+        "bg",
+        "surface",
+        "card",
+        "panel",
+        "border",
+        "hairline",
+        "ink",
+        "foreground",
+        "text",
+        "muted",
+        "subtle",
+        "on-primary",
+    ];
+    const POSITIVE_ROLE_WORDS: &[&str] = &[
+        "primary",
+        "accent",
+        "brand",
+        "cta",
+        "highlight",
+        "emerald",
+        "mint",
+        "cyan",
+        "teal",
+        "amber",
+        "coral",
+        "indigo",
+        "violet",
+    ];
+
+    let lower = line.to_ascii_lowercase();
+    let has_word = |slice: &str, words: &[&str]| -> bool {
+        slice
+            .split(|c: char| !c.is_ascii_alphanumeric() && c != '-')
+            .any(|tok| !tok.is_empty() && words.contains(&tok))
+    };
+
+    let mut best: Option<(i32, String)> = None;
+    for (start, end, hex) in &hex_spans {
+        let clause_start = lower[..*start]
+            .rfind(['/', ',', ';', '.', ')'])
+            .map_or(0, |p| p + 1);
+        let clause_end = lower[*end..]
+            .find(['/', ',', ';', '.', ')'])
+            .map_or(lower.len(), |p| *end + p);
+        let before_clause = &lower[clause_start..*start];
+        let after_clause = &lower[*end..clause_end];
+
+        let mut score: i32 = 0;
+        if has_word(after_clause, POSITIVE_ROLE_WORDS) {
+            score += 12;
+        }
+        if has_word(before_clause, POSITIVE_ROLE_WORDS) {
+            score += 10;
+        }
+        if has_word(after_clause, NEGATIVE_ROLE_WORDS) {
+            score -= 15;
+        }
+        if has_word(before_clause, NEGATIVE_ROLE_WORDS) {
+            score -= 10;
+        }
+        if hex_spans.len() == 1 && score == 0 {
+            score = 1;
+        }
+
+        if score > 0
+            && best
+                .as_ref()
+                .is_none_or(|(best_score, _)| score > *best_score)
+        {
+            best = Some((score, hex.clone()));
+        }
+    }
+
+    best.map(|(_, hex)| hex)
 }
 
 fn extract_first_hex_color(line: &str) -> Option<String> {
@@ -766,6 +870,46 @@ mod tests {
         assert_eq!(
             extract_decided_primary_hex(temp.path()).as_deref(),
             Some("#35d6e8")
+        );
+    }
+
+    #[test]
+    fn test_extract_decided_primary_hex_ignores_ground_and_surface_hexes_on_same_line() {
+        let temp = tempfile::tempdir().unwrap();
+        upsert_decision(
+            temp.path(),
+            "Obsidian and Mint Visual Direction",
+            "Visual direction: dark obsidian ground (#07080A page / #0F1114 surface) with mint accent (#5EEAD4 primary, #10B981 deep).",
+            None,
+        )
+        .unwrap();
+
+        assert_eq!(
+            extract_decided_primary_hex(temp.path()).as_deref(),
+            Some("#5eead4")
+        );
+    }
+
+    #[test]
+    fn test_extract_decided_primary_hex_falls_back_to_css_when_decision_only_names_canvas() {
+        let temp = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(temp.path().join("src")).unwrap();
+        std::fs::write(
+            temp.path().join("src/index.css"),
+            ":root {\n  --background: #07080a;\n  --primary: #5eead4;\n}\n",
+        )
+        .unwrap();
+        upsert_decision(
+            temp.path(),
+            "Palette",
+            "Palette uses #07080A background and #0F1216 surface.",
+            None,
+        )
+        .unwrap();
+
+        assert_eq!(
+            extract_decided_primary_hex(temp.path()).as_deref(),
+            Some("#5eead4")
         );
     }
 }

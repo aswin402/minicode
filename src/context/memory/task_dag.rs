@@ -797,20 +797,33 @@ pub fn hydrate_canonical_spec_if_stub(
         title
     );
 
+    let mut section_num = 1usize;
+
     if let Some(arch) = architecture.map(str::trim).filter(|a| !a.is_empty()) {
-        content.push_str("## 1. Architecture & System Invariants\n\n");
+        content.push_str(&format!(
+            "## {}. Architecture & System Invariants\n\n",
+            section_num
+        ));
         content.push_str(arch);
         content.push_str("\n\n");
+        section_num += 1;
     }
 
     if let Some(dec_md) = decisions {
-        content.push_str("## 2. Settled Architectural Decisions\n\n");
+        content.push_str(&format!(
+            "## {}. Settled Architectural Decisions\n\n",
+            section_num
+        ));
         content.push_str(dec_md.trim());
         content.push_str("\n\n");
+        section_num += 1;
     }
 
     if !dag.nodes.is_empty() {
-        content.push_str("## 3. Module Ownership & Verification Contracts\n\n");
+        content.push_str(&format!(
+            "## {}. Module Ownership & Verification Contracts\n\n",
+            section_num
+        ));
         for node in &dag.nodes {
             let files_part = if node.target_files.is_empty() {
                 String::new()
@@ -971,5 +984,25 @@ mod tests {
         assert!(worker_prompt.contains("normalizeSeries"));
         assert!(worker_prompt.contains("[D1]"));
         assert!(worker_prompt.contains("SVG sparklines"));
+    }
+
+    #[test]
+    fn test_hydrate_spec_uses_contiguous_heading_numbers_without_decisions() {
+        let tmp = tempfile::tempdir().unwrap();
+        let ws = tmp.path();
+        let raw_args = json!({
+            "steps": [
+                { "id": "t1_core", "title": "Build core module", "target_files": ["src/core.ts"], "verify_cmd": "bun test" }
+            ]
+        });
+        let steps = vec!["Build core module".to_string()];
+        let dag = PlanDag::from_plan_args("Tracker", &raw_args, &steps, &[Vec::new()]).unwrap();
+
+        hydrate_canonical_spec_if_stub(ws, "Tracker", Some("Layered TypeScript core"), &dag);
+
+        let spec = std::fs::read_to_string(ws.join("minikit_docs/core/spec.md")).unwrap();
+        assert!(spec.contains("## 1. Architecture & System Invariants"));
+        assert!(spec.contains("## 2. Module Ownership & Verification Contracts"));
+        assert!(!spec.contains("## 3."), "Must not skip heading 2:\n{spec}");
     }
 }

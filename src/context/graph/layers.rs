@@ -135,7 +135,7 @@ impl LayerClassifier {
             return ArchitecturalLayer::Data;
         }
 
-        // 4. Utility & Support
+        // 4. Utility & Support (including build/linter/tooling configs at repo root)
         const UTIL_PATHS: &[&str] = &["/utils/", "/util/", "/helpers/", "/common/"];
         const UTIL_FILES: &[&str] = &[
             "error.rs",
@@ -144,8 +144,20 @@ impl LayerClassifier {
             "config.rs",
             "format.rs",
         ];
+        const CONFIG_SUFFIXES: &[&str] = &[
+            ".config.js",
+            ".config.ts",
+            ".config.mjs",
+            ".config.cjs",
+            ".config.mts",
+            ".config.cts",
+        ];
 
-        if contains_any(&path_str, UTIL_PATHS) || UTIL_FILES.contains(&file_name.as_str()) {
+        if contains_any(&path_str, UTIL_PATHS)
+            || UTIL_FILES.contains(&file_name.as_str())
+            || ends_with_any(&file_name, CONFIG_SUFFIXES)
+            || (file_name.starts_with("tsconfig") && file_name.ends_with(".json"))
+        {
             return ArchitecturalLayer::Utility;
         }
 
@@ -211,6 +223,18 @@ mod tests {
         assert_eq!(
             LayerClassifier::classify_path(&PathBuf::from("src/agent/loop.rs")),
             ArchitecturalLayer::Service
+        );
+        assert_eq!(
+            LayerClassifier::classify_path(&PathBuf::from("eslint.config.js")),
+            ArchitecturalLayer::Utility
+        );
+        assert_eq!(
+            LayerClassifier::classify_path(&PathBuf::from("vite.config.ts")),
+            ArchitecturalLayer::Utility
+        );
+        assert_eq!(
+            LayerClassifier::classify_path(&PathBuf::from("tsconfig.app.json")),
+            ArchitecturalLayer::Utility
         );
     }
 

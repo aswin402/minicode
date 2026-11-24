@@ -1031,7 +1031,190 @@ impl VerificationBarrier {
         false
     }
 
-    /// Gate 2: Reproducer / Bug Reproduction Test Execution
+    fn is_test_file_path(rel: &str) -> bool {
+        let lower = rel.to_ascii_lowercase();
+        lower.starts_with("tests/")
+            || lower.contains("/__tests__/")
+            || lower.starts_with("__tests__/")
+            || lower.contains("test_")
+            || lower.contains("_test.")
+            || lower.contains(".test.")
+            || lower.contains(".spec.")
+            || lower.contains("repro_")
+    }
+
+    fn is_js_ts_test_file(rel: &str) -> bool {
+        let lower = rel.to_ascii_lowercase();
+        let is_js_ts = lower.ends_with(".ts")
+            || lower.ends_with(".tsx")
+            || lower.ends_with(".js")
+            || lower.ends_with(".jsx")
+            || lower.ends_with(".mjs")
+            || lower.ends_with(".cjs");
+        is_js_ts && Self::is_test_file_path(&lower)
+    }
+
+    fn detect_js_test_command(
+        workspace_root: &Path,
+    ) -> Option<(&'static str, Vec<&'static str>, &'static str)> {
+        let pkg_path = workspace_root.join("package.json");
+        let raw = std::fs::read_to_string(&pkg_path).ok()?;
+        let parsed: serde_json::Value = serde_json::from_str(&raw).ok()?;
+        let test_script = parsed
+            .get("scripts")
+            .and_then(|s| s.get("test"))
+            .and_then(|t| t.as_str())
+            .map(str::trim)
+            .filter(|s| !s.is_empty())?;
+        if test_script
+            .to_ascii_lowercase()
+            .contains("no test specified")
+        {
+            return None;
+        }
+        // Only run JS/TS tests automatically when dependencies are installed on disk so bare
+        // scaffolding or offline temp fixtures without `node_modules` don't spuriously fail.
+        if !workspace_root.join("node_modules").is_dir() {
+            return None;
+        }
+        if workspace_root.join("bun.lock").is_file() || workspace_root.join("bun.lockb").is_file() {
+            Some(("bun", vec!["run", "test"], "bun run test"))
+        } else {
+            Some(("npm", vec!["test"], "npm test"))
+        }
+    }
+
+    fn workspace_has_js_tests(workspace_root: &Path, modified_files: &[String]) -> bool {
+        if modified_files.iter().any(|f| Self::is_js_ts_test_file(f)) {
+            return true;
+        }
+        for root_dir in ["src", "tests", "__tests__"] {
+            let dir = workspace_root.join(root_dir);
+            if !dir.is_dir() {
+                continue;
+            }
+            let walker = ignore::WalkBuilder::new(&dir)
+                .max_depth(Some(6))
+                .hidden(false)
+                .build();
+            for entry in walker.flatten() {
+                if !entry.file_type().is_some_and(|ft| ft.is_file()) {
+                    continue;
+                }
+                let rel = entry
+                    .path()
+                    .strip_prefix(workspace_root)
+                    .unwrap_or(entry.path())
+                    .to_string_lossy();
+                if Self::is_js_ts_test_file(&rel) {
+                    return true;
+                }
+            }
+        }
+        false
+    }
+
+    fn run_gate2_command(
+        workspace_root: &Path,
+        program: &str,
+        args: &[&str],
+        label: &str,
+        remediation: String,
+    ) -> Result<bool, GateStatus> {
+        let mut cmd = Command::new(program);
+        cmd.args(args)
+            .current_dir(workspace_root)
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped());
+        #[cfg(unix)]
+        {
+            use std::os::unix::process::CommandExt;
+            cmd.process_group(0);
+        }
+
+        let child = match cmd.spawn() {
+            Ok(c) => c,
+            Err(e) => {
+                tracing::warn!(
+                    "Failed to spawn test runner `{}` for Gate 2: {}",
+                    program,
+                    e
+                );
+                return Ok(false);
+            }
+        };
+
+        let child_pid = child.id();
+        let (tx, rx) = mpsc::channel();
+        std::thread::spawn(move || {
+            let _ = tx.send(child.wait_with_output());
+        });
+
+        match rx.recv_timeout(Duration::from_millis(VERIFICATION_TEST_TIMEOUT_MS)) {
+            Ok(Ok(output)) => {
+                if !output.status.success() {
+                    let stderr = String::from_utf8_lossy(&output.stderr);
+                    let stdout = String::from_utf8_lossy(&output.stdout);
+                    let err_msg = if !stderr.trim().is_empty() {
+                        stderr.lines().take(6).collect::<Vec<_>>().join("\n")
+                    } else {
+                        stdout.lines().take(6).collect::<Vec<_>>().join("\n")
+                    };
+                    return Err(GateStatus::Failed {
+                        gate_name: "Gate 2: Reproducer & Test Execution",
+                        reason: format!(
+                            "Test target `{}` failed verification:\n{}",
+                            label, err_msg
+                        ),
+                        actionable_remediation: remediation,
+                    });
+                }
+                Ok(true)
+            }
+            Ok(Err(e)) => {
+                tracing::warn!(
+                    "Failed waiting on test runner `{}` for Gate 2: {}",
+                    program,
+                    e
+                );
+                Ok(false)
+            }
+            Err(_) => {
+                #[cfg(unix)]
+                if child_pid > 0 {
+                    let pgid = -(child_pid as i32);
+                    // SAFETY: child was spawned with process_group(0) so its PGID equals child_pid.
+                    unsafe {
+                        libc::kill(pgid, libc::SIGTERM);
+                        libc::kill(pgid, libc::SIGKILL);
+                        libc::kill(child_pid as i32, libc::SIGKILL);
+                    }
+                }
+                #[cfg(not(unix))]
+                {
+                    let _ = Command::new("kill")
+                        .args(["-9", &child_pid.to_string()])
+                        .status();
+                }
+                tracing::warn!(
+                    "Gate 2 test execution `{}` timed out ({}ms); killed process group for pid {}",
+                    label,
+                    VERIFICATION_TEST_TIMEOUT_MS,
+                    child_pid
+                );
+                Err(GateStatus::Failed {
+                    gate_name: "Gate 2: Reproducer & Test Execution",
+                    reason: format!(
+                        "Test runner `{}` timed out after {}ms.",
+                        label, VERIFICATION_TEST_TIMEOUT_MS
+                    ),
+                    actionable_remediation: remediation,
+                })
+            }
+        }
+    }
+
+    /// Gate 2: Reproducer / Bug Reproduction & Workspace Test Suite Execution
     pub fn check_gate2_reproducer_test(
         workspace_root: &Path,
         modified_files: &[String],
@@ -1042,127 +1225,88 @@ impl VerificationBarrier {
             .into_iter()
             .find(|r| matches!(r.status, ReproducerPhase::RedConfirmed { .. }));
 
-        // 2. Find if any test file was modified in this turn
-        let modified_test = modified_files.iter().find(|f| {
-            f.starts_with("tests/")
-                || f.contains("test_")
-                || f.contains("_test.")
-                || f.contains("repro_")
-        });
+        // 2. Find if any Rust integration test file was modified in this turn
+        let modified_rust_test = modified_files
+            .iter()
+            .find(|f| f.starts_with("tests/") && f.ends_with(".rs"));
 
-        // Determine target test path
-        let (test_rel_path, is_tracked_repro) = if let Some(pending) = pending_repro {
-            (pending.file_path, true)
-        } else if let Some(m) = modified_test {
-            (m.clone(), false)
+        let rust_target = if let Some(pending) = pending_repro {
+            Some((pending.file_path, true))
         } else {
-            return GateStatus::Skipped {
-                reason:
-                    "No reproducer script, test target, or active reproducer guard in this turn.",
-            };
+            modified_rust_test.map(|m| (m.clone(), false))
         };
 
-        // For Rust tests in tests/<target>.rs, execute single target
-        if test_rel_path.starts_with("tests/") && test_rel_path.ends_with(".rs") {
-            let target_name = test_rel_path
-                .trim_start_matches("tests/")
-                .trim_end_matches(".rs");
-
-            let mut cmd = Command::new("cargo");
-            cmd.args(["test", "-j", "1", "--test", target_name])
-                .current_dir(workspace_root)
-                .stdout(std::process::Stdio::piped())
-                .stderr(std::process::Stdio::piped());
-            #[cfg(unix)]
-            {
-                use std::os::unix::process::CommandExt;
-                cmd.process_group(0);
-            }
-
-            let child = match cmd.spawn() {
-                Ok(c) => c,
-                Err(e) => {
-                    tracing::warn!("Failed to spawn test runner for Gate 2: {}", e);
-                    return GateStatus::Passed;
-                }
-            };
-
-            let child_pid = child.id();
-            let (tx, rx) = mpsc::channel();
-            std::thread::spawn(move || {
-                let _ = tx.send(child.wait_with_output());
-            });
-
-            match rx.recv_timeout(Duration::from_millis(VERIFICATION_TEST_TIMEOUT_MS)) {
-                Ok(Ok(output)) => {
-                    if !output.status.success() {
-                        let stderr = String::from_utf8_lossy(&output.stderr);
-                        let stdout = String::from_utf8_lossy(&output.stdout);
-                        let err_msg = if !stderr.trim().is_empty() {
-                            stderr.lines().take(5).collect::<Vec<_>>().join("\n")
-                        } else {
-                            stdout.lines().take(5).collect::<Vec<_>>().join("\n")
-                        };
-
-                        return GateStatus::Failed {
-                            gate_name: "Gate 2: Reproducer & Test Execution",
-                            reason: format!(
-                                "Test target `{}` failed verification:\n{}",
-                                target_name, err_msg
-                            ),
-                            actionable_remediation: format!(
-                                "Investigate test failure in `tests/{}.rs` and fix the underlying logic.",
-                                target_name
-                            ),
-                        };
-                    } else if is_tracked_repro || target_name.starts_with("repro_") {
-                        // Mark reproducer as GreenVerified
-                        if let Some(mut record) =
-                            ReproducerGuard::load_record(workspace_root, target_name)
-                        {
-                            let timestamp = std::time::SystemTime::now()
-                                .duration_since(std::time::UNIX_EPOCH)
-                                .unwrap_or_default()
-                                .as_secs();
-                            record.status = ReproducerPhase::GreenVerified { timestamp };
-                            let _ = ReproducerGuard::save_record(workspace_root, &record);
-                            tracing::info!(
-                                "Gate 2: Active reproducer `{}` transitioned from RED to GREEN!",
-                                target_name
-                            );
+        if let Some((test_rel_path, is_tracked_repro)) = rust_target {
+            if test_rel_path.starts_with("tests/") && test_rel_path.ends_with(".rs") {
+                let target_name = test_rel_path
+                    .trim_start_matches("tests/")
+                    .trim_end_matches(".rs");
+                match Self::run_gate2_command(
+                    workspace_root,
+                    "cargo",
+                    &["test", "-j", "1", "--test", target_name],
+                    target_name,
+                    format!(
+                        "Investigate test failure in `tests/{}.rs` and fix the underlying logic.",
+                        target_name
+                    ),
+                ) {
+                    Ok(true) => {
+                        if is_tracked_repro || target_name.starts_with("repro_") {
+                            if let Some(mut record) =
+                                ReproducerGuard::load_record(workspace_root, target_name)
+                            {
+                                let timestamp = std::time::SystemTime::now()
+                                    .duration_since(std::time::UNIX_EPOCH)
+                                    .unwrap_or_default()
+                                    .as_secs();
+                                record.status = ReproducerPhase::GreenVerified { timestamp };
+                                let _ = ReproducerGuard::save_record(workspace_root, &record);
+                                tracing::info!(
+                                    "Gate 2: Active reproducer `{}` transitioned from RED to GREEN!",
+                                    target_name
+                                );
+                            }
                         }
+                        return GateStatus::Passed;
                     }
-                }
-                Ok(Err(e)) => {
-                    tracing::warn!("Failed waiting on test runner for Gate 2: {}", e);
-                }
-                Err(_) => {
-                    #[cfg(unix)]
-                    if child_pid > 0 {
-                        let pgid = -(child_pid as i32);
-                        // SAFETY: child was spawned with process_group(0) so its PGID equals child_pid.
-                        unsafe {
-                            libc::kill(pgid, libc::SIGTERM);
-                            libc::kill(pgid, libc::SIGKILL);
-                            libc::kill(child_pid as i32, libc::SIGKILL);
-                        }
+                    Ok(false) => {
+                        return GateStatus::Skipped {
+                            reason: "Rust test target detected, but `cargo` could not be spawned.",
+                        };
                     }
-                    #[cfg(not(unix))]
-                    {
-                        let _ = Command::new("kill")
-                            .args(["-9", &child_pid.to_string()])
-                            .status();
-                    }
-                    tracing::warn!(
-                        "Gate 2 test execution timed out ({}ms); killed process group for pid {}",
-                        VERIFICATION_TEST_TIMEOUT_MS,
-                        child_pid
-                    );
+                    Err(failed) => return failed,
                 }
             }
         }
 
-        GateStatus::Passed
+        // 3. JS/TS workspace test suite (e.g. Vitest / Jest / Bun via package.json `"test"` script)
+        if Self::workspace_has_js_tests(workspace_root, modified_files) {
+            if let Some((prog, args, label)) = Self::detect_js_test_command(workspace_root) {
+                match Self::run_gate2_command(
+                    workspace_root,
+                    prog,
+                    &args,
+                    label,
+                    format!(
+                        "Run `{}` locally, inspect the failing assertion, and fix the underlying logic.",
+                        label
+                    ),
+                ) {
+                    Ok(true) => return GateStatus::Passed,
+                    Ok(false) => {
+                        return GateStatus::Skipped {
+                            reason: "JS/TS test suite detected, but test runner binary was unavailable.",
+                        };
+                    }
+                    Err(failed) => return failed,
+                }
+            }
+        }
+
+        GateStatus::Skipped {
+            reason: "No reproducer script, test target, or active reproducer guard in this turn.",
+        }
     }
 
     /// Gate 3: Structural Integrity & Git Conflict Markers Check
@@ -2266,5 +2410,50 @@ mod tests {
             "Skipped Gate 2 must not be falsely rendered as Passed:\n{rendered}"
         );
         assert!(rendered.contains("✔ **Gate 1 (AST Syntax & Compiler)**: Passed"));
+    }
+
+    #[test]
+    fn test_gate2_detects_js_ts_test_files_and_package_json_runner() {
+        assert!(VerificationBarrier::is_js_ts_test_file(
+            "src/lib/__tests__/streaks.test.ts"
+        ));
+        assert!(VerificationBarrier::is_js_ts_test_file(
+            "src/components/Timer.spec.tsx"
+        ));
+        assert!(!VerificationBarrier::is_js_ts_test_file(
+            "src/pages/HomePage.tsx"
+        ));
+
+        let temp = tempfile::tempdir().unwrap();
+        let ws = temp.path();
+        std::fs::write(
+            ws.join("package.json"),
+            r#"{"name":"demo","scripts":{"test":"vitest run"}}"#,
+        )
+        .unwrap();
+
+        // Without node_modules installed, detect_js_test_command stays safe and returns None
+        assert!(VerificationBarrier::detect_js_test_command(ws).is_none());
+
+        // Once node_modules exists, detects npm test or bun run test (with bun.lock)
+        std::fs::create_dir_all(ws.join("node_modules")).unwrap();
+        assert_eq!(
+            VerificationBarrier::detect_js_test_command(ws).map(|(p, _, l)| (p, l)),
+            Some(("npm", "npm test"))
+        );
+
+        std::fs::write(ws.join("bun.lock"), "").unwrap();
+        assert_eq!(
+            VerificationBarrier::detect_js_test_command(ws).map(|(p, _, l)| (p, l)),
+            Some(("bun", "bun run test"))
+        );
+
+        // Placeholder default npm init script is ignored
+        std::fs::write(
+            ws.join("package.json"),
+            r#"{"name":"demo","scripts":{"test":"echo \"Error: no test specified\" && exit 1"}}"#,
+        )
+        .unwrap();
+        assert!(VerificationBarrier::detect_js_test_command(ws).is_none());
     }
 }

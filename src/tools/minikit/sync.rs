@@ -1960,6 +1960,21 @@ impl MiniKitSyncEngine {
         Some(tasks)
     }
 
+    /// Decodes common HTML entities found in `<title>` tags (e.g. `&amp;`, `&mdash;`, `&#39;`)
+    /// so generated Markdown docs never leak raw entities like `Habit &amp; Focus`.
+    fn decode_html_entities(input: &str) -> String {
+        input
+            .replace("&amp;", "&")
+            .replace("&lt;", "<")
+            .replace("&gt;", ">")
+            .replace("&quot;", "\"")
+            .replace("&#39;", "'")
+            .replace("&apos;", "'")
+            .replace("&mdash;", "—")
+            .replace("&ndash;", "–")
+            .replace("&nbsp;", " ")
+    }
+
     /// Resolves the canonical project heading (`"<Name> — <Tagline>"` or `"<Name>"`) from `index.html`,
     /// `implementation.md`, or a customized `README.md`.
     fn resolve_completed_project_heading(workspace_root: &Path) -> Option<String> {
@@ -1968,7 +1983,8 @@ impl MiniKitSyncEngine {
             .and_then(|html| {
                 let (_, rest) = html.split_once("<title>")?;
                 let (inner, _) = rest.split_once("</title>")?;
-                let trimmed = inner.trim();
+                let decoded = Self::decode_html_entities(inner);
+                let trimmed = decoded.trim();
                 if trimmed.is_empty() || trimmed.to_ascii_lowercase().starts_with("minikit ") {
                     None
                 } else {
@@ -2057,18 +2073,35 @@ impl MiniKitSyncEngine {
                 modified = true;
             }
 
-            if !bullets.is_empty() && !content.contains("## Recorded User Decisions") {
-                let anchor = match file_name {
-                    "design.md" => Some("\n## 2. Color Palette & Roles"),
-                    "prd.md" => Some("\n## Core Objectives & User Stories"),
-                    "coreidea.md" => Some("\n## Value Proposition & Tenets"),
-                    _ => None,
-                };
-                if let Some(target_anchor) = anchor {
-                    if let Some(pos) = content.find(target_anchor) {
-                        let injected = format!("\n## Recorded User Decisions\n{bullets}\n");
-                        content.insert_str(pos, &injected);
+            if !bullets.is_empty() {
+                if let Some(sec_start) = content.find("## Recorded User Decisions") {
+                    let after_heading = sec_start + "## Recorded User Decisions".len();
+                    let sec_end = content[after_heading..]
+                        .find("\n## ")
+                        .map_or(content.len(), |rel| after_heading + rel + 1);
+                    let replacement = format!("## Recorded User Decisions\n{bullets}\n\n");
+                    let replacement_trimmed = if sec_end == content.len() {
+                        format!("## Recorded User Decisions\n{bullets}\n")
+                    } else {
+                        replacement
+                    };
+                    if content[sec_start..sec_end] != replacement_trimmed {
+                        content.replace_range(sec_start..sec_end, &replacement_trimmed);
                         modified = true;
+                    }
+                } else {
+                    let anchor = match file_name {
+                        "design.md" => Some("\n## 2. Color Palette & Roles"),
+                        "prd.md" => Some("\n## Core Objectives & User Stories"),
+                        "coreidea.md" => Some("\n## Value Proposition & Tenets"),
+                        _ => None,
+                    };
+                    if let Some(target_anchor) = anchor {
+                        if let Some(pos) = content.find(target_anchor) {
+                            let injected = format!("\n## Recorded User Decisions\n{bullets}\n");
+                            content.insert_str(pos, &injected);
+                            modified = true;
+                        }
                     }
                 }
             }
@@ -3895,5 +3928,73 @@ export function App() {
         let pkgs = manifest["packages"].as_array().unwrap();
         assert!(pkgs.iter().any(|v| v == "lucide-react"));
         assert!(!pkgs.iter().any(|v| v == "axios"));
+    }
+
+    #[test]
+    fn test_decode_html_entities_and_refresh_decisions_in_core_docs() {
+        let temp = tempfile::tempdir().unwrap();
+        let ws = temp.path();
+        fs::create_dir_all(ws.join("src")).unwrap();
+        fs::write(
+            ws.join("index.html"),
+            "<!doctype html><html><head><title>Habit &amp; Focus &mdash; Streak Tracker</title></head></html>",
+        )
+        .unwrap();
+        fs::write(
+            ws.join("src/index.css"),
+            ":root {\n  --background: #07080a;\n  --primary: #5eead4;\n  --primary-foreground: #04211d;\n}\n",
+        )
+        .unwrap();
+
+        assert_eq!(
+            MiniKitSyncEngine::resolve_completed_project_heading(ws).as_deref(),
+            Some("Habit & Focus — Streak Tracker")
+        );
+
+        crate::agent::decisions::upsert_decision(
+            ws,
+            "Stack",
+            "React 19 + Vite + Tailwind v4 SPA.",
+            None,
+        )
+        .unwrap();
+        MiniKitSyncEngine::ensure_core_docs_for_plan(
+            ws,
+            "Habit & Focus Streak Tracker",
+            &["Build habit tracker".to_string()],
+            Some("Layered React architecture"),
+            None,
+            None,
+            None,
+            &[],
+        );
+
+        // Record [D2] AFTER initial plan creation and sync again -> both [D1] and [D2] must appear,
+        // and primary must resolve to `#5eead4` (never `#07080a`).
+        crate::agent::decisions::upsert_decision(
+            ws,
+            "Obsidian and Mint Visual Direction",
+            "Visual direction: dark obsidian ground (#07080A page / #0F1114 surface) with mint accent (#5EEAD4 primary, #10B981 deep).",
+            None,
+        )
+        .unwrap();
+
+        let prd = fs::read_to_string(ws.join("minikit_docs/core/prd.md")).unwrap();
+        assert!(prd.contains("[D1]"), "prd missing D1:\n{prd}");
+        assert!(prd.contains("[D2]"), "prd missing refreshed D2:\n{prd}");
+
+        let design = fs::read_to_string(ws.join("minikit_docs/core/design.md")).unwrap();
+        assert!(
+            design.contains("[D2]"),
+            "design missing refreshed D2:\n{design}"
+        );
+        assert!(
+            design.contains("primary: \"#5eead4\""),
+            "design primary must be mint accent, got:\n{design}"
+        );
+        assert!(
+            !design.contains("Habit &amp; Focus"),
+            "raw HTML entity leaked into design.md:\n{design}"
+        );
     }
 }

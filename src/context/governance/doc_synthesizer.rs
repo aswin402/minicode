@@ -82,8 +82,23 @@ impl ArchitectureDocSynthesizer {
             }
         }
 
+        let is_low_signal_file = |f: &str| -> bool {
+            let lower = f.to_ascii_lowercase();
+            lower.contains("/__tests__/")
+                || lower.starts_with("__tests__/")
+                || lower.contains(".test.")
+                || lower.contains(".spec.")
+                || lower.ends_with(".config.js")
+                || lower.ends_with(".config.ts")
+                || lower.ends_with(".config.mjs")
+                || lower.ends_with(".config.cjs")
+        };
         for files in layer_files.values_mut() {
-            files.sort();
+            files.sort_by(|a, b| {
+                let a_rank = (is_low_signal_file(a), !a.starts_with("src/"), a.as_str());
+                let b_rank = (is_low_signal_file(b), !b.starts_with("src/"), b.as_str());
+                a_rank.cmp(&b_rank)
+            });
             files.dedup();
         }
 

@@ -164,7 +164,7 @@ pub fn get_schemas() -> Vec<ToolSchema> {
                     },
                     "subagent_review": {
                         "type": "boolean",
-                        "description": "If true, additionally dispatch a dedicated read-only MiniPub `reviewer` subagent to inspect the changes (via git diff, spec and decisions) and report findings on top of the static audit. Costs one subagent run. Default false."
+                        "description": "Optional override for dispatching a dedicated read-only MiniPub `reviewer` subagent on top of the static audit. When omitted, auto-enabled on initial review and fix_round 1 when >= 3 files are audited, and auto-skipped on clean re-reviews (fix_round >= 2 with 0 blocking static findings). Pass true/false to override."
                     },
                     "base_sha": {
                         "type": "string",
@@ -1472,6 +1472,7 @@ pub async fn dispatch(
                     .count();
 
                 let mut reviewer_rubric = String::new();
+                let mut implementer_fix_prompt = String::new();
                 let is_rereview =
                     stage_arg == "re-review" || stage_arg == "rereview" || !prior_findings.is_empty();
                 if is_rereview {
@@ -1504,8 +1505,10 @@ pub async fn dispatch(
                     if !findings_to_check.is_empty()
                         && fix_round < MiniPowerEngine::MAX_FIX_LOOP_ROUNDS
                     {
-                        reviewer_rubric.push('\n');
-                        reviewer_rubric.push_str(&MiniPowerEngine::format_fix_prompt(
+                        // Keep the implementer's Fix-Loop Contract out of `reviewer_rubric` so the
+                        // read-only Reviewer subagent is never instructed to edit files or re-run tests.
+                        implementer_fix_prompt.push('\n');
+                        implementer_fix_prompt.push_str(&MiniPowerEngine::format_fix_prompt(
                             &mp_task,
                             &findings_to_check,
                         ));
@@ -1572,6 +1575,15 @@ pub async fn dispatch(
                     ),
                 );
 
+                let subagent_static_and_rubric = if formatted.contains(&reviewer_rubric) {
+                    formatted.clone()
+                } else {
+                    format!("{formatted}\n---\n{reviewer_rubric}")
+                };
+                if !implementer_fix_prompt.is_empty() {
+                    formatted.push_str(&implementer_fix_prompt);
+                }
+
                 let review_dir = workspace_root.join(".minicode/plan");
                 let _ = std::fs::create_dir_all(&review_dir);
 
@@ -1593,11 +1605,7 @@ pub async fn dispatch(
                         "\n### 🧑‍⚖️ Reviewer Subagent Report\n⏳ **Reviewer Subagent Already Running**: An async Reviewer MiniPub worker is still executing in the background. Do NOT spawn a duplicate reviewer or archive the plan yet — wait for its `<completed_minipub_boomerang>` notification.\n",
                     );
                 } else if should_run_subagent_review {
-                    let subagent_payload = if formatted.contains(&reviewer_rubric) {
-                        formatted.clone()
-                    } else {
-                        format!("{formatted}\n---\n{reviewer_rubric}")
-                    };
+                    let subagent_payload = subagent_static_and_rubric;
                     let has_tracked_diff =
                         workspace_has_tracked_git_diff(workspace_root, staged_only);
                     let diff_changed_files = if has_tracked_diff {
@@ -2485,5 +2493,21 @@ diff --git a/old.ts b/old.ts
         assert!(untracked.contains(&"style.css".to_string()));
         assert!(untracked.contains(&"js/site.js".to_string()));
         assert_eq!(untracked.last().map(String::as_str), Some(".gitignore"));
+    }
+
+    #[test]
+    fn test_power_review_schema_documents_auto_subagent_behavior() {
+        let schemas = get_schemas();
+        let review_schema = schemas
+            .iter()
+            .find(|s| s.name == "power_review")
+            .expect("power_review schema");
+        let desc = review_schema.parameters["properties"]["subagent_review"]["description"]
+            .as_str()
+            .unwrap_or("");
+        assert!(
+            desc.contains("auto-enabled") && !desc.contains("Default false"),
+            "subagent_review schema description must match actual default behavior, got: {desc}"
+        );
     }
 }

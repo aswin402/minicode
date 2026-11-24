@@ -1607,17 +1607,41 @@ impl BrowserController {
                     }
 
                     // Taste-Skill v2.1 Probe 2: Lopsided sections, off-centre outer margins & blank vertical gaps
-                    const layoutSections = allSections.filter(s => {
-                        const cs = window.getComputedStyle(s);
-                        const r = s.getBoundingClientRect();
-                        return cs && cs.display !== 'none' && cs.visibility !== 'hidden' && r.width >= vw * 0.65 && r.height >= 80;
-                    });
+                    const allContentBlocks = Array.from(document.querySelectorAll('section, article, aside, header, footer, [role="region"], main > div, main > ul, main > form, main > table'))
+                        .map(el => {
+                            const ecs = window.getComputedStyle(el);
+                            if (!ecs || ecs.display === 'none' || ecs.visibility === 'hidden' || parseFloat(ecs.opacity || '1') <= 0.05) return null;
+                            const er = el.getBoundingClientRect();
+                            if (er.width < 160 || er.height < 40) return null;
+                            const hasContent = (el.innerText && el.innerText.trim().length > 0) || Boolean(el.querySelector('img, svg, canvas, video, input, button'));
+                            return hasContent ? { el, top: er.top, bottom: er.bottom } : null;
+                        })
+                        .filter(Boolean)
+                        .sort((a, b) => a.top - b.top);
+                    const layoutSections = allSections
+                        .filter(s => {
+                            const cs = window.getComputedStyle(s);
+                            const r = s.getBoundingClientRect();
+                            return cs && cs.display !== 'none' && cs.visibility !== 'hidden' && r.width >= vw * 0.65 && r.height >= 80;
+                        })
+                        .sort((a, b) => a.getBoundingClientRect().top - b.getBoundingClientRect().top);
                     let prevBottom = null;
                     for (let sIdx = 0; sIdx < layoutSections.length; sIdx++) {
                         const sec = layoutSections[sIdx];
                         const sr = sec.getBoundingClientRect();
                         if (prevBottom !== null && sr.top - prevBottom >= vh * 0.45) {
-                            tasteMetrics.blankGaps++;
+                            let coveredBottom = prevBottom;
+                            for (let bIdx = 0; bIdx < allContentBlocks.length; bIdx++) {
+                                const blk = allContentBlocks[bIdx];
+                                if (blk.el === sec || sec.contains(blk.el) || blk.el.contains(sec)) continue;
+                                if (blk.top >= sr.top - 4) break;
+                                if (blk.bottom > coveredBottom && (blk.top - coveredBottom) < vh * 0.45) {
+                                    coveredBottom = Math.max(coveredBottom, Math.min(blk.bottom, sr.top));
+                                }
+                            }
+                            if (sr.top - coveredBottom >= vh * 0.45) {
+                                tasteMetrics.blankGaps++;
+                            }
                         }
                         prevBottom = Math.max(prevBottom || 0, sr.bottom);
                     }
@@ -1686,9 +1710,14 @@ impl BrowserController {
                             const firstR = kids[0].getBoundingClientRect();
                             const sameRow = kids.filter(k => Math.abs(k.getBoundingClientRect().top - firstR.top) < 12);
                             if (sameRow.length >= 2) {
-                                const heights = sameRow.map(k => k.getBoundingClientRect().height);
-                                if (Math.max(...heights) - Math.min(...heights) > 24) {
-                                    tasteMetrics.raggedCardRows++;
+                                const widths = sameRow.map(k => k.getBoundingClientRect().width);
+                                const maxW = Math.max(...widths);
+                                const minW = Math.min(...widths);
+                                if (maxW > 0 && (maxW - minW) <= maxW * 0.20) {
+                                    const heights = sameRow.map(k => k.getBoundingClientRect().height);
+                                    if (Math.max(...heights) - Math.min(...heights) > 24) {
+                                        tasteMetrics.raggedCardRows++;
+                                    }
                                 }
                             }
                         }

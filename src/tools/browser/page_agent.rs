@@ -1138,19 +1138,44 @@ pub const PAGE_PROBE_JS: &str = r###"(function() {
                         layoutWarnings.push('[headline-lines] Primary <h1> wraps across ' + lineTops.length + ' rendered lines (target <= 2 lines; tighten copy or clamp font-size).');
                     }
                 }
-                var sections = Array.from(document.querySelectorAll('section'));
+                var allContentBlocks = Array.from(document.querySelectorAll('section, article, aside, header, footer, [role="region"], main > div, main > ul, main > form, main > table')).reduce(function(acc, el) {
+                    var ecs = window.getComputedStyle ? window.getComputedStyle(el) : null;
+                    if (!ecs || ecs.display === 'none' || ecs.visibility === 'hidden' || parseFloat(ecs.opacity || '1') <= 0.05) return acc;
+                    var er = el.getBoundingClientRect();
+                    if (er.width < 160 || er.height < 40) return acc;
+                    var hasContent = (el.innerText && el.innerText.trim().length > 0) || Boolean(el.querySelector('img, svg, canvas, video, input, button'));
+                    if (hasContent) acc.push({ el: el, top: er.top, bottom: er.bottom });
+                    return acc;
+                }, []).sort(function(a, b) { return a.top - b.top; });
+                var sections = Array.from(document.querySelectorAll('section')).map(function(sec, idx) {
+                    return { sec: sec, idx: idx, cs: window.getComputedStyle ? window.getComputedStyle(sec) : null, sr: sec.getBoundingClientRect() };
+                }).filter(function(item) {
+                    return item.cs && item.cs.display !== 'none' && item.cs.visibility !== 'hidden' && item.sr.width >= vw * 0.65 && item.sr.height >= 80;
+                }).sort(function(a, b) { return a.sr.top - b.sr.top; });
                 var prevBot = null;
                 var paintedTags = { DIV: 1, ARTICLE: 1, ASIDE: 1, UL: 1, OL: 1, DL: 1 };
-                sections.forEach(function(sec, idx) {
-                    var cs = window.getComputedStyle ? window.getComputedStyle(sec) : null;
-                    var sr = sec.getBoundingClientRect();
-                    if (!cs || cs.display === 'none' || cs.visibility === 'hidden' || sr.width < vw * 0.65 || sr.height < 80) return;
+                sections.forEach(function(item) {
+                    var sec = item.sec;
+                    var idx = item.idx;
+                    var cs = item.cs;
+                    var sr = item.sr;
                     var secId = sec.id ? ' (#' + sec.id + ')' : '';
                     var hEl = sec.querySelector('h1, h2, h3');
                     var hTxt = hEl && hEl.innerText ? ' "' + collapseSpaces(hEl.innerText).slice(0, 36) + '"' : '';
                     var secLabel = 'Section #' + (idx + 1) + secId + hTxt;
                     if (prevBot !== null && sr.top - prevBot >= vh * 0.45) {
-                        layoutWarnings.push('[blank-gap] Vertical blank gap of ' + Math.round(sr.top - prevBot) + 'px before ' + secLabel + '.');
+                        var coveredBot = prevBot;
+                        for (var bIdx = 0; bIdx < allContentBlocks.length; bIdx++) {
+                            var blk = allContentBlocks[bIdx];
+                            if (blk.el === sec || sec.contains(blk.el) || blk.el.contains(sec)) continue;
+                            if (blk.top >= sr.top - 4) break;
+                            if (blk.bottom > coveredBot && (blk.top - coveredBot) < vh * 0.45) {
+                                coveredBot = Math.max(coveredBot, Math.min(blk.bottom, sr.top));
+                            }
+                        }
+                        if (sr.top - coveredBot >= vh * 0.45) {
+                            layoutWarnings.push('[blank-gap] Vertical blank gap of ' + Math.round(sr.top - coveredBot) + 'px before ' + secLabel + '.');
+                        }
                     }
                     prevBot = Math.max(prevBot || 0, sr.bottom);
                     if (sr.height >= 220 && vw >= 768 && parseFloat(cs.opacity || '1') > 0.05) {
