@@ -109,6 +109,48 @@ impl GitReviewer {
             .map(|(report, _)| report)
     }
 
+    /// Whole-workspace code audit (`minicode review --scan`) evaluating all reviewable source files
+    /// after applying the deterministic secret-path & rule-config filter (`ReviewRuleEngine`).
+    pub async fn review_workspace_scan(
+        workspace_root: &Path,
+        explicit_rule_path: Option<&Path>,
+    ) -> Result<(ReviewReport, String)> {
+        let candidates = Self::discover_workspace_source_files(workspace_root);
+        let rule_engine =
+            crate::git::ocr::ReviewRuleEngine::load(workspace_root, explicit_rule_path);
+        let selection = rule_engine.filter_files(&candidates);
+        if selection.reviewable_files.is_empty() {
+            return Ok((
+                ReviewReport {
+                    total_score: 100,
+                    files_audited: 0,
+                    findings: vec![],
+                    summary: "✔ Workspace scan complete — 0 reviewable source files matched."
+                        .to_string(),
+                },
+                String::new(),
+            ));
+        }
+        let mut synth_diff = String::new();
+        for rel in &selection.reviewable_files {
+            if let Ok(content) = std::fs::read_to_string(workspace_root.join(rel)) {
+                synth_diff.push_str(&format!("+++ b/{}\n", rel));
+                for line in content.lines() {
+                    synth_diff.push('+');
+                    synth_diff.push_str(line);
+                    synth_diff.push('\n');
+                }
+            }
+        }
+        Self::evaluate_diff_and_files(
+            workspace_root,
+            false,
+            synth_diff,
+            selection.reviewable_files,
+        )
+        .await
+    }
+
     /// Range-aware workspace review returning `(ReviewReport, audited_diff_text)`.
     /// Honors explicit `base_sha..head_sha` when passed, and when the working tree is clean after a
     /// swarm/worktree auto-merge (`target_files.is_empty()`), inspects `HEAD~1..HEAD` before falling back.

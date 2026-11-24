@@ -2389,6 +2389,10 @@ always_apply: false
 - Use `browser_mock_route(pattern="*/api/*", status=500, body="{\"error\":\"Outage\"}")` to verify loading skeletons, retry banners, and graceful empty/error states without modifying backend code, then clear with `browser_mock_route(clear=true)`.
 "#,
     },
+    BuiltinSkillDef {
+        name: "open-code-review",
+        content: include_str!("../tools/minikit/builtin_skills/open-code-review/SKILL.md"),
+    },
 ];
 
 /// Returns all built-in skills as parsed `VaultSkill` items.
@@ -2966,5 +2970,21 @@ mod tests {
                 report.findings
             );
         }
+
+        // Verify native `open-code-review` hybrid code review skill (inspired by alibaba/open-code-review)
+        let ocr = find_builtin_skill("open-code-review")
+            .expect("Missing built-in `open-code-review` skill in MiniVault");
+        assert_eq!(ocr.kind(), crate::vault::models::SkillKind::Workflow);
+        assert!(
+            crate::tools::minikit::builtin_skills::find_builtin_skill("open-code-review").is_some(),
+            "Missing built-in `open-code-review` skill in MiniKit"
+        );
+        let ocr_scan = crate::vault::skillspector::SkillSpectorEngine::scan_vault_skill(&ocr, None);
+        assert_eq!(
+            ocr_scan.recommendation,
+            crate::vault::skillspector::InstallRecommendation::Safe,
+            "Built-in skill 'open-code-review' must pass SkillSpector with Safe recommendation: {:?}",
+            ocr_scan.findings
+        );
     }
 }

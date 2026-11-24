@@ -146,7 +146,7 @@ pub fn get_schemas() -> Vec<ToolSchema> {
         },
         ToolSchema {
             name: "power_review".to_string(),
-            description: "Run an adversarial two-stage code review and static AST/security audit on workspace changes: Stage 1 (`SpecCompliance`: acceptance criteria met, 'spec is a vision document'), Stage 2 (`CodeQuality`: zero unwraps/panics, security, error handling, test falsifiability, performance), or `re-review` (scoped fix-diff verification with a 5-round circuit breaker). Writes a `.minicode/sdd/<slug>/review-<base>..<head>.diff` package and updates the SDD ledger.".to_string(),
+            description: "Run the native Hybrid Code Review Engine (deterministic filtering + secret-path guard + language/repo rules from `.minicode/review_rules.json` or `.opencodereview/rule.json` + AST-clustered parallel MiniPub Reviewers + exact line anchoring). Supports Stage 1 (`SpecCompliance`), Stage 2 (`CodeQuality`), `both` (default), `re-review` (scoped fix-diff verification with a 5-round circuit breaker), `preview=true` (zero-token dry-run), `background` (concise business/PR context), and `analysis=true` (separate Behavior & Impact brief). Writes a `.minicode/sdd/<slug>/review-<base>..<head>.diff` package and updates the SDD ledger.".to_string(),
             parameters: json!({
                 "type": "object",
                 "properties": {
@@ -165,6 +165,22 @@ pub fn get_schemas() -> Vec<ToolSchema> {
                     "subagent_review": {
                         "type": "boolean",
                         "description": "Optional override for dispatching a dedicated read-only MiniPub `reviewer` subagent on top of the static audit. When omitted, auto-enabled on initial review and fix_round 1 when >= 3 files are audited, and auto-skipped on clean re-reviews (fix_round >= 2 with 0 blocking static findings). Pass true/false to override."
+                    },
+                    "preview": {
+                        "type": "boolean",
+                        "description": "If true, runs a zero-token deterministic dry-run listing reviewable files, blocked secret/noise paths, AST file clusters, and resolved language/repo rules without invoking any LLM reviewer. Default false."
+                    },
+                    "background": {
+                        "type": "string",
+                        "description": "Optional 1–3 sentence business/PR context (intent, constraints, invariants) injected into the Reviewer subagent prompt."
+                    },
+                    "analysis": {
+                        "type": "boolean",
+                        "description": "If true, instructs the Reviewer to include a separate `## Behavior & Impact` brief documenting material observable behavioral/API/config changes even when there are 0 defects. Default false."
+                    },
+                    "rule_file": {
+                        "type": "string",
+                        "description": "Optional path to a custom review rules JSON file (defaults to `.minicode/review_rules.json` or `.opencodereview/rule.json`)."
                     },
                     "base_sha": {
                         "type": "string",
@@ -651,15 +667,20 @@ fn collect_untracked_workspace_files(workspace_root: &Path, limit: usize) -> Vec
     files
 }
 
-async fn run_reviewer_subagent(
-    workspace_root: &Path,
-    stage: &str,
+struct ReviewerRunContext<'a> {
+    stage: &'a str,
     staged_only: bool,
     is_rereview: bool,
-    static_report: &str,
-    target_files: &[String],
+    static_report: &'a str,
+    target_files: &'a [String],
     has_tracked_diff: bool,
-) -> String {
+    background: Option<&'a str>,
+    analysis: bool,
+    rules_prompt: &'a str,
+    cluster_label: Option<&'a str>,
+}
+
+async fn run_reviewer_subagent(workspace_root: &Path, ctx: &ReviewerRunContext<'_>) -> String {
     let spec_path = crate::tools::minikit::resolve_doc_path(workspace_root, "spec.md");
     let spec_rel = spec_path
         .strip_prefix(workspace_root)
@@ -667,14 +688,14 @@ async fn run_reviewer_subagent(
         .display()
         .to_string();
     let is_git_repo = workspace_root.join(".git").exists();
-    let untracked_files = if is_git_repo && !has_tracked_diff && target_files.is_empty() {
+    let untracked_files = if is_git_repo && !ctx.has_tracked_diff && ctx.target_files.is_empty() {
         collect_untracked_workspace_files(workspace_root, 30)
     } else {
         Vec::new()
     };
-    let all_untracked_only = is_git_repo && !has_tracked_diff && !untracked_files.is_empty();
-    let candidate_files: Vec<String> = if !target_files.is_empty() {
-        target_files.to_vec()
+    let all_untracked_only = is_git_repo && !ctx.has_tracked_diff && !untracked_files.is_empty();
+    let candidate_files: Vec<String> = if !ctx.target_files.is_empty() {
+        ctx.target_files.to_vec()
     } else if !untracked_files.is_empty() {
         untracked_files
     } else {
@@ -684,7 +705,7 @@ async fn run_reviewer_subagent(
         String::new()
     } else {
         format!(
-            "\n### Workspace Files to Inspect\n{}\n",
+            "\n### Workspace Files to Inspect (100% coverage required)\n{}\n",
             candidate_files
                 .iter()
                 .take(30)
@@ -700,16 +721,48 @@ async fn run_reviewer_subagent(
     } else {
         format!(
             "1. Inspect the {} changes with `git_diff` (and `batch_read` / `read_file` for context).",
-            if staged_only { "staged" } else { "uncommitted" }
+            if ctx.staged_only {
+                "staged"
+            } else {
+                "uncommitted"
+            }
         )
     };
-    let static_excerpt: String = static_report.chars().take(4000).collect();
-    let scoped_rereview_note = if is_rereview {
+    let static_excerpt: String = ctx.static_report.chars().take(4000).collect();
+    let scoped_rereview_note = if ctx.is_rereview {
         "\n- SCOPED RE-REVIEW ONLY: Inspect ONLY the listed prior findings and verify whether the fix diff introduced any regression. Do NOT invent new refactoring or test-extraction requests outside the listed findings; finish in <= 4 tool calls."
     } else {
         ""
     };
-    let tool_budget_hint = if is_rereview { 4 } else { 8 };
+    let background_section = ctx
+        .background
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(|bg| format!("\n### Business Context\n{bg}\n"))
+        .unwrap_or_default();
+    let cluster_section = ctx
+        .cluster_label
+        .map(|lbl| {
+            format!(
+                "\n### Assigned AST Review Cluster\nScope your inspection strictly to cluster `{lbl}` (inspect every listed file; do not waste turns reviewing unrelated clusters).\n"
+            )
+        })
+        .unwrap_or_default();
+    let rules_section = if ctx.rules_prompt.trim().is_empty() {
+        String::new()
+    } else {
+        format!("\n{}\n", ctx.rules_prompt.trim())
+    };
+    let behavior_section = if ctx.analysis {
+        format!(
+            "\n{}\n",
+            crate::git::ocr::ReviewPrecisionPrompts::BEHAVIOR_IMPACT_CONTRACT
+        )
+    } else {
+        String::new()
+    };
+    let precision_section = crate::git::ocr::ReviewPrecisionPrompts::ASYMMETRIC_FACT_CHECK_CONTRACT;
+    let tool_budget_hint = if ctx.is_rereview { 4 } else { 8 };
     let prompt = format!(
         "You are the dedicated read-only code reviewer for this workspace. Review stage: `{stage}`.\n\
          {step_one}\n\
@@ -718,14 +771,19 @@ async fn run_reviewer_subagent(
          4. Complete your inspection concisely within <= {tool_budget_hint} tool calls and report only concrete problems (correctness, missing edge cases, security, spec gaps) with file:line, \
             most severe first. Do not modify any files.{scoped_rereview_note}\n\
          End with a line `STATUS: DONE` if the changes are acceptable, otherwise `STATUS: DONE_WITH_CONCERNS`.\n\
-         {files_hint}\n\
+         {background_section}{cluster_section}{files_hint}{rules_section}\n{precision_section}{behavior_section}\n\
          ### Static audit (context)\n{static_excerpt}",
-        stage = stage,
+        stage = ctx.stage,
         step_one = step_one,
         spec = spec_rel,
         tool_budget_hint = tool_budget_hint,
         scoped_rereview_note = scoped_rereview_note,
+        background_section = background_section,
+        cluster_section = cluster_section,
         files_hint = files_hint,
+        rules_section = rules_section,
+        precision_section = precision_section,
+        behavior_section = behavior_section,
         static_excerpt = static_excerpt
     );
     let app_cfg = crate::config::Config::load_for_workspace(workspace_root);
@@ -736,12 +794,12 @@ async fn run_reviewer_subagent(
     // Pin explicit turn cap so dynamic scope scaling and elastic extensions cannot blow a concise
     // code review out to 20-30 turns, and strip browser_* tools so code reviewers never clobber
     // the parent session's pooled browser instance.
-    let turn_cap = if is_rereview {
+    let turn_cap = if ctx.is_rereview {
         config.max_turns.min(4)
     } else {
         config.max_turns.min(8)
     };
-    let reviewer_token_floor = if is_rereview { 55_000 } else { 85_000 };
+    let reviewer_token_floor = if ctx.is_rereview { 55_000 } else { 85_000 };
     let reviewer_token_budget = config.token_budget.max(reviewer_token_floor);
     config = config
         .with_explicit_max_turns(Some(turn_cap))
@@ -762,6 +820,59 @@ async fn run_reviewer_subagent(
         ),
         Err(e) => format!("\n! Reviewer subagent could not run: {}\n", e),
     }
+}
+
+async fn collect_review_preview_candidates(
+    workspace_root: &Path,
+    staged_only: bool,
+    base_sha: Option<&str>,
+    head_sha: Option<&str>,
+) -> (String, Vec<String>) {
+    let git = GitService::new(workspace_root.to_path_buf());
+    if git.is_git_repo().await {
+        if let Some(base) = base_sha.map(str::trim).filter(|s| !s.is_empty()) {
+            let head = head_sha
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .unwrap_or("HEAD");
+            if let Ok((_, files)) = git.diff_range(base, head).await {
+                if !files.is_empty() {
+                    return (format!("range {base}..{head}"), files);
+                }
+            }
+        }
+        if let Ok(st) = git.get_status().await {
+            let mut files = if staged_only {
+                st.staged
+            } else {
+                let mut all = st.staged;
+                all.extend(st.unstaged);
+                all.extend(
+                    st.untracked
+                        .into_iter()
+                        .filter(|rel| workspace_root.join(rel).is_file()),
+                );
+                all
+            };
+            files.sort();
+            files.dedup();
+            if !files.is_empty() {
+                let mode = if staged_only { "staged" } else { "workspace" };
+                return (mode.to_string(), files);
+            }
+        }
+        if !staged_only {
+            if let Ok((_, head_files)) = git.diff_range("HEAD~1", "HEAD").await {
+                if !head_files.is_empty() {
+                    return ("HEAD~1..HEAD".to_string(), head_files);
+                }
+            }
+        }
+    }
+    (
+        "scan".to_string(),
+        GitReviewer::discover_workspace_source_files(workspace_root),
+    )
 }
 
 /// Durable file tracking how many Reviewer MiniPub subagents have already executed during the
@@ -1442,6 +1553,33 @@ pub async fn dispatch(
                 let fix_round = opt_u64(args, "fix_round").unwrap_or(1).clamp(1, 10) as u8;
                 let base_sha = opt_str(args, "base_sha");
                 let head_sha = opt_str(args, "head_sha");
+                let preview_only = opt_bool(args, "preview", false);
+                let background = opt_str(args, "background");
+                let analysis = opt_bool(args, "analysis", false);
+                let explicit_rule_path = opt_str(args, "rule_file").map(Path::new);
+
+                if preview_only {
+                    let (mode_label, candidates) = collect_review_preview_candidates(
+                        workspace_root,
+                        staged_only,
+                        base_sha,
+                        head_sha,
+                    )
+                    .await;
+                    let preview_report = crate::git::ocr::HybridReviewEngine::build_preview(
+                        workspace_root,
+                        &mode_label,
+                        &candidates,
+                        explicit_rule_path,
+                    );
+                    return Ok(crate::git::ocr::HybridReviewEngine::format_preview(
+                        &preview_report,
+                        crate::git::ocr::ReviewAudience::Human,
+                    ));
+                }
+
+                let rule_engine =
+                    crate::git::ocr::ReviewRuleEngine::load(workspace_root, explicit_rule_path);
 
                 let (report, raw_audited_diff) = GitReviewer::review_workspace_with_range(
                     workspace_root,
@@ -1450,7 +1588,19 @@ pub async fn dispatch(
                     head_sha,
                 )
                 .await?;
-                let mut formatted = GitReviewer::format_report(&report);
+                let anchored_static = crate::git::ocr::CommentAnchorEngine::anchor_static_report(
+                    workspace_root,
+                    &report,
+                    &raw_audited_diff,
+                );
+                let mut formatted = crate::git::ocr::CommentAnchorEngine::format_for_audience(
+                    &report,
+                    &anchored_static,
+                    crate::git::ocr::ReviewAudience::Human,
+                );
+                if let Some(src) = rule_engine.config_source() {
+                    formatted.push_str(&format!("\n📜 **Active Repo Review Rules:** `{}`\n", src));
+                }
 
                 let mp_task =
                     build_active_minipower_task(workspace_root, args, "Workspace diff review");
@@ -1650,23 +1800,101 @@ pub async fn dispatch(
                     } else {
                         Vec::new()
                     };
-                    let reviewer_target_files: Vec<String> = if !mp_task.target_files.is_empty() {
+                    let raw_target_files: Vec<String> = if !mp_task.target_files.is_empty() {
                         mp_task.target_files.clone()
-                    } else {
+                    } else if !diff_changed_files.is_empty() {
                         diff_changed_files
+                    } else if workspace_root.join(".git").exists() && !has_tracked_diff {
+                        collect_untracked_workspace_files(workspace_root, 30)
+                    } else {
+                        rank_reviewer_workspace_files(workspace_root, 30)
                     };
-                    formatted.push_str(
-                        &run_reviewer_subagent(
-                            workspace_root,
-                            &stage_arg,
-                            staged_only,
-                            effective_is_rereview,
-                            &subagent_payload,
-                            &reviewer_target_files,
-                            has_tracked_diff,
-                        )
-                        .await,
+
+                    // Deterministic secret-path & noise gate before sending files to LLM reviewers
+                    let selection = rule_engine.filter_files(&raw_target_files);
+                    let blocked_secrets = selection
+                        .excluded_files
+                        .iter()
+                        .filter(|e| e.reason == crate::git::ocr::ExclusionReason::SecretPath)
+                        .count();
+                    if blocked_secrets > 0 {
+                        formatted.push_str(&format!(
+                            "\n🔒 **Secret-Path Guard:** Deterministically excluded {} credential/secret path(s) from LLM review.\n",
+                            blocked_secrets
+                        ));
+                    }
+
+                    let max_clusters = if effective_is_rereview {
+                        1
+                    } else {
+                        crate::git::ocr::ReviewFileClusterer::DEFAULT_MAX_CLUSTERS
+                    };
+                    let clusters = crate::git::ocr::ReviewFileClusterer::cluster_files(
+                        workspace_root,
+                        &selection.reviewable_files,
+                        crate::git::ocr::ReviewFileClusterer::DEFAULT_MAX_CLUSTER_SIZE,
+                        max_clusters,
                     );
+
+                    if clusters.len() > 1 {
+                        formatted.push_str(&format!(
+                            "\n🧩 **AST Parallel Cluster Review:** Partitioned {} files into {} cohesive cluster(s).\n",
+                            selection.reviewable_files.len(),
+                            clusters.len()
+                        ));
+                        let futs = clusters.iter().map(|cluster| {
+                            let rules_prompt =
+                                rule_engine.format_rules_for_prompt(&cluster.files, 2400);
+                            let label = format!("#{} ({})", cluster.id, cluster.label);
+                            let subagent_payload_ref = &subagent_payload;
+                            let stage_ref = &stage_arg;
+                            async move {
+                                let ctx = ReviewerRunContext {
+                                    stage: stage_ref,
+                                    staged_only,
+                                    is_rereview: effective_is_rereview,
+                                    static_report: subagent_payload_ref,
+                                    target_files: &cluster.files,
+                                    has_tracked_diff,
+                                    background,
+                                    analysis,
+                                    rules_prompt: &rules_prompt,
+                                    cluster_label: Some(&label),
+                                };
+                                let report_part = run_reviewer_subagent(workspace_root, &ctx).await;
+                                format!(
+                                    "\n#### Cluster #{} — `{}` ({} file(s))\n{}",
+                                    cluster.id,
+                                    cluster.label,
+                                    cluster.files.len(),
+                                    report_part
+                                )
+                            }
+                        });
+                        let cluster_reports = futures::future::join_all(futs).await;
+                        for part in cluster_reports {
+                            formatted.push_str(&part);
+                        }
+                    } else {
+                        let single_files = clusters
+                            .first()
+                            .map(|c| c.files.as_slice())
+                            .unwrap_or(&selection.reviewable_files);
+                        let rules_prompt = rule_engine.format_rules_for_prompt(single_files, 2400);
+                        let ctx = ReviewerRunContext {
+                            stage: &stage_arg,
+                            staged_only,
+                            is_rereview: effective_is_rereview,
+                            static_report: &subagent_payload,
+                            target_files: single_files,
+                            has_tracked_diff,
+                            background,
+                            analysis,
+                            rules_prompt: &rules_prompt,
+                            cluster_label: None,
+                        };
+                        formatted.push_str(&run_reviewer_subagent(workspace_root, &ctx).await);
+                    }
                     let _ = increment_review_subagent_runs(workspace_root);
                 } else if explicit_subagent.is_none()
                     && has_live_runtime
@@ -2590,5 +2818,35 @@ diff --git a/old.ts b/old.ts
             0u8.max(prior2),
             true
         ));
+    }
+
+    #[tokio::test]
+    async fn test_power_review_preview_blocks_secrets_loads_repo_rules_and_uses_zero_subagents() {
+        let temp = tempfile::tempdir().unwrap();
+        let ws = temp.path();
+        std::fs::create_dir_all(ws.join("src")).unwrap();
+        std::fs::create_dir_all(ws.join(".opencodereview")).unwrap();
+        std::fs::write(ws.join("src/auth.rs"), "pub fn verify() -> bool { true }\n").unwrap();
+        std::fs::write(ws.join(".env"), "SECRET_KEY=supersecret\n").unwrap();
+        std::fs::write(
+            ws.join(".opencodereview/rule.json"),
+            r#"{"rules":[{"path":"src/*.rs","rule":"Require constant-time secret checks."}]}"#,
+        )
+        .unwrap();
+
+        let out = dispatch("power_review", &json!({"preview": true}), ws)
+            .await
+            .unwrap()
+            .unwrap();
+
+        assert!(out.contains("Code Review Preview"));
+        assert!(out.contains("src/auth.rs"));
+        assert!(out.contains(".opencodereview/rule.json"));
+        assert!(!out.contains(".env` —") || out.contains("secret/credential"));
+        assert_eq!(
+            read_review_subagent_runs(ws),
+            0,
+            "preview=true must never increment reviewer subagent runs"
+        );
     }
 }

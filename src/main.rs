@@ -169,15 +169,51 @@ enum Commands {
         json: bool,
     },
 
-    /// Perform a multi-agent adversarial code review on git changes
+    /// Perform a hybrid deterministic + multi-agent code review on git changes or workspace files
     Review {
         /// Only review staged changes
         #[arg(short = 's', long)]
         staged: bool,
 
-        /// Output in machine-readable JSON format
+        /// Output in machine-readable JSON format (shorthand for --format json)
         #[arg(long)]
         json: bool,
+
+        /// Zero-token deterministic dry-run showing reviewable files, blocked secrets, AST clusters, and active rules
+        #[arg(long)]
+        preview: bool,
+
+        /// Scan all workspace source files instead of only git diffs
+        #[arg(long)]
+        scan: bool,
+
+        /// Base git ref/SHA for range review (e.g. main, HEAD~3)
+        #[arg(long)]
+        from: Option<String>,
+
+        /// Head git ref/SHA for range review (defaults to HEAD when --from is set)
+        #[arg(long)]
+        to: Option<String>,
+
+        /// Review a single commit SHA (shorthand for <sha>~1..<sha>)
+        #[arg(long)]
+        commit: Option<String>,
+
+        /// Explicit path to a review rules JSON file (.minicode/review_rules.json or .opencodereview/rule.json)
+        #[arg(long)]
+        rule: Option<PathBuf>,
+
+        /// Concise business/PR context attached to the review metadata
+        #[arg(short = 'b', long)]
+        background: Option<String>,
+
+        /// Output audience style: human (default) or agent (compact deterministic coordinates)
+        #[arg(long, default_value = "human")]
+        audience: String,
+
+        /// Output format: markdown (default), json, or sarif (SARIF 2.1.0 for CI Code Scanning)
+        #[arg(long, default_value = "markdown")]
+        format: String,
     },
 
     /// Run MiniDoctor multi-stack codebase & runtime health checks (writes .minicode/minidoctor/NEEDEDFIX.md)
@@ -792,8 +828,36 @@ async fn main() -> anyhow::Result<()> {
         Some(Commands::Diff { staged, json }) => {
             handle_diff_cli(&workspace_canonical, staged, json).await?;
         }
-        Some(Commands::Review { staged, json }) => {
-            handle_review_cli(&workspace_canonical, staged, json).await?;
+        Some(Commands::Review {
+            staged,
+            json,
+            preview,
+            scan,
+            from,
+            to,
+            commit,
+            rule,
+            background,
+            audience,
+            format,
+        }) => {
+            handle_review_cli(
+                &workspace_canonical,
+                ReviewCliOptions {
+                    staged,
+                    json,
+                    preview,
+                    scan,
+                    from,
+                    to,
+                    commit,
+                    rule,
+                    background,
+                    audience,
+                    format,
+                },
+            )
+            .await?;
         }
         Some(Commands::Doctor {
             env,
@@ -1425,12 +1489,182 @@ async fn handle_diff_cli(workspace: &Path, staged: bool, json_mode: bool) -> any
     Ok(())
 }
 
-async fn handle_review_cli(workspace: &Path, staged: bool, json_mode: bool) -> anyhow::Result<()> {
-    let report = git::reviewer::GitReviewer::review_workspace(workspace, staged).await?;
-    if json_mode {
-        println!("{}", serde_json::to_string_pretty(&report)?);
+struct ReviewCliOptions {
+    staged: bool,
+    json: bool,
+    preview: bool,
+    scan: bool,
+    from: Option<String>,
+    to: Option<String>,
+    commit: Option<String>,
+    rule: Option<PathBuf>,
+    background: Option<String>,
+    audience: String,
+    format: String,
+}
+
+async fn handle_review_cli(workspace: &Path, opts: ReviewCliOptions) -> anyhow::Result<()> {
+    let audience = git::ocr::ReviewAudience::parse(&opts.audience);
+    let output_format = if opts.json {
+        git::ocr::ReviewOutputFormat::Json
     } else {
-        println!("{}", git::reviewer::GitReviewer::format_report(&report));
+        git::ocr::ReviewOutputFormat::parse(&opts.format)
+    };
+
+    let (base_ref, head_ref) = if let Some(ref sha) = opts.commit {
+        let trimmed = sha.trim();
+        (Some(format!("{trimmed}~1")), Some(trimmed.to_string()))
+    } else if let Some(ref from_ref) = opts.from {
+        (
+            Some(from_ref.trim().to_string()),
+            Some(
+                opts.to
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty())
+                    .unwrap_or("HEAD")
+                    .to_string(),
+            ),
+        )
+    } else {
+        (None, opts.to.clone())
+    };
+
+    if opts.preview {
+        let git_svc = git::service::GitService::new(workspace.to_path_buf());
+        let (mode_label, candidates) = if opts.scan {
+            (
+                "scan".to_string(),
+                git::reviewer::GitReviewer::discover_workspace_source_files(workspace),
+            )
+        } else if let (Some(ref base), Some(ref head)) = (&base_ref, &head_ref) {
+            let files = if git_svc.is_git_repo().await {
+                git_svc
+                    .diff_range(base, head)
+                    .await
+                    .map(|(_, f)| f)
+                    .unwrap_or_default()
+            } else {
+                Vec::new()
+            };
+            (format!("range {base}..{head}"), files)
+        } else if git_svc.is_git_repo().await {
+            let mut files = git_svc
+                .get_status()
+                .await
+                .map(|st| {
+                    if opts.staged {
+                        st.staged
+                    } else {
+                        let mut all = st.staged;
+                        all.extend(st.unstaged);
+                        all.extend(
+                            st.untracked
+                                .into_iter()
+                                .filter(|rel| workspace.join(rel).is_file()),
+                        );
+                        all
+                    }
+                })
+                .unwrap_or_default();
+            files.sort();
+            files.dedup();
+            if !files.is_empty() {
+                (
+                    if opts.staged { "staged" } else { "workspace" }.to_string(),
+                    files,
+                )
+            } else if !opts.staged {
+                let fallback = git_svc
+                    .diff_range("HEAD~1", "HEAD")
+                    .await
+                    .map(|(_, f)| f)
+                    .unwrap_or_default();
+                if !fallback.is_empty() {
+                    ("HEAD~1..HEAD".to_string(), fallback)
+                } else {
+                    (
+                        "scan".to_string(),
+                        git::reviewer::GitReviewer::discover_workspace_source_files(workspace),
+                    )
+                }
+            } else {
+                ("staged".to_string(), Vec::new())
+            }
+        } else {
+            (
+                "scan".to_string(),
+                git::reviewer::GitReviewer::discover_workspace_source_files(workspace),
+            )
+        };
+
+        let preview = git::ocr::HybridReviewEngine::build_preview(
+            workspace,
+            &mode_label,
+            &candidates,
+            opts.rule.as_deref(),
+        );
+        if output_format == git::ocr::ReviewOutputFormat::Json {
+            println!("{}", serde_json::to_string_pretty(&preview)?);
+        } else {
+            println!(
+                "{}",
+                git::ocr::HybridReviewEngine::format_preview(&preview, audience)
+            );
+        }
+        return Ok(());
+    }
+
+    let rule_engine = git::ocr::ReviewRuleEngine::load(workspace, opts.rule.as_deref());
+    let (report, raw_diff) = if opts.scan {
+        git::reviewer::GitReviewer::review_workspace_scan(workspace, opts.rule.as_deref()).await?
+    } else {
+        git::reviewer::GitReviewer::review_workspace_with_range(
+            workspace,
+            opts.staged,
+            base_ref.as_deref(),
+            head_ref.as_deref(),
+        )
+        .await?
+    };
+
+    let anchored =
+        git::ocr::CommentAnchorEngine::anchor_static_report(workspace, &report, &raw_diff);
+
+    match output_format {
+        git::ocr::ReviewOutputFormat::Sarif => {
+            let sarif = git::ocr::CommentAnchorEngine::to_sarif_json(&anchored);
+            println!("{}", serde_json::to_string_pretty(&sarif)?);
+        }
+        git::ocr::ReviewOutputFormat::Json => {
+            let payload = serde_json::json!({
+                "total_score": report.total_score,
+                "files_audited": report.files_audited,
+                "findings": report.findings,
+                "summary": report.summary,
+                "anchored_comments": anchored.comments,
+                "relocated_count": anchored.relocated_count,
+                "dropped_unverifiable": anchored.dropped_unverifiable,
+                "rule_config_source": rule_engine.config_source(),
+                "background": opts.background,
+            });
+            println!("{}", serde_json::to_string_pretty(&payload)?);
+        }
+        git::ocr::ReviewOutputFormat::Markdown => {
+            let mut rendered =
+                git::ocr::CommentAnchorEngine::format_for_audience(&report, &anchored, audience);
+            if audience == git::ocr::ReviewAudience::Human {
+                if let Some(ref bg) = opts.background {
+                    if !bg.trim().is_empty() {
+                        rendered = format!("*Context:* {}\n\n{}", bg.trim(), rendered);
+                    }
+                }
+                if let Some(src) = rule_engine.config_source() {
+                    rendered.push_str(&format!("\n📜 *Active Review Rules:* `{}`\n", src));
+                }
+            }
+            println!("{}", rendered);
+        }
     }
     Ok(())
 }
@@ -1477,7 +1711,27 @@ async fn handle_power_cli(
             run_headless_task(workspace, config, &prompt, json_stream, None).await?;
         }
         Some(PowerCommands::Review { staged }) => {
-            handle_review_cli(workspace, staged, json_mode).await?;
+            handle_review_cli(
+                workspace,
+                ReviewCliOptions {
+                    staged,
+                    json: json_mode,
+                    preview: false,
+                    scan: false,
+                    from: None,
+                    to: None,
+                    commit: None,
+                    rule: None,
+                    background: None,
+                    audience: "human".to_string(),
+                    format: if json_mode {
+                        "json".to_string()
+                    } else {
+                        "markdown".to_string()
+                    },
+                },
+            )
+            .await?;
         }
         Some(PowerCommands::Verify) => {
             let git = crate::git::GitService::new(workspace.to_path_buf());
