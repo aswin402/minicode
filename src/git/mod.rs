@@ -5,7 +5,7 @@ pub mod diff_filter;
 pub mod diff_parser;
 pub use diff_parser as diff_viewer;
 pub mod diff_projector;
-pub mod ocr;
+pub mod mini_review;
 pub mod reviewer;
 pub mod service;
 pub mod worktree;
@@ -22,9 +22,9 @@ pub use diff_parser::{GitDiffFile, GitDiffLine, GitDiffViewer};
 pub use diff_projector::{
     DiffProjectionReport, DiffProjector, ProjectedSymbolChange, SymbolMutationType,
 };
-pub use ocr::{
-    AnchoredComment, AnchoredReviewSummary, CommentAnchorEngine, CommentSeverity,
-    HybridReviewEngine, ReviewAudience, ReviewFileCluster, ReviewFileClusterer, ReviewOutputFormat,
+pub use mini_review::{
+    AnchoredComment, AnchoredReviewSummary, CommentAnchorEngine, CommentSeverity, MiniReviewEngine,
+    ReviewAudience, ReviewFileCluster, ReviewFileClusterer, ReviewOutputFormat,
     ReviewPrecisionPrompts, ReviewPreviewReport, ReviewRuleEngine,
 };
 pub use reviewer::{GitReviewer, ReviewFinding, ReviewReport};

@@ -1,8 +1,7 @@
-//! Native Rust Hybrid Code Review Engine (`src/git/ocr/`) inspired by
-//! `alibaba/open-code-review` (Apache-2.0).
+//! Native Rust MiniReview Engine (`src/git/mini_review/`).
 //!
 //! Combines deterministic engineering pipelines (multi-gate file filtering, secret-path guard,
-//! language & repo `.minicode/review_rules.json` / `.opencodereview/rule.json` resolution,
+//! language & repo `.minicode/review_rules.json` / `.minireview/rule.json` resolution,
 //! AST `CodeGraph` file clustering, diff-hunk line anchoring, SARIF 2.1.0 export) with
 //! precision-first `MiniPub` Reviewer subagents.
 
@@ -18,13 +17,13 @@ pub use comments::{
 pub use rules::{
     builtin_language_rule_for_path, ExcludedFile, ExclusionReason, FileSelectionReport,
     RepoPathRule, RepoRuleConfig, ResolvedRuleGroup, ReviewRuleEngine, MINICODE_REVIEW_RULES_PATH,
-    OPEN_CODE_REVIEW_RULES_PATH,
+    MINI_REVIEW_RULES_PATH,
 };
 
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 
-/// Zero-token deterministic preview of what a code review run will inspect, exclude, cluster,
+/// Zero-token deterministic preview of what a MiniReview run will inspect, exclude, cluster,
 /// and enforce before invoking any LLM.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ReviewPreviewReport {
@@ -35,10 +34,10 @@ pub struct ReviewPreviewReport {
     pub rule_groups: Vec<ResolvedRuleGroup>,
 }
 
-/// High-level facade for the native Rust Hybrid Review Engine.
-pub struct HybridReviewEngine;
+/// High-level facade for the native Rust MiniReview Engine.
+pub struct MiniReviewEngine;
 
-impl HybridReviewEngine {
+impl MiniReviewEngine {
     /// Builds a deterministic zero-token review plan (filtering, secret-path protection, AST
     /// clustering, and language/repo rule resolution) for `candidate_files`.
     #[must_use]
@@ -73,7 +72,7 @@ impl HybridReviewEngine {
             return serde_json::to_string_pretty(preview).unwrap_or_default();
         }
 
-        let mut out = format!("### 🔍 Code Review Preview (`{}` mode)\n\n", preview.mode);
+        let mut out = format!("### 🔍 MiniReview Preview (`{}` mode)\n\n", preview.mode);
         out.push_str(&format!(
             "• **Reviewable Files:** {}\n",
             preview.selection.reviewable_files.len()

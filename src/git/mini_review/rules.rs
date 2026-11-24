@@ -1,7 +1,5 @@
 //! Deterministic multi-gate file filtering, secret-path protection, built-in language review rules,
-//! and repo-local `.minicode/review_rules.json` / `.opencodereview/rule.json` resolution.
-//!
-//! Architecture & rule discipline inspired by `alibaba/open-code-review` (Apache-2.0).
+//! and repo-local `.minicode/review_rules.json` / `.minireview/rule.json` resolution for MiniReview.
 
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashSet};
@@ -9,7 +7,7 @@ use std::path::Path;
 
 /// Default repository rule configuration locations checked in precedence order.
 pub const MINICODE_REVIEW_RULES_PATH: &str = ".minicode/review_rules.json";
-pub const OPEN_CODE_REVIEW_RULES_PATH: &str = ".opencodereview/rule.json";
+pub const MINI_REVIEW_RULES_PATH: &str = ".minireview/rule.json";
 
 /// Reason a changed/workspace path was excluded before reaching the LLM reviewer.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -49,7 +47,7 @@ pub struct FileSelectionReport {
     pub excluded_files: Vec<ExcludedFile>,
 }
 
-/// Drop-in schema compatible with both `.minicode/review_rules.json` and `.opencodereview/rule.json`.
+/// Drop-in schema compatible with both `.minicode/review_rules.json` and `.minireview/rule.json`.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct RepoRuleConfig {
     #[serde(default)]
@@ -95,7 +93,7 @@ pub struct ReviewRuleEngine {
 
 impl ReviewRuleEngine {
     /// Loads repository rules from an explicit path, `.minicode/review_rules.json`, or
-    /// `.opencodereview/rule.json` (in that precedence order). Falls back cleanly to built-in
+    /// `.minireview/rule.json` (in that precedence order). Falls back cleanly to built-in
     /// language rules if no repo rule file exists or if JSON is malformed.
     #[must_use]
     pub fn load(workspace_root: &Path, explicit_rule_path: Option<&Path>) -> Self {
@@ -114,8 +112,8 @@ impl ReviewRuleEngine {
                     MINICODE_REVIEW_RULES_PATH.to_string(),
                 ),
                 (
-                    workspace_root.join(OPEN_CODE_REVIEW_RULES_PATH),
-                    OPEN_CODE_REVIEW_RULES_PATH.to_string(),
+                    workspace_root.join(MINI_REVIEW_RULES_PATH),
+                    MINI_REVIEW_RULES_PATH.to_string(),
                 ),
             ],
         };
@@ -707,12 +705,12 @@ mod tests {
     }
 
     #[test]
-    fn test_loads_opencodereview_rule_json_and_merges_or_replaces_builtin() {
+    fn test_loads_mini_review_rule_json_and_merges_or_replaces_builtin() {
         let tmp = tempfile::tempdir().unwrap();
-        let ocr_dir = tmp.path().join(".opencodereview");
-        std::fs::create_dir_all(&ocr_dir).unwrap();
+        let mr_dir = tmp.path().join(".minireview");
+        std::fs::create_dir_all(&mr_dir).unwrap();
         std::fs::write(
-            ocr_dir.join("rule.json"),
+            mr_dir.join("rule.json"),
             r#"{
   "rules": [
     {
@@ -732,7 +730,7 @@ mod tests {
         .unwrap();
 
         let engine = ReviewRuleEngine::load(tmp.path(), None);
-        assert_eq!(engine.config_source(), Some(OPEN_CODE_REVIEW_RULES_PATH));
+        assert_eq!(engine.config_source(), Some(MINI_REVIEW_RULES_PATH));
 
         let sel = engine.filter_files(&[
             "src/auth/jwt.rs".to_string(),

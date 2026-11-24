@@ -146,7 +146,7 @@ pub fn get_schemas() -> Vec<ToolSchema> {
         },
         ToolSchema {
             name: "power_review".to_string(),
-            description: "Run the native Hybrid Code Review Engine (deterministic filtering + secret-path guard + language/repo rules from `.minicode/review_rules.json` or `.opencodereview/rule.json` + AST-clustered parallel MiniPub Reviewers + exact line anchoring). Supports Stage 1 (`SpecCompliance`), Stage 2 (`CodeQuality`), `both` (default), `re-review` (scoped fix-diff verification with a 5-round circuit breaker), `preview=true` (zero-token dry-run), `background` (concise business/PR context), and `analysis=true` (separate Behavior & Impact brief). Writes a `.minicode/sdd/<slug>/review-<base>..<head>.diff` package and updates the SDD ledger.".to_string(),
+            description: "Run the native MiniReview Engine (deterministic filtering + secret-path guard + language/repo rules from `.minicode/review_rules.json` or `.minireview/rule.json` + AST-clustered parallel MiniPub Reviewers + exact line anchoring). Supports Stage 1 (`SpecCompliance`), Stage 2 (`CodeQuality`), `both` (default), `re-review` (scoped fix-diff verification with a 5-round circuit breaker), `preview=true` (zero-token dry-run), `background` (concise business/PR context), and `analysis=true` (separate Behavior & Impact brief). Writes a `.minicode/sdd/<slug>/review-<base>..<head>.diff` package and updates the SDD ledger.".to_string(),
             parameters: json!({
                 "type": "object",
                 "properties": {
@@ -180,7 +180,7 @@ pub fn get_schemas() -> Vec<ToolSchema> {
                     },
                     "rule_file": {
                         "type": "string",
-                        "description": "Optional path to a custom review rules JSON file (defaults to `.minicode/review_rules.json` or `.opencodereview/rule.json`)."
+                        "description": "Optional path to a custom review rules JSON file (defaults to `.minicode/review_rules.json` or `.minireview/rule.json`)."
                     },
                     "base_sha": {
                         "type": "string",
@@ -756,12 +756,13 @@ async fn run_reviewer_subagent(workspace_root: &Path, ctx: &ReviewerRunContext<'
     let behavior_section = if ctx.analysis {
         format!(
             "\n{}\n",
-            crate::git::ocr::ReviewPrecisionPrompts::BEHAVIOR_IMPACT_CONTRACT
+            crate::git::mini_review::ReviewPrecisionPrompts::BEHAVIOR_IMPACT_CONTRACT
         )
     } else {
         String::new()
     };
-    let precision_section = crate::git::ocr::ReviewPrecisionPrompts::ASYMMETRIC_FACT_CHECK_CONTRACT;
+    let precision_section =
+        crate::git::mini_review::ReviewPrecisionPrompts::ASYMMETRIC_FACT_CHECK_CONTRACT;
     let tool_budget_hint = if ctx.is_rereview { 4 } else { 8 };
     let prompt = format!(
         "You are the dedicated read-only code reviewer for this workspace. Review stage: `{stage}`.\n\
@@ -1566,20 +1567,22 @@ pub async fn dispatch(
                         head_sha,
                     )
                     .await;
-                    let preview_report = crate::git::ocr::HybridReviewEngine::build_preview(
+                    let preview_report = crate::git::mini_review::MiniReviewEngine::build_preview(
                         workspace_root,
                         &mode_label,
                         &candidates,
                         explicit_rule_path,
                     );
-                    return Ok(crate::git::ocr::HybridReviewEngine::format_preview(
+                    return Ok(crate::git::mini_review::MiniReviewEngine::format_preview(
                         &preview_report,
-                        crate::git::ocr::ReviewAudience::Human,
+                        crate::git::mini_review::ReviewAudience::Human,
                     ));
                 }
 
-                let rule_engine =
-                    crate::git::ocr::ReviewRuleEngine::load(workspace_root, explicit_rule_path);
+                let rule_engine = crate::git::mini_review::ReviewRuleEngine::load(
+                    workspace_root,
+                    explicit_rule_path,
+                );
 
                 let (report, raw_audited_diff) = GitReviewer::review_workspace_with_range(
                     workspace_root,
@@ -1588,16 +1591,18 @@ pub async fn dispatch(
                     head_sha,
                 )
                 .await?;
-                let anchored_static = crate::git::ocr::CommentAnchorEngine::anchor_static_report(
-                    workspace_root,
-                    &report,
-                    &raw_audited_diff,
-                );
-                let mut formatted = crate::git::ocr::CommentAnchorEngine::format_for_audience(
-                    &report,
-                    &anchored_static,
-                    crate::git::ocr::ReviewAudience::Human,
-                );
+                let anchored_static =
+                    crate::git::mini_review::CommentAnchorEngine::anchor_static_report(
+                        workspace_root,
+                        &report,
+                        &raw_audited_diff,
+                    );
+                let mut formatted =
+                    crate::git::mini_review::CommentAnchorEngine::format_for_audience(
+                        &report,
+                        &anchored_static,
+                        crate::git::mini_review::ReviewAudience::Human,
+                    );
                 if let Some(src) = rule_engine.config_source() {
                     formatted.push_str(&format!("\n📜 **Active Repo Review Rules:** `{}`\n", src));
                 }
@@ -1815,7 +1820,9 @@ pub async fn dispatch(
                     let blocked_secrets = selection
                         .excluded_files
                         .iter()
-                        .filter(|e| e.reason == crate::git::ocr::ExclusionReason::SecretPath)
+                        .filter(|e| {
+                            e.reason == crate::git::mini_review::ExclusionReason::SecretPath
+                        })
                         .count();
                     if blocked_secrets > 0 {
                         formatted.push_str(&format!(
@@ -1827,12 +1834,12 @@ pub async fn dispatch(
                     let max_clusters = if effective_is_rereview {
                         1
                     } else {
-                        crate::git::ocr::ReviewFileClusterer::DEFAULT_MAX_CLUSTERS
+                        crate::git::mini_review::ReviewFileClusterer::DEFAULT_MAX_CLUSTERS
                     };
-                    let clusters = crate::git::ocr::ReviewFileClusterer::cluster_files(
+                    let clusters = crate::git::mini_review::ReviewFileClusterer::cluster_files(
                         workspace_root,
                         &selection.reviewable_files,
-                        crate::git::ocr::ReviewFileClusterer::DEFAULT_MAX_CLUSTER_SIZE,
+                        crate::git::mini_review::ReviewFileClusterer::DEFAULT_MAX_CLUSTER_SIZE,
                         max_clusters,
                     );
 
@@ -2825,11 +2832,11 @@ diff --git a/old.ts b/old.ts
         let temp = tempfile::tempdir().unwrap();
         let ws = temp.path();
         std::fs::create_dir_all(ws.join("src")).unwrap();
-        std::fs::create_dir_all(ws.join(".opencodereview")).unwrap();
+        std::fs::create_dir_all(ws.join(".minireview")).unwrap();
         std::fs::write(ws.join("src/auth.rs"), "pub fn verify() -> bool { true }\n").unwrap();
         std::fs::write(ws.join(".env"), "SECRET_KEY=supersecret\n").unwrap();
         std::fs::write(
-            ws.join(".opencodereview/rule.json"),
+            ws.join(".minireview/rule.json"),
             r#"{"rules":[{"path":"src/*.rs","rule":"Require constant-time secret checks."}]}"#,
         )
         .unwrap();
@@ -2839,9 +2846,9 @@ diff --git a/old.ts b/old.ts
             .unwrap()
             .unwrap();
 
-        assert!(out.contains("Code Review Preview"));
+        assert!(out.contains("MiniReview Preview"));
         assert!(out.contains("src/auth.rs"));
-        assert!(out.contains(".opencodereview/rule.json"));
+        assert!(out.contains(".minireview/rule.json"));
         assert!(!out.contains(".env` —") || out.contains("secret/credential"));
         assert_eq!(
             read_review_subagent_runs(ws),

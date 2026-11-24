@@ -1,7 +1,7 @@
-//! Deterministic AST-graph + directory-affinity file clustering for parallel code review.
+//! Deterministic AST-graph + directory-affinity file clustering for parallel MiniReview.
 //!
-//! Inspired by `alibaba/open-code-review`'s semantic `grouping_task`, but executed at **0 LLM tokens**
-//! by exploiting `minicode`'s Tree-sitter `CodeGraph` import/dependency edges and test-file pairing.
+//! Executes semantic diff partitioning at **0 LLM tokens** by exploiting `minicode`'s
+//! Tree-sitter `CodeGraph` import/dependency edges and test-file pairing.
 
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashMap, HashSet};
@@ -20,8 +20,7 @@ pub struct ReviewFileCluster {
 pub struct ReviewFileClusterer;
 
 impl ReviewFileClusterer {
-    /// Default upper bound per cluster (matches OCR's max-10 heuristic, tuned slightly tighter
-    /// to keep each MiniPub Reviewer's context compact and fast).
+    /// Default upper bound per cluster to keep each MiniPub Reviewer's context compact and fast.
     pub const DEFAULT_MAX_CLUSTER_SIZE: usize = 8;
     /// Maximum number of concurrent clusters to avoid excessive subagent fan-out on huge diffs.
     pub const DEFAULT_MAX_CLUSTERS: usize = 3;

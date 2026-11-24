@@ -117,7 +117,7 @@ impl GitReviewer {
     ) -> Result<(ReviewReport, String)> {
         let candidates = Self::discover_workspace_source_files(workspace_root);
         let rule_engine =
-            crate::git::ocr::ReviewRuleEngine::load(workspace_root, explicit_rule_path);
+            crate::git::mini_review::ReviewRuleEngine::load(workspace_root, explicit_rule_path);
         let selection = rule_engine.filter_files(&candidates);
         if selection.reviewable_files.is_empty() {
             return Ok((

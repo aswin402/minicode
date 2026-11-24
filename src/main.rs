@@ -199,7 +199,7 @@ enum Commands {
         #[arg(long)]
         commit: Option<String>,
 
-        /// Explicit path to a review rules JSON file (.minicode/review_rules.json or .opencodereview/rule.json)
+        /// Explicit path to a review rules JSON file (.minicode/review_rules.json or .minireview/rule.json)
         #[arg(long)]
         rule: Option<PathBuf>,
 
@@ -1504,11 +1504,11 @@ struct ReviewCliOptions {
 }
 
 async fn handle_review_cli(workspace: &Path, opts: ReviewCliOptions) -> anyhow::Result<()> {
-    let audience = git::ocr::ReviewAudience::parse(&opts.audience);
+    let audience = git::mini_review::ReviewAudience::parse(&opts.audience);
     let output_format = if opts.json {
-        git::ocr::ReviewOutputFormat::Json
+        git::mini_review::ReviewOutputFormat::Json
     } else {
-        git::ocr::ReviewOutputFormat::parse(&opts.format)
+        git::mini_review::ReviewOutputFormat::parse(&opts.format)
     };
 
     let (base_ref, head_ref) = if let Some(ref sha) = opts.commit {
@@ -1598,24 +1598,24 @@ async fn handle_review_cli(workspace: &Path, opts: ReviewCliOptions) -> anyhow::
             )
         };
 
-        let preview = git::ocr::HybridReviewEngine::build_preview(
+        let preview = git::mini_review::MiniReviewEngine::build_preview(
             workspace,
             &mode_label,
             &candidates,
             opts.rule.as_deref(),
         );
-        if output_format == git::ocr::ReviewOutputFormat::Json {
+        if output_format == git::mini_review::ReviewOutputFormat::Json {
             println!("{}", serde_json::to_string_pretty(&preview)?);
         } else {
             println!(
                 "{}",
-                git::ocr::HybridReviewEngine::format_preview(&preview, audience)
+                git::mini_review::MiniReviewEngine::format_preview(&preview, audience)
             );
         }
         return Ok(());
     }
 
-    let rule_engine = git::ocr::ReviewRuleEngine::load(workspace, opts.rule.as_deref());
+    let rule_engine = git::mini_review::ReviewRuleEngine::load(workspace, opts.rule.as_deref());
     let (report, raw_diff) = if opts.scan {
         git::reviewer::GitReviewer::review_workspace_scan(workspace, opts.rule.as_deref()).await?
     } else {
@@ -1629,14 +1629,14 @@ async fn handle_review_cli(workspace: &Path, opts: ReviewCliOptions) -> anyhow::
     };
 
     let anchored =
-        git::ocr::CommentAnchorEngine::anchor_static_report(workspace, &report, &raw_diff);
+        git::mini_review::CommentAnchorEngine::anchor_static_report(workspace, &report, &raw_diff);
 
     match output_format {
-        git::ocr::ReviewOutputFormat::Sarif => {
-            let sarif = git::ocr::CommentAnchorEngine::to_sarif_json(&anchored);
+        git::mini_review::ReviewOutputFormat::Sarif => {
+            let sarif = git::mini_review::CommentAnchorEngine::to_sarif_json(&anchored);
             println!("{}", serde_json::to_string_pretty(&sarif)?);
         }
-        git::ocr::ReviewOutputFormat::Json => {
+        git::mini_review::ReviewOutputFormat::Json => {
             let payload = serde_json::json!({
                 "total_score": report.total_score,
                 "files_audited": report.files_audited,
@@ -1650,10 +1650,11 @@ async fn handle_review_cli(workspace: &Path, opts: ReviewCliOptions) -> anyhow::
             });
             println!("{}", serde_json::to_string_pretty(&payload)?);
         }
-        git::ocr::ReviewOutputFormat::Markdown => {
-            let mut rendered =
-                git::ocr::CommentAnchorEngine::format_for_audience(&report, &anchored, audience);
-            if audience == git::ocr::ReviewAudience::Human {
+        git::mini_review::ReviewOutputFormat::Markdown => {
+            let mut rendered = git::mini_review::CommentAnchorEngine::format_for_audience(
+                &report, &anchored, audience,
+            );
+            if audience == git::mini_review::ReviewAudience::Human {
                 if let Some(ref bg) = opts.background {
                     if !bg.trim().is_empty() {
                         rendered = format!("*Context:* {}\n\n{}", bg.trim(), rendered);

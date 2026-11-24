@@ -1,8 +1,6 @@
 //! Structured line-anchored review comments, deterministic diff-hunk re-anchoring,
-//! asymmetric fact-checker verification, audience formatters, and SARIF 2.1.0 export.
-//!
-//! Precision comment-anchoring and asymmetric fact-checking inspired by
-//! `alibaba/open-code-review` (Apache-2.0).
+//! asymmetric fact-checker verification, audience formatters, and SARIF 2.1.0 export
+//! for the native MiniReview engine.
 
 use crate::git::diff_parser::{GitDiffFile, GitDiffViewer};
 use crate::git::reviewer::{ReviewFinding, ReviewReport};
@@ -50,7 +48,7 @@ impl ReviewOutputFormat {
     }
 }
 
-/// Normalized severity levels aligned with OCR & SARIF 2.1.0.
+/// Normalized severity levels aligned with MiniReview & SARIF 2.1.0.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum CommentSeverity {
@@ -429,7 +427,7 @@ impl CommentAnchorEngine {
             .comments
             .iter()
             .map(|c| {
-                let rule_id = format!("minicode-review/{}", c.category);
+                let rule_id = format!("mini-review/{}", c.category);
                 let mut region = json!({});
                 if let Some(line) = c.line {
                     region["startLine"] = json!(line);
@@ -470,7 +468,7 @@ impl CommentAnchorEngine {
             "runs": [{
                 "tool": {
                     "driver": {
-                        "name": "minicode-review",
+                        "name": "mini-review",
                         "version": env!("CARGO_PKG_VERSION"),
                         "informationUri": "https://github.com/aswin402/minicode",
                     }
@@ -542,8 +540,7 @@ impl CommentAnchorEngine {
     }
 }
 
-/// Asymmetric precision fact-checker contract & behavior/impact brief instructions inspired by
-/// `alibaba/open-code-review`'s `review_filter_task` and `behaviortask`.
+/// Asymmetric precision fact-checker contract & behavior/impact brief instructions for MiniReview.
 pub struct ReviewPrecisionPrompts;
 
 impl ReviewPrecisionPrompts {

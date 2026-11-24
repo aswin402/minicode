@@ -2390,8 +2390,8 @@ always_apply: false
 "#,
     },
     BuiltinSkillDef {
-        name: "open-code-review",
-        content: include_str!("../tools/minikit/builtin_skills/open-code-review/SKILL.md"),
+        name: "mini-review",
+        content: include_str!("../tools/minikit/builtin_skills/mini-review/SKILL.md"),
     },
 ];
 
@@ -2971,20 +2971,41 @@ mod tests {
             );
         }
 
-        // Verify native `open-code-review` hybrid code review skill (inspired by alibaba/open-code-review)
-        let ocr = find_builtin_skill("open-code-review")
-            .expect("Missing built-in `open-code-review` skill in MiniVault");
-        assert_eq!(ocr.kind(), crate::vault::models::SkillKind::Workflow);
+        // Verify native `mini-review` precision code review skill + automatic `power_review` tool promotion
+        let mr = find_builtin_skill("mini-review")
+            .expect("Missing built-in `mini-review` skill in MiniVault");
+        assert_eq!(mr.kind(), crate::vault::models::SkillKind::Workflow);
         assert!(
-            crate::tools::minikit::builtin_skills::find_builtin_skill("open-code-review").is_some(),
-            "Missing built-in `open-code-review` skill in MiniKit"
+            mr.frontmatter
+                .allowed_tools
+                .iter()
+                .any(|t| t == "power_review"),
+            "`mini-review` must declare `power_review` in allowed_tools for sticky auto-promotion"
         );
-        let ocr_scan = crate::vault::skillspector::SkillSpectorEngine::scan_vault_skill(&ocr, None);
+        assert!(
+            crate::tools::minikit::builtin_skills::find_builtin_skill("mini-review").is_some(),
+            "Missing built-in `mini-review` skill in MiniKit"
+        );
+        let mr_scan = crate::vault::skillspector::SkillSpectorEngine::scan_vault_skill(&mr, None);
         assert_eq!(
-            ocr_scan.recommendation,
+            mr_scan.recommendation,
             crate::vault::skillspector::InstallRecommendation::Safe,
-            "Built-in skill 'open-code-review' must pass SkillSpector with Safe recommendation: {:?}",
-            ocr_scan.findings
+            "Built-in skill 'mini-review' must pass SkillSpector with Safe recommendation: {:?}",
+            mr_scan.findings
+        );
+
+        // Verify BM25F auto-promotes `power_review` on a standalone PR/code review prompt without an active plan
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let vstore = crate::vault::store::VaultStore::new(tmp.path());
+        let auto_tools = vstore.collect_active_skill_allowed_tools(
+            Some("please run a code review on my PR diff"),
+            None,
+            &Vec::<String>::new(),
+        );
+        assert!(
+            auto_tools.iter().any(|t| t == "power_review"),
+            "standalone code review prompt must auto-promote `power_review` via mini-review skill, got: {:?}",
+            auto_tools
         );
     }
 }

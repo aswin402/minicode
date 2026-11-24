@@ -1,16 +1,17 @@
 ---
-name: "open-code-review"
-description: "Hybrid precision code review workflow combining deterministic filtering, secret-path guards, language & repo rules (.minicode/review_rules.json or .opencodereview/rule.json), AST-clustered parallel inspection, exact line anchoring, and behavioral impact analysis."
+name: "mini-review"
+description: "MiniReview precision code review workflow combining deterministic filtering, secret-path guards, language & repo rules (.minicode/review_rules.json or .minireview/rule.json), AST-clustered parallel inspection, exact line anchoring, and behavioral impact analysis."
 category: "quality-review"
 kind: "workflow"
 globs: ["**/*"]
-triggers: ["code review", "review", "pr review", "audit diff", "open-code-review", "ocr", "sarif"]
+triggers: ["code review", "review", "pr review", "audit diff", "mini-review", "minireview", "sarif"]
+allowed_tools: ["power_review", "power_verify", "git_diff", "read_file", "grep_search", "locate_symbol"]
 always_apply: false
 ---
 
-# Open Code Review — Native Precision Review Workflow
+# MiniReview — Native Precision Review Workflow
 
-> Adapted for `minicode`'s native pure-Rust Hybrid Review Engine (`src/git/ocr/`, `power_review`, and `minicode review`), inspired by `alibaba/open-code-review` (Apache-2.0).
+> Native pure-Rust MiniReview Engine (`src/git/mini_review/`, `power_review`, and `minicode review`).
 
 ## Core Principle
 
@@ -29,9 +30,9 @@ Before reviewing, distill the user's goal, `.minicode/decisions.md`, or commit/P
 For large branches or unfamiliar repos, run `power_review(preview=true)` (or `minicode review --preview`) first:
 - Confirm all intended source files appear in `reviewable_files`.
 - Verify secret/credential paths (`.env`, `*.pem`, `*.key`, credentials) and lockfiles were deterministically excluded.
-- Check whether `.minicode/review_rules.json` or `.opencodereview/rule.json` custom path rules are active.
+- Check whether `.minicode/review_rules.json` or `.minireview/rule.json` custom path rules are active.
 
-### Step 3 — Run Native Hybrid Review
+### Step 3 — Run Native MiniReview
 - **Workspace changes (default):**
   ```
   power_review(background="<concise context>", analysis=true)
