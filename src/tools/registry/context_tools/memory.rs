@@ -67,7 +67,7 @@ pub fn get_schemas() -> Vec<ToolSchema> {
         },
         ToolSchema {
             name: "create_plan".to_string(),
-            description: "Initialize a right-sized Two-Tier Task Plan in Working Memory on ANY turn (2-3 steps for small/targeted tasks, bugfixes, or audits; 4-8+ steps for medium/large features or full apps). Call `update_progress(step=\"active\", status=\"completed\")` immediately as each step or sub-step completes rather than batching at the end; include nested `substeps` whenever a macro step bundles multiple distinct sections/components or multi-stage verification (static build/lint + live browser/viewport QA). Writes the technical blueprint to `minikit_docs/core/implementation.md`, the milestone roadmap to `minikit_docs/core/todo.md` (viewable via /todo modal), and active tactical execution steps to `.minicode/plan/task_plan.md` rendered live in the TUI.".to_string(),
+            description: "Initialize a right-sized Two-Tier Task Plan in Working Memory on ANY turn (2-3 steps for small/targeted tasks, bugfixes, or audits; 4-8+ steps for medium/large features or full apps). Automatically bootstraps and hydrates the canonical Tier-1 project blueprint in `minikit_docs/core/` (`coreidea.md`, `prd.md`, `architecture.md`, `spec.md`, `design.md`, `implementation.md`, `content.md`, `todo.md` — never overwriting user-authored specs) alongside Tier-2 tactical execution steps in `.minicode/plan/task_plan.md` rendered live in the TUI. Call `update_progress(step=\"active\", status=\"completed\")` immediately as each step or sub-step completes; include nested `substeps` whenever a macro step bundles multiple distinct sections/components or multi-stage verification.".to_string(),
             parameters: json!({
                 "type": "object",
                 "properties": {
@@ -117,7 +117,15 @@ pub fn get_schemas() -> Vec<ToolSchema> {
                     },
                     "architecture": {
                         "type": "string",
-                        "description": "Comprehensive top-to-bottom technical architecture and engineering blueprint. Saved into `minikit_docs/core/implementation.md`."
+                        "description": "Comprehensive top-to-bottom technical architecture and engineering blueprint. Saved into `minikit_docs/core/implementation.md`, `architecture.md`, and `spec.md`."
+                    },
+                    "prd": {
+                        "type": "string",
+                        "description": "Optional product requirements, user stories, and success criteria to hydrate `minikit_docs/core/prd.md`."
+                    },
+                    "design": {
+                        "type": "string",
+                        "description": "Optional visual direction, palette, typography, and component styling notes to hydrate `minikit_docs/core/design.md`."
                     },
                     "milestones": {
                         "type": "array",
@@ -901,6 +909,10 @@ pub async fn dispatch(
             let architecture = param::opt_str(args, "architecture")
                 .or_else(|| param::opt_str(args, "blueprint"))
                 .or_else(|| param::opt_str(args, "implementation"));
+            let prd_brief = param::opt_str(args, "prd")
+                .or_else(|| param::opt_str(args, "requirements"));
+            let design_brief = param::opt_str(args, "design")
+                .or_else(|| param::opt_str(args, "design_system"));
             let wm = crate::context::working_memory::WorkingMemory::new(workspace_root);
             let _ = std::fs::remove_file(wm.last_verify_path());
             step_substeps.resize_with(steps.len(), Vec::new);
@@ -946,6 +958,25 @@ pub async fn dispatch(
             let topology_note = plan_dag.format_topology_note();
             let _ = std::fs::remove_file(workspace_root.join(".minicode/plan/last_verify.json"));
             let _ = std::fs::remove_file(workspace_root.join(".minicode/plan/last_review.json"));
+            let mut dag_target_files: Vec<String> = Vec::new();
+            for node in &plan_dag.nodes {
+                for tf in &node.target_files {
+                    if !dag_target_files.contains(tf) {
+                        dag_target_files.push(tf.clone());
+                    }
+                }
+            }
+            let hydrated_core_docs =
+                crate::tools::minikit::sync::MiniKitSyncEngine::ensure_core_docs_for_plan(
+                    workspace_root,
+                    title,
+                    &steps,
+                    architecture,
+                    milestones.as_deref(),
+                    prd_brief,
+                    design_brief,
+                    &dag_target_files,
+                );
             wm.init_two_tier_plan_with_substeps(
                 title,
                 &steps,
@@ -1012,11 +1043,29 @@ pub async fn dispatch(
                 .read_active_plan_summary()
                 .and_then(|s| s.active_task)
                 .unwrap_or(first_step);
+            let core_docs_dir = crate::tools::minikit::resolve_core_docs_dir(workspace_root);
+            let core_dir_rel = core_docs_dir
+                .strip_prefix(workspace_root)
+                .map(|p| p.display().to_string())
+                .unwrap_or_else(|_| core_docs_dir.display().to_string());
+            let core_sync_note = if hydrated_core_docs.is_empty() {
+                format!(
+                    "\n• Tier 1 Core Docs: {}/ (prd.md, architecture.md, design.md, spec.md, coreidea.md, content.md synced)",
+                    core_dir_rel
+                )
+            } else {
+                format!(
+                    "\n• Tier 1 Core Docs: {}/ (created/hydrated: {})",
+                    core_dir_rel,
+                    hydrated_core_docs.join(", ")
+                )
+            };
             Ok(format!(
-                "✔ Created Two-Tier Plan for \"{}\":\n• Tier 1 Blueprint: {}\n• Tier 1 Roadmap: {} (view with /todo)\n• Tier 2 Active Steps: {} ({} macro step(s), live in TUI){}\n► Active Step: [>] \"{}\". Focus ONLY on executing this step now. (If this step is complex, you can decompose it into sub-steps with `power_plan(steps=[...])`; when finished, mark it done with `update_progress`.)",
+                "✔ Created Two-Tier Plan for \"{}\":\n• Tier 1 Blueprint: {}\n• Tier 1 Roadmap: {} (view with /todo){}\n• Tier 2 Active Steps: {} ({} macro step(s), live in TUI){}\n► Active Step: [>] \"{}\". Focus ONLY on executing this step now. (If this step is complex, you can decompose it into sub-steps with `power_plan(steps=[...])`; when finished, mark it done with `update_progress`.)",
                 title,
                 impl_rel,
                 todo_rel,
+                core_sync_note,
                 plan_rel,
                 steps.len(),
                 triad_note,
@@ -1963,6 +2012,121 @@ mod tests {
         assert_eq!(
             dag.nodes[0].status,
             crate::context::working_memory::TaskItemStatus::Completed
+        );
+    }
+
+    #[tokio::test]
+    async fn test_create_plan_bootstraps_and_hydrates_all_minikit_core_docs_without_overwriting_custom(
+    ) {
+        let temp = tempfile::tempdir().unwrap();
+        let ws = temp.path();
+
+        // Seed a realistic project with NO minikit_docs/ directory yet
+        std::fs::write(
+            ws.join("Cargo.toml"),
+            "[package]\nname = \"pulse_api\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+        )
+        .unwrap();
+        std::fs::create_dir_all(ws.join("src")).unwrap();
+        std::fs::write(ws.join("src/main.rs"), "fn main() {}\n").unwrap();
+
+        // Verify PromptBuilder notifies the agent that minikit_docs/core/ is not initialized yet
+        let recency_before = crate::agent::prompt::PromptBuilder::build_recency_context(
+            ws,
+            Some("Build Pulse API"),
+            &[],
+            None,
+            None,
+            None,
+            None,
+        );
+        assert!(recency_before.contains("<project_blueprint>"));
+        assert!(recency_before.contains("Not initialized yet"));
+
+        let created = dispatch(
+            "create_plan",
+            &serde_json::json!({
+                "title": "Pulse Observability API",
+                "architecture": "Axum REST API with SQLite telemetry ingestion and real-time SSE alerts.",
+                "prd": "Provide sub-50ms metric ingestion and alerting webhooks for indie SaaS teams.",
+                "design": "Obsidian terminal-inspired dashboard with #61ffca mint status accents and JetBrains Mono metrics.",
+                "milestones": ["MVP Ingestion", "Alert Webhooks"],
+                "steps": [
+                    {
+                        "id": "t1_ingest",
+                        "title": "Implement /v1/metrics ingestion handler",
+                        "target_files": ["src/routes/ingest.rs"],
+                        "depends_on": []
+                    },
+                    {
+                        "id": "t2_alerts",
+                        "title": "Add SSE alert dispatcher",
+                        "target_files": ["src/services/alerts.rs"],
+                        "depends_on": ["t1_ingest"]
+                    }
+                ],
+                "force": true
+            }),
+            ws,
+        )
+        .await
+        .unwrap()
+        .unwrap();
+
+        assert!(created.contains("Tier 1 Core Docs:"));
+
+        // All 8 canonical minikit_docs/core/ files + .minicode/plan/task_plan.md must exist!
+        let core_dir = ws.join("minikit_docs/core");
+        for doc in crate::tools::minikit::CORE_DOC_FILES {
+            assert!(
+                core_dir.join(doc).is_file(),
+                "Expected minikit_docs/core/{doc} to be auto-created by create_plan"
+            );
+        }
+        assert!(ws.join(".minicode/plan/task_plan.md").is_file());
+
+        // Verify core docs were hydrated with real plan/project details (not untouched boilerplate!)
+        let prd = std::fs::read_to_string(core_dir.join("prd.md")).unwrap();
+        assert!(prd.contains("sub-50ms metric ingestion"));
+        assert!(prd.contains("Implement /v1/metrics ingestion handler"));
+
+        let arch = std::fs::read_to_string(core_dir.join("architecture.md")).unwrap();
+        assert!(arch.contains("Axum REST API"));
+        assert!(arch.contains("src/routes/ingest.rs"));
+
+        let design = std::fs::read_to_string(core_dir.join("design.md")).unwrap();
+        assert!(design.contains("Project Visual Direction"));
+        assert!(design.contains("#61ffca mint status accents"));
+
+        let spec = std::fs::read_to_string(core_dir.join("spec.md")).unwrap();
+        assert!(spec.contains("Axum REST API"));
+        assert!(spec.contains("src/services/alerts.rs"));
+
+        let coreidea = std::fs::read_to_string(core_dir.join("coreidea.md")).unwrap();
+        assert!(coreidea.contains("Pulse Observability API"));
+
+        let content = std::fs::read_to_string(core_dir.join("content.md")).unwrap();
+        assert!(content.contains("src/routes/ingest.rs"));
+
+        // Verify custom user-authored prd.md is NEVER overwritten by a later create_plan
+        let custom_prd = "# Custom Authored PRD\n\nDo not touch my custom requirements.\n";
+        std::fs::write(core_dir.join("prd.md"), custom_prd).unwrap();
+        let _ = dispatch(
+            "create_plan",
+            &serde_json::json!({
+                "title": "Follow-up Polish",
+                "steps": ["Refine error responses"],
+                "prd": "Should not overwrite custom PRD",
+                "force": true
+            }),
+            ws,
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        assert_eq!(
+            std::fs::read_to_string(core_dir.join("prd.md")).unwrap(),
+            custom_prd
         );
     }
 }

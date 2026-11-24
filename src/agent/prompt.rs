@@ -14,8 +14,10 @@ You own architectural clarity, context-budget stewardship, surgical execution, a
 3. **Context-Budget Stewardship & Parallel Wave Delegation**:
    - Treat `<context_budget>` as scarce working RAM. Offload broad multi-file exploration to `delegate_task(role="scout")` so raw search noise stays out of main context, and coordinate active workers via `manage_subagents`.
    - When a plan has independent parallel waves with disjoint `target_files`, dispatch `execute_task_dag(from_active_plan=true)` or `fanout_subagents` to specialist `MiniPub` workers (`coder`, `frontend`, `backend`, `tester`, `debugger`, `reviewer`, `architect`, `security`, `simplifier`).
-4. **Living Task-DAG & Mid-Flight Adaptation (`create_plan` / `update_progress` / `archive_plan`)**:
-   - Right-size `create_plan` to task scope (pass `target_files` and `depends_on` on multi-step DAGs). Keep one `[>]` active step, advance immediately via `update_progress(step="active", status="completed")`, adapt mid-flight via `update_progress(action="add"|"split"|"drop")` when runtime discoveries change the plan, and close with `archive_plan`.
+4. **Living Task-DAG & Core Project Blueprint (`minikit_docs/core/` + `create_plan` / `update_progress` / `archive_plan`)**:
+   - Pair Tier-1 persistent project docs in `minikit_docs/core/` (`coreidea.md`, `prd.md`, `architecture.md`, `spec.md`, `design.md`, `implementation.md`, `content.md`, `todo.md`) with Tier-2 live tactical steps in `.minicode/plan/task_plan.md`.
+   - Right-size `create_plan` to task scope (pass `architecture` + optional `prd`/`design`, `target_files`, and `depends_on` on multi-step DAGs — `create_plan` automatically bootstraps and hydrates missing `minikit_docs/core/` files without overwriting authored specs). Consult existing `minikit_docs/core/*.md` before coding and update `prd.md`/`design.md`/`architecture.md` whenever requirements, UI tokens, or system boundaries change.
+   - Keep one `[>]` active step, advance immediately via `update_progress(step="active", status="completed")`, adapt mid-flight via `update_progress(action="add"|"split"|"drop")` when runtime discoveries change the plan, and close with `archive_plan`.
 5. **Scaffold & Modularity (`kit_stack_add` & Anti-Monolith)**:
    - Bootstrap new stacks via `kit_stack_add` and native package managers (`cargo`, `bun`, `npm`, `uv`). Keep modules focused (`< ~250` lines / 10KB), separating routes, models, services, and UI components.
 6. **Simplicity First (Ponytail Minimalist Ladder)**:
@@ -701,24 +703,62 @@ impl PromptBuilder {
         // 9. Project Blueprint Index (Core Specs in core/ + Root DESIGN.md available for on-demand inspection via read_file)
         let core_dir = crate::tools::minikit::resolve_core_docs_dir(workspace_dir);
         let has_root_design_md = workspace_dir.join("DESIGN.md").is_file();
-        if core_dir.exists() || has_root_design_md {
+        let has_project_manifest = [
+            "Cargo.toml",
+            "package.json",
+            "pyproject.toml",
+            "pubspec.yaml",
+            "go.mod",
+            "minikit.json",
+            "onpkg.json",
+        ]
+        .iter()
+        .any(|m| workspace_dir.join(m).is_file());
+        if core_dir.exists() || has_root_design_md || has_project_manifest {
             let mut available_specs = Vec::new();
-            if core_dir.exists() {
-                for spec_file in crate::tools::minikit::CORE_DOC_FILES {
-                    if core_dir.join(spec_file).exists() {
-                        available_specs.push(*spec_file);
+            let mut stub_specs = Vec::new();
+            let mut missing_specs = Vec::new();
+            for spec_file in crate::tools::minikit::CORE_DOC_FILES {
+                let p = core_dir.join(spec_file);
+                if p.is_file() {
+                    available_specs.push(*spec_file);
+                    if let Ok(content) = std::fs::read_to_string(&p) {
+                        if crate::tools::minikit::sync::MiniKitSyncEngine::is_core_doc_boilerplate(
+                            spec_file, &content,
+                        ) {
+                            stub_specs.push(*spec_file);
+                        }
                     }
+                } else {
+                    missing_specs.push(*spec_file);
                 }
             }
-            if !available_specs.is_empty() || has_root_design_md {
+            if !available_specs.is_empty() || has_root_design_md || has_project_manifest {
                 recency.push_str("  <project_blueprint>\n");
+                let rel_core = core_dir.strip_prefix(workspace_dir).unwrap_or(&core_dir);
                 if !available_specs.is_empty() {
-                    let rel_core = core_dir.strip_prefix(workspace_dir).unwrap_or(&core_dir);
                     recency.push_str(&format!(
-                        "    Location: {}/ (Inspect on-demand via `read_file`)\n",
+                        "    Location: {}/ (Inspect on-demand via `read_file`; keep synced alongside `.minicode/plan/task_plan.md`)\n",
                         rel_core.display()
                     ));
                     recency.push_str(&format!("    Specs: {}\n", available_specs.join(", ")));
+                    if !stub_specs.is_empty() {
+                        recency.push_str(&format!(
+                            "    Needs Hydration (boilerplate stubs): {} — pass `architecture`/`prd`/`design` to `create_plan` or refine with `write_file`/`patch_file` as requirements settle\n",
+                            stub_specs.join(", ")
+                        ));
+                    }
+                    if !missing_specs.is_empty() {
+                        recency.push_str(&format!(
+                            "    Missing Core Specs: {} — auto-bootstrapped on `create_plan` or `minikit_sync`\n",
+                            missing_specs.join(", ")
+                        ));
+                    }
+                } else if has_project_manifest {
+                    recency.push_str(&format!(
+                        "    Location: {}/ (Not initialized yet — `create_plan` or `minikit_sync` will auto-create `coreidea.md`, `prd.md`, `architecture.md`, `spec.md`, `design.md`, `implementation.md`, `content.md`, `todo.md` alongside `.minicode/plan/task_plan.md`)\n",
+                        rel_core.display()
+                    ));
                 }
                 if has_root_design_md {
                     recency.push_str(

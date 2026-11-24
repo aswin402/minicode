@@ -2095,6 +2095,325 @@ impl MiniKitSyncEngine {
         }
     }
 
+    /// Returns `true` if `content` for a canonical `minikit_docs/core/<doc_name>` file is still an
+    /// untouched skeleton/boilerplate stub that can safely be hydrated with real project context.
+    pub fn is_core_doc_boilerplate(doc_name: &str, content: &str) -> bool {
+        let trimmed = content.trim();
+        if trimmed.is_empty() {
+            return true;
+        }
+        let non_empty_lines = trimmed.lines().filter(|l| !l.trim().is_empty()).count();
+        match doc_name.to_ascii_lowercase().as_str() {
+            "coreidea.md" => {
+                trimmed
+                    .contains("Deterministic, fast, and resilient user and developer experience.")
+                    && trimmed
+                        .contains("Over-engineered complexity or rigid inflexible abstractions.")
+            }
+            "prd.md" => {
+                trimmed.contains("- [ ] **Objective 1**: Core system functionality.")
+                    && trimmed.contains(
+                        "- [ ] **Objective 2**: Fast, intuitive developer and user experience.",
+                    )
+            }
+            "architecture.md" => (trimmed.contains(
+                "Automatically synthesized and maintained by `minicode` AST & CodeGraph Engine.",
+            ) && !trimmed.contains("## Active Architectural Blueprint")
+                && !trimmed.contains("Clean Architecture Layer Breakdown"))
+                || non_empty_lines <= 6,
+            "spec.md" => (non_empty_lines <= 24
+                && (trimmed.contains("Core invariants, interfaces, and constraints")
+                    || trimmed.contains("_Placeholder")
+                    || (trimmed.contains("## Core Engineering Invariants")
+                        && trimmed.contains(
+                            "Component props, state models, routes, and interface contracts for",
+                        ))))
+                || non_empty_lines <= 8,
+            "design.md" => {
+                trimmed.contains("High-craft precision interface with generous negative space")
+                    && !trimmed.contains("## Project Visual Direction")
+            }
+            "implementation.md" => {
+                trimmed.contains("Code layout, public APIs")
+                    || trimmed.contains("Structured phases with verifiable acceptance criteria.")
+                    || trimmed.len() < 300
+            }
+            "content.md" => {
+                trimmed.contains("User-facing sections, routes, commands, and schemas for")
+                    && non_empty_lines <= 16
+            }
+            "todo.md" => {
+                trimmed.contains("Initial project setup and architecture sync")
+                    || trimmed.contains("Scaffolding complete. Decompose features into milestones")
+            }
+            _ => false,
+        }
+    }
+
+    /// Bootstraps the full canonical `minikit_docs/core/` suite (`coreidea.md`, `prd.md`,
+    /// `architecture.md`, `spec.md`, `design.md`, `implementation.md`, `content.md`, `todo.md`)
+    /// whenever `create_plan` or `power_brainstorm` runs on ANY project (new or existing), and
+    /// hydrates untouched boilerplate stubs with real plan/project details without ever overwriting
+    /// user-authored specs.
+    #[allow(clippy::too_many_arguments)]
+    pub fn ensure_core_docs_for_plan(
+        workspace_root: &Path,
+        title: &str,
+        steps: &[String],
+        architecture: Option<&str>,
+        milestones: Option<&[String]>,
+        prd_brief: Option<&str>,
+        design_brief: Option<&str>,
+        target_files: &[String],
+    ) -> Vec<String> {
+        let docs_dir = super::resolve_docs_dir(workspace_root);
+        let core_dir = docs_dir.join("core");
+        let (runtime, _pkg_mgr) = Self::detect_runtime(workspace_root);
+        let arch_map = Self::detect_architecture(workspace_root);
+        let project_name = workspace_root
+            .file_name()
+            .and_then(|n| n.to_str())
+            .filter(|s| !s.is_empty())
+            .unwrap_or("project")
+            .to_string();
+
+        let existed_before: std::collections::HashSet<&'static str> = super::CORE_DOC_FILES
+            .iter()
+            .copied()
+            .filter(|f| core_dir.join(f).is_file())
+            .collect();
+
+        // 1. Ensure all 8 canonical core files exist under minikit_docs/core/ (never clobbers existing)
+        Self::ensure_workflow_docs_with_arch(&docs_dir, &project_name, runtime, Some(&arch_map));
+
+        let mut touched: Vec<String> = super::CORE_DOC_FILES
+            .iter()
+            .filter(|f| !existed_before.contains(**f) && core_dir.join(f).is_file())
+            .map(|f| (*f).to_string())
+            .collect();
+        let mut mark_touched = |name: &str| {
+            if !touched.iter().any(|t| t == name) {
+                touched.push(name.to_string());
+            }
+        };
+
+        let clean_title = title.trim();
+        let clean_steps: Vec<String> = steps
+            .iter()
+            .map(|s| crate::context::working_memory::WorkingMemory::sanitize_step_title(s))
+            .filter(|s| !s.is_empty())
+            .collect();
+        let decisions = Self::format_decision_bullets(workspace_root);
+        let decisions_block = if decisions.is_empty() {
+            String::new()
+        } else {
+            format!("\n## Recorded User Decisions\n{decisions}\n")
+        };
+
+        // 2. Hydrate coreidea.md if untouched boilerplate
+        let coreidea_path = core_dir.join("coreidea.md");
+        if let Ok(existing) = fs::read_to_string(&coreidea_path) {
+            if Self::is_core_doc_boilerplate("coreidea.md", &existing) && !clean_title.is_empty() {
+                let arch_summary = architecture
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty())
+                    .map(|a| format!("\n## Architectural Direction\n{}\n", a))
+                    .unwrap_or_default();
+                let milestone_summary = milestones
+                    .filter(|ms| !ms.is_empty())
+                    .map(|ms| {
+                        let bullets = ms
+                            .iter()
+                            .map(|m| {
+                                format!(
+                                    "- {}",
+                                    crate::context::working_memory::WorkingMemory::sanitize_step_title(m)
+                                )
+                            })
+                            .collect::<Vec<_>>()
+                            .join("\n");
+                        format!("\n## Key Milestones\n{bullets}\n")
+                    })
+                    .unwrap_or_default();
+                let hydrated = format!(
+                    "---\ntype: Vision\ntitle: \"Core Vision — {}\"\ndescription: \"Core project vision, value proposition, and scope\"\nstatus: active\n---\n\n\
+                    # Core Vision & Philosophy — {}\n\n\
+                    ## Core Purpose\n\
+                    *Project: `{}` (`{}` runtime) — Goal: {}*\n{}{}{}\n\
+                    ## Engineering Tenets\n\
+                    - Modular, verifiable architecture with clear separation of concerns.\n\
+                    - Evidence-driven implementation verified by automated checks.\n",
+                    clean_title.replace('"', "'"),
+                    clean_title,
+                    project_name,
+                    runtime,
+                    clean_title,
+                    decisions_block,
+                    arch_summary,
+                    milestone_summary
+                );
+                if fs::write(&coreidea_path, hydrated).is_ok() {
+                    mark_touched("coreidea.md");
+                }
+            }
+        }
+
+        // 3. Hydrate prd.md if untouched boilerplate (or explicit prd_brief passed)
+        let prd_path = core_dir.join("prd.md");
+        if let Ok(existing) = fs::read_to_string(&prd_path) {
+            let is_stub = Self::is_core_doc_boilerplate("prd.md", &existing);
+            let explicit_prd = prd_brief.map(str::trim).filter(|s| !s.is_empty());
+            if is_stub && (explicit_prd.is_some() || !clean_steps.is_empty()) {
+                let objectives = if clean_steps.is_empty() {
+                    "- [ ] **Objective 1**: Deliver core project functionality.".to_string()
+                } else {
+                    clean_steps
+                        .iter()
+                        .enumerate()
+                        .map(|(i, s)| format!("- [ ] **Objective {}**: {}", i + 1, s))
+                        .collect::<Vec<_>>()
+                        .join("\n")
+                };
+                let brief_section = explicit_prd
+                    .map(|b| format!("\n## Product Requirements & User Stories\n{b}\n"))
+                    .unwrap_or_default();
+                let hydrated = format!(
+                    "---\ntype: PRD\ntitle: \"Product Requirements Document — {}\"\ndescription: \"Product objectives, requirements, and acceptance criteria\"\nstatus: active\n---\n\n\
+                    # Product Requirements Document (PRD) — {}\n\n\
+                    ## Project Overview\n\
+                    *Project: `{}` (`{}` runtime) — Active Objective: {}*\n{}{}\n\
+                    ## Core Objectives & User Stories\n\
+                    {}\n\n\
+                    ## Success Metrics & Constraints\n\
+                    - Build, lint, and automated verification pass cleanly with zero regressions.\n\
+                    - All objectives verified against live workspace code and specifications.\n",
+                    clean_title.replace('"', "'"),
+                    clean_title,
+                    project_name,
+                    runtime,
+                    clean_title,
+                    decisions_block,
+                    brief_section,
+                    objectives
+                );
+                if fs::write(&prd_path, hydrated).is_ok() {
+                    mark_touched("prd.md");
+                }
+            }
+        }
+
+        // 4. Hydrate architecture.md if untouched boilerplate (AST CodeGraph + Active Plan Blueprint)
+        let arch_path = core_dir.join("architecture.md");
+        if let Ok(existing) = fs::read_to_string(&arch_path) {
+            if Self::is_core_doc_boilerplate("architecture.md", &existing) {
+                let mut synthesized_base: Option<String> = None;
+                let arch_options =
+                    crate::context::governance::doc_synthesizer::ArchitectureDocOptions {
+                        include_mermaid: true,
+                        include_symbol_catalog: true,
+                        write_to_file: false,
+                    };
+                if let Ok(report) =
+                    crate::context::governance::doc_synthesizer::ArchitectureDocSynthesizer::synthesize(
+                        workspace_root,
+                        arch_options,
+                    )
+                {
+                    if report.total_files > 0 {
+                        synthesized_base = Some(report.markdown_content);
+                    }
+                }
+
+                let mut arch_doc = synthesized_base.unwrap_or(existing);
+                let has_plan_arch = architecture.map(str::trim).is_some_and(|a| !a.is_empty());
+                if has_plan_arch || !target_files.is_empty() || !clean_title.is_empty() {
+                    arch_doc.push_str(&format!(
+                        "\n## Active Architectural Blueprint — {}\n",
+                        clean_title
+                    ));
+                    if let Some(a) = architecture.map(str::trim).filter(|a| !a.is_empty()) {
+                        arch_doc.push_str(&format!("\n{a}\n"));
+                    }
+                    if !target_files.is_empty() {
+                        arch_doc.push_str("\n### Planned Module & File Ownership\n");
+                        for tf in target_files {
+                            arch_doc.push_str(&format!("- `{tf}`\n"));
+                        }
+                    }
+                    if !decisions.is_empty() {
+                        arch_doc.push_str(&format!(
+                            "\n### Settled Architectural Decisions\n{decisions}\n"
+                        ));
+                    }
+                }
+                if fs::write(&arch_path, arch_doc).is_ok() {
+                    mark_touched("architecture.md");
+                }
+            }
+        }
+
+        // 5. Hydrate design.md with explicit design brief if provided and still boilerplate
+        let design_path = core_dir.join("design.md");
+        if let Some(design_text) = design_brief.map(str::trim).filter(|s| !s.is_empty()) {
+            if let Ok(existing) = fs::read_to_string(&design_path) {
+                if Self::is_core_doc_boilerplate("design.md", &existing) {
+                    let injected = format!(
+                        "\n## Project Visual Direction — {}\n{}\n",
+                        clean_title, design_text
+                    );
+                    let updated = if let Some(pos) = existing.find("\n## 2. Color Palette & Roles")
+                    {
+                        let mut s = existing;
+                        s.insert_str(pos, &injected);
+                        s
+                    } else {
+                        format!("{existing}\n{injected}")
+                    };
+                    if fs::write(&design_path, updated).is_ok() {
+                        mark_touched("design.md");
+                    }
+                }
+            }
+        }
+
+        // 6. Hydrate content.md if untouched boilerplate and plan lists deliverables/files
+        let content_path = core_dir.join("content.md");
+        if let Ok(existing) = fs::read_to_string(&content_path) {
+            if Self::is_core_doc_boilerplate("content.md", &existing)
+                && (!target_files.is_empty() || !clean_steps.is_empty())
+            {
+                let mut catalog = format!(
+                    "---\ntype: Reference\ntitle: \"Content & Interface Catalog — {}\"\ndescription: \"Planned modules, routes, interfaces, and user-facing deliverables\"\nstatus: active\n---\n\n\
+                    # Content & Interface Catalog — {}\n\n\
+                    *Project: `{}` (`{}` runtime) — Active Objective: {}*\n\n\
+                    ## Planned Deliverables & Surfaces\n",
+                    clean_title.replace('"', "'"),
+                    clean_title,
+                    project_name,
+                    runtime,
+                    clean_title
+                );
+                for (i, step) in clean_steps.iter().enumerate() {
+                    catalog.push_str(&format!("{}. {}\n", i + 1, step));
+                }
+                if !target_files.is_empty() {
+                    catalog.push_str("\n## Key Target Files & Interfaces\n");
+                    for tf in target_files {
+                        catalog.push_str(&format!("- `{tf}`\n"));
+                    }
+                }
+                if fs::write(&content_path, catalog).is_ok() {
+                    mark_touched("content.md");
+                }
+            }
+        }
+
+        // 7. Sync recorded user decisions & live CSS tokens into design.md / prd.md / coreidea.md
+        Self::sync_decisions_into_core_docs(workspace_root);
+
+        touched
+    }
+
     /// When a scaffolded workspace finishes its plan with `README.md` still untouched at the
     /// generic starter boilerplate (`<h1>minitest...</h1>` / `Clean Minimal Starter`), enriches
     /// the header title/subtitle from `index.html` or `implementation.md` and appends the

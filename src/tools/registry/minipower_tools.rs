@@ -1057,6 +1057,18 @@ pub async fn dispatch(
                     .to_string();
 
                 let spec_input = opt_str(args, "spec").filter(|s| !s.trim().is_empty());
+                if is_project || spec_input.is_some() {
+                    let _ = crate::tools::minikit::sync::MiniKitSyncEngine::ensure_core_docs_for_plan(
+                        workspace_root,
+                        topic,
+                        &[],
+                        spec_input,
+                        None,
+                        None,
+                        None,
+                        &[],
+                    );
+                }
                 if let Some(spec_text) = spec_input {
                     let entry = format!(
                         "\n\n## Brainstorm Specification: {}\n\n{}\n",

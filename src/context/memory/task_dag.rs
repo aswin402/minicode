@@ -772,19 +772,14 @@ pub fn hydrate_canonical_spec_if_stub(
     dag: &PlanDag,
 ) {
     let spec_path = crate::tools::minikit::resolve_doc_path(workspace_root, "spec.md");
-    let spec_parent_exists = spec_path.parent().is_some_and(Path::exists);
-    if !spec_path.exists() && !spec_parent_exists {
-        return;
+    if let Some(parent) = spec_path.parent() {
+        let _ = std::fs::create_dir_all(parent);
     }
 
     let is_stub = match std::fs::read_to_string(&spec_path) {
-        Ok(existing) => {
-            let non_empty_lines = existing.lines().filter(|l| !l.trim().is_empty()).count();
-            non_empty_lines <= 20
-                && (existing.contains("Core invariants, interfaces, and constraints")
-                    || existing.contains("_Placeholder")
-                    || non_empty_lines <= 8)
-        }
+        Ok(existing) => crate::tools::minikit::sync::MiniKitSyncEngine::is_core_doc_boilerplate(
+            "spec.md", &existing,
+        ),
         Err(_) => true,
     };
     if !is_stub {

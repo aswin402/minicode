@@ -314,6 +314,20 @@ impl WorkingMemory {
 
         let timestamp = Utc::now().format(TIMESTAMP_FORMAT).to_string();
 
+        // 0. Ensure the full canonical Tier-1 core blueprint exists under minikit_docs/core/
+        //    (coreidea.md, prd.md, architecture.md, spec.md, design.md, implementation.md,
+        //    content.md, todo.md) and hydrate untouched boilerplate stubs with real plan context.
+        crate::tools::minikit::sync::MiniKitSyncEngine::ensure_core_docs_for_plan(
+            &self.workspace_root,
+            title,
+            steps,
+            architecture,
+            milestones,
+            None,
+            None,
+            &[],
+        );
+
         // 1. Tier 1 Architecture Blueprint -> canonical implementation.md
         let impl_path = self.canonical_implementation_path();
         let is_placeholder = fs::read_to_string(&impl_path)

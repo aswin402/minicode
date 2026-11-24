@@ -10,7 +10,7 @@
 #   irm https://raw.githubusercontent.com/aswin402/minicode/main/install.ps1 | iex
 #
 # Options / Environment Variables:
-#   --version <tag>       Pin a release tag (e.g. v0.5.85)  [env: MINICODE_VERSION]
+#   --version <tag>       Pin a release tag (e.g. v0.5.86)  [env: MINICODE_VERSION]
 #   --dir <path>          Install directory                 [env: MINICODE_INSTALL_DIR]
 #   --from-source         Build from source with cargo      [env: MINICODE_FROM_SOURCE=1]
 #   --no-path             Do not edit shell rc PATH files   [env: MINICODE_NO_PATH=1]
