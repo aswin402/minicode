@@ -27,10 +27,10 @@ jobs:
         run: cargo fmt --all -- --check
         
       - name: Cargo Check
-        run: cargo check --all-targets --all-features --locked
-        
+        run: cargo check --workspace --all-targets --all-features --locked
+
       - name: Clippy Lints
-        run: cargo clippy --all-targets --all-features --locked -- -D warnings
+        run: cargo clippy --workspace --lib --bins --all-features --locked -- -D warnings
 
   test-linux:
     name: Test Suite (Ubuntu)

@@ -42,6 +42,14 @@ fn test_timeline_thought_block_and_thinking_spinner_rendering() {
         workspace,
         provider: "anthropic",
         model: "claude-3-5-sonnet",
+        show_thought_tokens: false,
+        tool_card_style: minicode::config::ToolCardStyle::default(),
+        tool_icon_style: minicode::config::ToolIconStyle::default(),
+        output_frame_style: minicode::config::OutputFrameStyle::default(),
+        output_style: minicode::config::OutputStyle::default(),
+        output_badge_style: minicode::config::OutputBadgeStyle::default(),
+        turn_summary: minicode::config::TurnSummaryConfig::default(),
+        doctor_inline: minicode::config::DoctorInlineConfig::default(),
     };
 
     let backend = TestBackend::new(80, 25);
@@ -113,6 +121,7 @@ fn test_claude_thinking_tags_parsing() {
     if let minicode::ui::view::TimelineEntry::ThoughtBlock {
         text,
         duration_secs,
+        ..
     } = &timeline.entries[0]
     {
         assert!(text.contains("Analyzing AST nodes and symbol graph."));
@@ -148,6 +157,14 @@ fn test_visual_row_count_word_wrap_accuracy() {
         workspace,
         provider: "minimax",
         model: "MiniMax-M2.7",
+        show_thought_tokens: false,
+        tool_card_style: minicode::config::ToolCardStyle::default(),
+        tool_icon_style: minicode::config::ToolIconStyle::default(),
+        output_frame_style: minicode::config::OutputFrameStyle::default(),
+        output_style: minicode::config::OutputStyle::default(),
+        output_badge_style: minicode::config::OutputBadgeStyle::default(),
+        turn_summary: minicode::config::TurnSummaryConfig::default(),
+        doctor_inline: minicode::config::DoctorInlineConfig::default(),
     };
 
     let backend = TestBackend::new(30, 10);

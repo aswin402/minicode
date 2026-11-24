@@ -57,8 +57,21 @@ jobs:
         with:
           key: release-${{ matrix.target }}
 
-      - name: Build release binaries (workspace)
-        run: cargo build --release --workspace --locked --target ${{ matrix.target }}
+      - name: Build companion binaries (minidoctor, minibrowse)
+        env:
+          CARGO_INCREMENTAL: "0"
+          CARGO_PROFILE_RELEASE_OPT_LEVEL: "2"
+          CARGO_PROFILE_RELEASE_LTO: "false"
+          CARGO_PROFILE_RELEASE_CODEGEN_UNITS: "64"
+        run: cargo build --release --locked --target ${{ matrix.target }} -j 2 -p minidoctor -p minibrowse
+
+      - name: Build minicode release binary
+        env:
+          CARGO_INCREMENTAL: "0"
+          CARGO_PROFILE_RELEASE_OPT_LEVEL: "2"
+          CARGO_PROFILE_RELEASE_LTO: "false"
+          CARGO_PROFILE_RELEASE_CODEGEN_UNITS: "64"
+        run: cargo build --release --locked --target ${{ matrix.target }} -j 1 --bin minicode
 
       - name: Package binaries (Unix)
         if: matrix.archive_ext == 'tar.gz'

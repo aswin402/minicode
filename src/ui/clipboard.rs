@@ -68,7 +68,7 @@ pub fn copy_to_clipboard(text: &str) -> bool {
         }
     }
 
-    #[cfg(target_os = "macos")]
+    #[cfg(all(target_os = "macos", not(test)))]
     {
         if let Ok(mut child) = Command::new("pbcopy")
             .stdin(Stdio::piped())
@@ -86,7 +86,7 @@ pub fn copy_to_clipboard(text: &str) -> bool {
         }
     }
 
-    #[cfg(target_os = "windows")]
+    #[cfg(all(target_os = "windows", not(test)))]
     {
         if let Ok(mut child) = Command::new("powershell")
             .args(["-NoProfile", "-Command", "Set-Clipboard", "-Value", text])
@@ -488,7 +488,6 @@ pub fn read_from_clipboard(workspace_root: &std::path::Path) -> Option<Clipboard
         }
     }
 
-    #[cfg(test)]
     let _ = workspace_root;
 
     None

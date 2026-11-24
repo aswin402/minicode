@@ -24,12 +24,13 @@ fn test_canonical_json_nested_sorting_and_hashing() {
     });
 
     assert_eq!(
-        StuckDetector::canonicalize_json(&obj1),
-        StuckDetector::canonicalize_json(&obj2)
-    );
-    assert_eq!(
         StuckDetector::compute_args_hash(&obj1),
         StuckDetector::compute_args_hash(&obj2)
+    );
+    let obj3 = json!({ "path": "src/other.rs" });
+    assert_ne!(
+        StuckDetector::compute_args_hash(&obj1),
+        StuckDetector::compute_args_hash(&obj3)
     );
 }
 

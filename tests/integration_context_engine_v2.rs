@@ -516,6 +516,7 @@ fn test_status_bar_kv_cache_rendering() {
         workspace: ws,
         provider: "anthropic",
         model: "claude-3-5-sonnet",
+        effort_level: "medium",
         mcp_count: 2,
         used_tokens: 10000,
         max_context: 200000,
@@ -523,6 +524,7 @@ fn test_status_bar_kv_cache_rendering() {
         session_cost_usd: 0.035,
         cached_tokens: 8200,
         tasks_summary: None,
+        display: minicode::ui::StatusDisplayOptions::default(),
     };
 
     assert_eq!(ctx_with_kv.cached_tokens, 8200);

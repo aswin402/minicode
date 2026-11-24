@@ -163,6 +163,7 @@ fn test_okf_v02_document_and_manager() {
         verified: None,
         status: Some("active".to_string()),
         superseded_by: None,
+        ..OkfFrontmatter::default()
     };
 
     let body = "# Authentication Requirements\n1. OAuth2 with PKCE.\n";

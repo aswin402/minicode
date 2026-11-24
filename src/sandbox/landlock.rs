@@ -1,4 +1,6 @@
-use crate::error::{Result, SecurityError};
+use crate::error::Result;
+#[cfg(target_os = "linux")]
+use crate::error::SecurityError;
 use std::path::Path;
 
 /// Applies Linux Landlock security restrictions to the current process/thread
@@ -234,7 +236,7 @@ pub fn is_landlock_supported() -> bool {
     false
 }
 
-#[cfg(test)]
+#[cfg(all(test, target_os = "linux"))]
 mod tests {
     use super::*;
     use landlock::{

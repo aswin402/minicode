@@ -1,4 +1,4 @@
-use minicode::agent::subagent::{SubAgentResult, SubagentRole, SubagentTaskSpec};
+use minicode::agent::subagent::{SubagentRole, SubagentTaskSpec};
 use minicode::git::worktree::WorktreeManager;
 use minicode::tools::ToolRegistry;
 use serde_json::json;

@@ -211,6 +211,7 @@ impl SystemNotifier {
     }
 
     fn spawn_desktop_notification(alert: &AttentionAlert) {
+        let _ = alert;
         #[cfg(target_os = "linux")]
         {
             let has_display = std::env::var_os("DISPLAY").is_some()

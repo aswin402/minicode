@@ -166,6 +166,8 @@ async fn test_subagent_synthesis_reducer_ast_and_verifications() {
         transcript: &transcript,
         workspace_root,
         worktree_branch: None,
+        result_alias: None,
+        return_prompt: None,
     })
     .await;
 
@@ -317,6 +319,8 @@ async fn test_ephemeral_isolation_token_reduction() {
         transcript: &transcript,
         workspace_root,
         worktree_branch: None,
+        result_alias: None,
+        return_prompt: None,
     })
     .await;
 
