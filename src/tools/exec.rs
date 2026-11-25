@@ -1677,7 +1677,8 @@ fn finalize_command_output(
     let is_truncated =
         total_lines > line_threshold || total_bytes > crate::constants::EXEC_MAX_OUTPUT_BYTES;
 
-    let rtk_res = super::rtk_filter::RtkFilter::filter_for_context(
+    let rtk_res = super::rtk_filter::RtkFilter::filter_for_workspace(
+        workspace_root,
         command_str,
         &combined,
         exit_code,
@@ -1690,12 +1691,25 @@ fn finalize_command_output(
         context_window,
     );
 
+    if combined.len() > compacted.len() + 64 {
+        crate::context::budget::economy::MiniEconomy::record_shell_filter(
+            workspace_root,
+            rtk_res.category,
+            combined.len(),
+            compacted.len(),
+        );
+    }
+
     let compacted_lines = compacted.lines().count();
     let significantly_compacted = (total_lines > 40 || total_bytes > 4096)
         && (compacted_lines * 100 < total_lines.max(1) * 65
             || compacted.len() * 100 < total_bytes.max(1) * 65);
+    // RTK failure-triggered `tee` recovery: if a failing command lost ANY filtered lines,
+    // always preserve the full redacted output on disk so the agent never has to re-run it.
+    let failed_and_filtered =
+        status_code != 0 && (compacted_lines < total_lines || compacted.len() + 32 < total_bytes);
 
-    if is_truncated || significantly_compacted {
+    if is_truncated || significantly_compacted || failed_and_filtered {
         let logs_dir = workspace_root.join(".minicode").join("logs");
         if let Err(e) = std::fs::create_dir_all(&logs_dir) {
             tracing::debug!("Could not create .minicode/logs: {}", e);

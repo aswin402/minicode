@@ -5,7 +5,7 @@
 
 use crate::agent::pricing::ModelPricing;
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
 /// Relative path under workspace root for the persistent token economy ledger.
@@ -48,6 +48,14 @@ pub struct EconomyLedger {
     pub total_loop_interventions: u64,
     pub total_micro_skills_activated: u64,
     pub total_micro_skills_evicted: u64,
+    #[serde(default)]
+    pub shell_commands_filtered: u64,
+    #[serde(default)]
+    pub shell_raw_tokens: u64,
+    #[serde(default)]
+    pub shell_filtered_tokens: u64,
+    #[serde(default)]
+    pub shell_saved_by_category: BTreeMap<String, u64>,
     #[serde(default)]
     pub recent_turns: Vec<TurnEconomyRecord>,
 }
@@ -150,6 +158,44 @@ impl EconomyLedger {
             ((self.total_cached_tokens as f64 / self.total_tokens as f64) * 100.0).min(100.0)
         }
     }
+
+    /// Records shell output token savings from `RtkFilter` + `compactor` (`rtk gain` parity).
+    pub fn record_shell_filter(
+        &mut self,
+        category: &str,
+        raw_tokens: usize,
+        filtered_tokens: usize,
+    ) {
+        if raw_tokens <= filtered_tokens {
+            return;
+        }
+        let saved = (raw_tokens - filtered_tokens) as u64;
+        self.shell_commands_filtered = self.shell_commands_filtered.saturating_add(1);
+        self.shell_raw_tokens = self.shell_raw_tokens.saturating_add(raw_tokens as u64);
+        self.shell_filtered_tokens = self
+            .shell_filtered_tokens
+            .saturating_add(filtered_tokens as u64);
+        let entry = self
+            .shell_saved_by_category
+            .entry(category.to_string())
+            .or_insert(0);
+        *entry = entry.saturating_add(saved);
+    }
+
+    #[must_use]
+    pub fn shell_tokens_saved(&self) -> u64 {
+        self.shell_raw_tokens
+            .saturating_sub(self.shell_filtered_tokens)
+    }
+
+    #[must_use]
+    pub fn shell_savings_pct(&self) -> f64 {
+        if self.shell_raw_tokens == 0 {
+            0.0
+        } else {
+            ((self.shell_tokens_saved() as f64 / self.shell_raw_tokens as f64) * 100.0).min(100.0)
+        }
+    }
 }
 
 #[cfg(test)]
@@ -180,5 +226,11 @@ mod tests {
         assert_eq!(ledger.total_loop_interventions, 1);
         assert!((ledger.cache_hit_pct() - 75.0).abs() < 0.01);
         assert!(ledger.total_cost_usd > 0.0);
+
+        ledger.record_shell_filter("cargo", 1_000, 200);
+        assert_eq!(ledger.shell_commands_filtered, 1);
+        assert_eq!(ledger.shell_tokens_saved(), 800);
+        assert!((ledger.shell_savings_pct() - 80.0).abs() < 0.01);
+        assert_eq!(ledger.shell_saved_by_category.get("cargo"), Some(&800));
     }
 }

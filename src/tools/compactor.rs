@@ -116,13 +116,82 @@ pub fn extract_primary_command(command: &str) -> &str {
         s = s[..pos].trim();
     }
 
-    // Strip leading environment variable assignments like `FOO=bar ` or `VAR=1 `
-    while let Some(first) = s.split_whitespace().next() {
+    // Strip leading environment assignments (`FOO=bar`) and resource/scheduling wrappers
+    // (`nice -n 19`, `ionice -c 3`, `timeout 30`, `stdbuf -oL`, `env`, `command`, `time`)
+    // so `nice -n 19 cargo check -j 1` resolves cleanly to `cargo check -j 1`.
+    loop {
+        let mut iter = s.split_whitespace();
+        let Some(first) = iter.next() else {
+            break;
+        };
         if first.contains('=') && !first.starts_with('-') && !first.starts_with('/') {
             if let Some(rest) = s.strip_prefix(first) {
                 s = rest.trim_start();
                 continue;
             }
+        }
+        fn strip_prefix_token<'a>(input: &'a str, tok: &str) -> &'a str {
+            input
+                .strip_prefix(tok)
+                .map(str::trim_start)
+                .unwrap_or(input)
+        }
+        match first {
+            "env" | "command" | "time" => {
+                let mut rest = strip_prefix_token(s, first);
+                while let Some(arg) = rest.split_whitespace().next() {
+                    if arg.starts_with('-') || (arg.contains('=') && !arg.starts_with('/')) {
+                        rest = strip_prefix_token(rest, arg);
+                    } else {
+                        break;
+                    }
+                }
+                if rest.len() < s.len() && !rest.is_empty() {
+                    s = rest;
+                    continue;
+                }
+            }
+            "nice" | "ionice" | "stdbuf" => {
+                let mut rest = strip_prefix_token(s, first);
+                while let Some(arg) = rest.split_whitespace().next() {
+                    if arg.starts_with('-') {
+                        rest = strip_prefix_token(rest, arg);
+                        if matches!(arg, "-n" | "-c" | "-i" | "-o" | "-e") {
+                            if let Some(val) = rest.split_whitespace().next() {
+                                rest = strip_prefix_token(rest, val);
+                            }
+                        }
+                    } else {
+                        break;
+                    }
+                }
+                if rest.len() < s.len() && !rest.is_empty() {
+                    s = rest;
+                    continue;
+                }
+            }
+            "timeout" => {
+                let mut rest = strip_prefix_token(s, first);
+                while let Some(arg) = rest.split_whitespace().next() {
+                    if arg.starts_with('-') {
+                        rest = strip_prefix_token(rest, arg);
+                        if matches!(arg, "-s" | "-k" | "--signal" | "--kill-after") {
+                            if let Some(val) = rest.split_whitespace().next() {
+                                rest = strip_prefix_token(rest, val);
+                            }
+                        }
+                    } else {
+                        // Consume mandatory duration argument (e.g. `30`, `60s`, `2m`)
+                        rest = strip_prefix_token(rest, arg);
+                        break;
+                    }
+                }
+                if rest.len() < s.len() && !rest.is_empty() {
+                    s = rest;
+                    continue;
+                }
+            }
+            _ => {}
         }
         break;
     }
@@ -614,6 +683,18 @@ mod tests {
         assert_eq!(
             detect_strategy("RUST_BACKTRACE=1 cargo test --lib"),
             CompactStrategy::CargoTest
+        );
+        assert_eq!(
+            detect_strategy("nice -n 19 cargo check -j 1"),
+            CompactStrategy::CargoCheck
+        );
+        assert_eq!(
+            detect_strategy("ionice -c 3 nice -n 19 cargo test -j 1"),
+            CompactStrategy::CargoTest
+        );
+        assert_eq!(
+            detect_strategy("timeout 60 pytest tests/"),
+            CompactStrategy::Pytest
         );
         assert_eq!(detect_strategy("git diff HEAD~1"), CompactStrategy::GitDiff);
         assert_eq!(

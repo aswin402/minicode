@@ -72,6 +72,10 @@ pub struct EconomyStatusSnapshot {
     pub active_micro_skills: Vec<MicroSkill>,
     pub candidate_micro_skills: usize,
     pub pruned_tools: Vec<String>,
+    pub shell_commands_filtered: u64,
+    pub shell_tokens_saved: u64,
+    pub shell_savings_pct: f64,
+    pub shell_saved_by_category: std::collections::BTreeMap<String, u64>,
     pub ponytail_quality: PonytailQualitySummary,
 }
 
@@ -178,6 +182,30 @@ impl MiniEconomy {
         ledger.save(workspace_root);
     }
 
+    /// Records shell output compression savings (`RtkFilter` + `compactor`) into `.minicode/economy/ledger.json`
+    /// (`rtk gain` parity) under the shared economy I/O lock.
+    pub fn record_shell_filter(
+        workspace_root: &Path,
+        category: &str,
+        raw_bytes: usize,
+        filtered_bytes: usize,
+    ) {
+        if raw_bytes <= filtered_bytes + 64 {
+            return;
+        }
+        let raw_tokens = (raw_bytes / 4).max(1);
+        let filtered_tokens = (filtered_bytes / 4).max(1);
+        if raw_tokens <= filtered_tokens {
+            return;
+        }
+        let _guard = economy_io_lock()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let mut ledger = EconomyLedger::load(workspace_root);
+        ledger.record_shell_filter(category, raw_tokens, filtered_tokens);
+        ledger.save(workspace_root);
+    }
+
     /// Builds a structured status snapshot across ledger, micro-skills, and pruned tools.
     #[must_use]
     pub fn status_snapshot(workspace_root: &Path) -> EconomyStatusSnapshot {
@@ -224,6 +252,10 @@ impl MiniEconomy {
             active_micro_skills,
             candidate_micro_skills,
             pruned_tools: pruner.pruned_tools(),
+            shell_commands_filtered: ledger.shell_commands_filtered,
+            shell_tokens_saved: ledger.shell_tokens_saved(),
+            shell_savings_pct: ledger.shell_savings_pct(),
+            shell_saved_by_category: ledger.shell_saved_by_category,
             ponytail_quality,
         }
     }
@@ -247,6 +279,25 @@ impl MiniEconomy {
         out.push_str(&format!(
             "• **Schema Pruning Savings:** ~{} tokens saved | **Loop Guards Triggered:** {}\n",
             snapshot.estimated_tokens_saved, snapshot.loop_interventions
+        ));
+        let shell_cats = if snapshot.shell_saved_by_category.is_empty() {
+            String::new()
+        } else {
+            let mut pairs: Vec<(&String, &u64)> = snapshot.shell_saved_by_category.iter().collect();
+            pairs.sort_by(|a, b| b.1.cmp(a.1).then_with(|| a.0.cmp(b.0)));
+            let top: Vec<String> = pairs
+                .into_iter()
+                .take(4)
+                .map(|(k, v)| format!("{k}: ~{v}"))
+                .collect();
+            format!(" ({})", top.join(", "))
+        };
+        out.push_str(&format!(
+            "• **Shell Output Filter (`RtkFilter`):** {} cmd(s), ~{} tokens saved ({:.1}%){}\n",
+            snapshot.shell_commands_filtered,
+            snapshot.shell_tokens_saved,
+            snapshot.shell_savings_pct,
+            shell_cats
         ));
 
         let pt = &snapshot.ponytail_quality;
