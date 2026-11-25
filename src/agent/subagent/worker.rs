@@ -1910,22 +1910,20 @@ impl SubagentWorker {
                         } else {
                             Vec::new()
                         };
-                        // Lossless subagent context compression:
-                        // 1. Strip older <thought>/<think> reasoning blocks beyond the last 2 assistant turns
-                        // 2. Run semantic MicroCompactor (superseded/duplicate reads, mutation echoes, search condensation)
-                        // 3. Mask remaining bulky tool observations ONLY when prompt tokens actually exceed
-                        //    `soft_compact_threshold` (>= 24k tokens) so short reviews never lose files they just read!
-                        crate::context::auto_compact::AutoCompactor::strip_older_reasoning(
-                            &mut messages,
-                        );
-                        let _ =
-                            crate::context::budget::micro_compact::MicroCompactor::compact_messages(
-                                &mut messages,
-                                2,
-                            );
+                        // KV-Cache-Safe subagent context compression:
+                        // Preserve prompt prefix byte-identity (high KV cache hit rate) on short/medium
+                        // subagent sessions by gating in-place prefix mutations (`strip_older_reasoning`,
+                        // `MicroCompactor`, and observation masking) behind `soft_compact_threshold`.
                         if messages.len() > crate::constants::COMPACT_PRESERVE_RECENT_MESSAGES + 2
                             && estimate_prompt_tokens(&messages) > soft_compact_threshold
                         {
+                            crate::context::auto_compact::AutoCompactor::strip_older_reasoning(
+                                &mut messages,
+                            );
+                            let _ = crate::context::budget::micro_compact::MicroCompactor::compact_messages(
+                                &mut messages,
+                                2,
+                            );
                             let cutoff = messages
                                 .len()
                                 .saturating_sub(crate::constants::COMPACT_PRESERVE_RECENT_MESSAGES);
@@ -2117,10 +2115,12 @@ impl SubagentWorker {
                         crate::context::budget::economy::MiniEconomy::active_session_id()
                             .unwrap_or_else(|| format!("subagent:{}", id));
                     let worker_duration_ms = worker_started_at.elapsed().as_millis().max(1) as u64;
+                    let worker_source = format!("subagent:{}", id);
                     crate::context::budget::economy::MiniEconomy::record_turn_complete(
                         &main_root,
                         &crate::context::budget::economy::TurnEconomyFinish {
                             session_id: &econ_session_id,
+                            source: &worker_source,
                             turn_id: turns_executed.max(1),
                             provider: active_provider.name(),
                             model: &options.model,
@@ -3134,6 +3134,7 @@ mod tests {
             ws,
             &TurnEconomyFinish {
                 session_id: "prior-s1",
+                source: "orchestrator",
                 turn_id: 1,
                 provider: "mock",
                 model: "mock-model",
@@ -3154,6 +3155,7 @@ mod tests {
             ws,
             &TurnEconomyFinish {
                 session_id: "prior-s2",
+                source: "orchestrator",
                 turn_id: 1,
                 provider: "mock",
                 model: "mock-model",

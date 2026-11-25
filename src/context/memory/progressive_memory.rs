@@ -564,20 +564,41 @@ impl ProgressiveMemory {
             "architecture",
         ];
 
+        const TRANSIENT_TASK_PHRASES: &[&str] = &[
+            "review my",
+            "review the",
+            "review our",
+            "do not edit any files",
+            "don't edit any files",
+            "dont edit any files",
+            "read-only review",
+            "uncommitted changes",
+            "staged changes",
+            "this pull request",
+            "this pr",
+        ];
+
         let lower = trimmed.to_ascii_lowercase();
         let modal_score: usize = MODAL_STEMS
             .iter()
-            .filter(|(stem, _)| lower.contains(*stem))
+            .filter(|(stem, _)| Self::contains_word_phrase(&lower, stem))
             .map(|(_, w)| *w)
             .sum();
 
-        // 1. Evaluate L3 Global Preference domain affinity (requires standing modal directive valence)
+        let is_transient_task_prompt = TRANSIENT_TASK_PHRASES
+            .iter()
+            .any(|phrase| Self::contains_word_phrase(&lower, phrase));
+
+        // 1. Evaluate L3 Global Preference domain affinity (requires standing modal directive valence
+        //    and word-boundary domain matches; excludes one-off read-only/review task prompts)
         let mut best_l3: Option<(&str, usize)> = None;
-        if modal_score >= crate::constants::PROGRESSIVE_MEMORY_MIN_L3_MODAL_SCORE {
+        if !is_transient_task_prompt
+            && modal_score >= crate::constants::PROGRESSIVE_MEMORY_MIN_L3_MODAL_SCORE
+        {
             for (domain_key, stems) in L3_DOMAINS {
                 let domain_score: usize = stems
                     .iter()
-                    .filter(|(stem, _)| lower.contains(*stem))
+                    .filter(|(stem, _)| Self::contains_word_phrase(&lower, stem))
                     .map(|(_, w)| *w)
                     .sum();
                 if domain_score > 0 {
@@ -643,6 +664,32 @@ impl ProgressiveMemory {
         }
 
         None
+    }
+
+    /// Returns `true` if `phrase` appears in `haystack` on ASCII alphanumeric word boundaries
+    /// (preventing substring false positives like `"commit"` inside `"uncommitted"` or `"ram"`
+    /// inside `"parameter"`).
+    fn contains_word_phrase(haystack: &str, phrase: &str) -> bool {
+        if phrase.is_empty() || phrase.len() > haystack.len() {
+            return false;
+        }
+        let bytes = haystack.as_bytes();
+        let p_bytes = phrase.as_bytes();
+        let starts_alnum = p_bytes.first().is_some_and(u8::is_ascii_alphanumeric);
+        let ends_alnum = p_bytes.last().is_some_and(u8::is_ascii_alphanumeric);
+
+        let mut search_from = 0usize;
+        while let Some(rel) = haystack[search_from..].find(phrase) {
+            let start = search_from + rel;
+            let end = start + phrase.len();
+            let left_ok = !starts_alnum || start == 0 || !bytes[start - 1].is_ascii_alphanumeric();
+            let right_ok = !ends_alnum || end == bytes.len() || !bytes[end].is_ascii_alphanumeric();
+            if left_ok && right_ok {
+                return true;
+            }
+            search_from = start + 1;
+        }
+        false
     }
 
     fn slugify_tokens(text: &str, max_words: usize) -> String {
@@ -811,6 +858,24 @@ mod tests {
         assert!(
             mem.l3_global_preferences.is_empty(),
             "Incidental task prompt without modal directive must not pollute L3 global preferences"
+        );
+    }
+
+    #[test]
+    fn test_l3_rejects_uncommitted_review_prompt_and_substring_false_positives() {
+        let mut mem = ProgressiveMemory::default();
+        mem.extract_and_store_facts(
+            "Review my uncommitted changes carefully and report bugs. Do not edit any files.",
+            "user_prompt",
+        );
+        mem.extract_and_store_facts(
+            "Never pass a negative parameter to calculate_tax in this billing module.",
+            "user_prompt",
+        );
+        assert!(
+            mem.l3_global_preferences.is_empty(),
+            "One-off review prompt ('uncommitted' / 'do not edit any files') and substring 'ram' in 'parameter' must not poison L3 global preferences: {:?}",
+            mem.l3_global_preferences
         );
     }
 }

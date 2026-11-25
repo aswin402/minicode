@@ -14,10 +14,16 @@ pub const ECONOMY_LEDGER_REL_PATH: &str = ".minicode/economy/ledger.json";
 /// Maximum recent turn records retained in the ledger ring buffer.
 const MAX_RECENT_ENTRIES: usize = 25;
 
+fn default_turn_source() -> String {
+    "orchestrator".to_string()
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TurnEconomyRecord {
     pub timestamp: String,
     pub session_id: String,
+    #[serde(default = "default_turn_source")]
+    pub source: String,
     pub turn_id: usize,
     pub provider: String,
     pub model: String,
@@ -49,6 +55,7 @@ pub struct EconomyLedger {
 /// Inputs for recording one completed turn in [`EconomyLedger`].
 pub struct TurnLedgerInput<'a> {
     pub session_id: &'a str,
+    pub source: &'a str,
     pub turn_id: usize,
     pub provider: &'a str,
     pub model: &'a str,
@@ -117,6 +124,7 @@ impl EconomyLedger {
         self.recent_turns.push(TurnEconomyRecord {
             timestamp: chrono::Utc::now().to_rfc3339(),
             session_id: input.session_id.to_string(),
+            source: input.source.to_string(),
             turn_id: input.turn_id,
             provider: input.provider.to_string(),
             model: input.model.to_string(),
@@ -153,6 +161,7 @@ mod tests {
         let mut ledger = EconomyLedger::default();
         ledger.record_turn(&TurnLedgerInput {
             session_id: "s1",
+            source: "orchestrator",
             turn_id: 1,
             provider: "gemini",
             model: "gemini-2.5-flash",

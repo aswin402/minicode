@@ -454,8 +454,8 @@ always_apply: false
         name: "webapp-testing",
         content: r#"---
 name: "webapp-testing"
-description: "Toolkit for interacting with and testing local web applications using Playwright and headless browser automation (reconnaissance-then-action workflow, DOM inspection, console/network verification)."
-category: "testing"
+description: "Playwright and headless browser E2E automation for local web SPAs (DOM inspection, browser screenshots, console/network assertions)."
+category: "frontend-e2e"
 kind: "workflow"
 globs: ["playwright.config.*", "e2e/**/*", "tests/**/*.spec.ts", "tests/**/*.test.ts"]
 triggers: ["webapp-testing", "playwright", "e2e", "browser test", "ui test", "headless browser", "verify webapp"]

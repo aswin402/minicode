@@ -3118,9 +3118,30 @@ impl AgentLoop {
 
         // Autonomous Git Auto-Commit if files were modified during this turn (or carried forward
         // from earlier errored/cancelled turns so we never produce broken partial commits).
-        let mut commit_candidate_files = self.pending_uncommitted_files.clone();
+        let is_transient_cache_artifact = |rel: &str| {
+            let norm = rel.replace('\\', "/");
+            norm.split('/').any(|seg| {
+                matches!(
+                    seg,
+                    "__pycache__"
+                        | ".pytest_cache"
+                        | ".mypy_cache"
+                        | ".ruff_cache"
+                        | ".DS_Store"
+                        | "Thumbs.db"
+                )
+            }) || norm.ends_with(".pyc")
+                || norm.ends_with(".pyo")
+                || norm.ends_with(".pyd")
+        };
+        let mut commit_candidate_files: Vec<String> = self
+            .pending_uncommitted_files
+            .iter()
+            .filter(|f| !is_transient_cache_artifact(f))
+            .cloned()
+            .collect();
         for f in &turn_files_modified {
-            if !commit_candidate_files.iter().any(|x| x == f) {
+            if !is_transient_cache_artifact(f) && !commit_candidate_files.iter().any(|x| x == f) {
                 commit_candidate_files.push(f.clone());
             }
         }
@@ -3378,6 +3399,7 @@ impl AgentLoop {
                 &self.workspace_root,
                 &crate::context::budget::economy::TurnEconomyFinish {
                     session_id: &self.session_id,
+                    source: "orchestrator",
                     turn_id,
                     provider: &self.config.provider.default,
                     model: &self.config.provider.model,

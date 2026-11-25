@@ -64,6 +64,7 @@ pub struct EconomyStatusSnapshot {
 /// Parameters for recording turn-end economy state across all MiniEconomy stores.
 pub struct TurnEconomyFinish<'a> {
     pub session_id: &'a str,
+    pub source: &'a str,
     pub turn_id: usize,
     pub provider: &'a str,
     pub model: &'a str,
@@ -147,6 +148,7 @@ impl MiniEconomy {
         let mut ledger = EconomyLedger::load(workspace_root);
         ledger.record_turn(&TurnLedgerInput {
             session_id: finish.session_id,
+            source: finish.source,
             turn_id: finish.turn_id,
             provider: finish.provider,
             model: finish.model,
@@ -285,6 +287,7 @@ mod tests {
             ws,
             &TurnEconomyFinish {
                 session_id: "sess-a",
+                source: "orchestrator",
                 turn_id: 1,
                 provider: "openai",
                 model: "gpt-4o-mini",
@@ -306,6 +309,7 @@ mod tests {
             ws,
             &TurnEconomyFinish {
                 session_id: "sess-b",
+                source: "orchestrator",
                 turn_id: 1,
                 provider: "openai",
                 model: "gpt-4o-mini",

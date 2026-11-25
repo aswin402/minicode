@@ -86,19 +86,27 @@ impl EditTestLoopGuard {
         }
 
         // Only evaluate test/build execution commands and verification barrier calls
+        let exec_cmd_str = if tool_name == "exec_cmd" {
+            args.get("command")
+                .or_else(|| args.get("cmd"))
+                .and_then(serde_json::Value::as_str)
+        } else {
+            None
+        };
         let is_check_tool = tool_name == "power_verify"
-            || (tool_name == "exec_cmd"
-                && args
-                    .get("command")
-                    .and_then(serde_json::Value::as_str)
-                    .is_some_and(looks_like_build_or_test_command));
+            || exec_cmd_str.is_some_and(looks_like_build_or_test_command);
 
         if !is_check_tool {
             return LoopIntervention::None;
         }
 
+        // Detect test/build failures masked by bash pipes (e.g. `unittest ... 2>&1 | tail -60`)
+        // where `tail`/`head` exits 0 despite unambiguous failure markers in output.
+        let effective_success = success
+            && !exec_cmd_str.is_some_and(|cmd| output_indicates_masked_pipe_failure(cmd, output));
+
         // A passing build/test clears the failure streak cleanly
-        if success {
+        if effective_success {
             self.edited_since_last_test = false;
             self.touched_files_since_test.clear();
             self.last_error_sig = None;
@@ -174,11 +182,18 @@ fn looks_like_build_or_test_command(cmd: &str) -> bool {
         "cargo clippy",
         "cargo build",
         "pytest",
+        "unittest",
+        "mypy",
+        "ruff check",
+        "py_compile",
+        "compileall",
         "vitest",
         "jest",
         "npm test",
         "npm run test",
         "npm run build",
+        "pnpm test",
+        "yarn test",
         "bun test",
         "bun run test",
         "bun run build",
@@ -188,6 +203,9 @@ fn looks_like_build_or_test_command(cmd: &str) -> bool {
         "go test",
         "go build",
         "node --test",
+        "dotnet test",
+        "mvn test",
+        "gradle test",
     ]
     .iter()
     .any(|kw| lower.contains(kw))
@@ -244,6 +262,32 @@ fn fingerprint_error_output(output: &str) -> Option<(u64, String)> {
     Some((hash, excerpt))
 }
 
+/// Returns `true` when a piped build/test command (e.g. `python3 -m unittest ... 2>&1 | tail -60`)
+/// exited 0 because of the downstream pipe utility while stdout/stderr clearly reports test or
+/// compiler failure.
+fn output_indicates_masked_pipe_failure(cmd: &str, output: &str) -> bool {
+    if !cmd.contains('|') {
+        return false;
+    }
+    let has_clear_pass = output.lines().any(|line| {
+        let t = line.trim();
+        t == "OK" || t.starts_with("test result: ok.")
+    });
+    if has_clear_pass {
+        return false;
+    }
+    output.lines().any(|line| {
+        let t = line.trim();
+        t.starts_with("FAIL:")
+            || t.starts_with("FAILED (")
+            || t.starts_with("ERROR:")
+            || t.starts_with("AssertionError")
+            || t.starts_with("error[E")
+            || t.starts_with("test result: FAILED")
+            || t.starts_with("Traceback (most recent call last):")
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -290,5 +334,24 @@ mod tests {
             LoopIntervention::None
         );
         assert_eq!(guard.consecutive_same_error_cycles, 0);
+    }
+
+    #[test]
+    fn test_loop_guard_detects_piped_test_failure_despite_exit_zero() {
+        let mut guard = EditTestLoopGuard::new();
+        let piped_cmd = json!({"command": "python3 -m unittest discover -s tests 2>&1 | tail -30"});
+        let fail_out = "FAIL: test_tax (test_billing.TestInvoice)\nAssertionError: 99 != 100\nFAILED (failures=1)";
+
+        guard.observe("patch_file", &json!({"path": "src/billing.py"}), true, "ok");
+        assert_eq!(
+            guard.observe("exec_cmd", &piped_cmd, true, fail_out),
+            LoopIntervention::None
+        );
+        guard.observe("patch_file", &json!({"path": "src/billing.py"}), true, "ok");
+        let second = guard.observe("exec_cmd", &piped_cmd, true, fail_out);
+        assert!(matches!(
+            second,
+            LoopIntervention::Redirect { cycles: 2, .. }
+        ));
     }
 }

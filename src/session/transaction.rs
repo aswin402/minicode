@@ -558,8 +558,9 @@ impl TransactionManager {
 
         Self::write_manifest_atomic(&manifest_path, &manifest)?;
 
-        // Ensure .minicode/ directory remains protected in .gitignore after any file scaffolding or commits
-        crate::tools::minikit::sync::MiniKitSyncEngine::ensure_gitignore(workspace_root);
+        // Ensure .minicode/ directory remains protected via local git exclude (or existing .gitignore)
+        // without silently creating a tracked .gitignore in repositories that do not have one.
+        crate::tools::minikit::sync::MiniKitSyncEngine::ensure_git_local_exclude(workspace_root);
 
         Self::clear_active_pointer_if_matches(workspace_root, &manifest.tx_id);
 
