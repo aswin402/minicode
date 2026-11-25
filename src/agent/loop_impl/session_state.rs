@@ -811,6 +811,8 @@ impl AgentLoop {
         self.session_active_skills.clear();
         self.session_emitted_ui_warehouse_sig = None;
         self.last_human_prompt = None;
+        self.cached_static_system_prompt = None;
+        self.cached_prompt_modes = None;
         self.fetch_tracker.clear();
         self.economy_loop_guard.reset();
         self.turn_command_tracker.reset();

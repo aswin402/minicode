@@ -1743,6 +1743,19 @@ impl SubagentWorker {
                     let dispatch_futs = validated_calls.iter().map(|(call_id, tool_name, args)| {
                         let ws = ws_root.clone();
                         async move {
+                            let file_before = if crate::tools::meta::is_file_mutation(tool_name) {
+                                crate::tools::param::get_str_with_aliases(
+                                    args,
+                                    &["path", "file_path", "file", "target"],
+                                )
+                                .map(|rel| {
+                                    let full = ws.join(rel);
+                                    let before = std::fs::read_to_string(&full).unwrap_or_default();
+                                    (full, before)
+                                })
+                            } else {
+                                None
+                            };
                             let step_start = std::time::Instant::now();
                             let res = crate::tools::ToolRegistry::dispatch(
                                 &ws,
@@ -1754,12 +1767,12 @@ impl SubagentWorker {
                             )
                             .await;
                             let duration_ms = step_start.elapsed().as_millis() as u64;
-                            (res, duration_ms)
+                            (res, duration_ms, file_before)
                         }
                     });
                     let outcomes = futures::future::join_all(dispatch_futs).await;
 
-                    for ((call_id, tool_name, args), (tool_res, duration_ms)) in
+                    for ((call_id, tool_name, args), (tool_res, duration_ms, file_before)) in
                         validated_calls.into_iter().zip(outcomes)
                     {
                         step_counter += 1;
@@ -1846,9 +1859,10 @@ impl SubagentWorker {
                             fetch_tracker.record_preloaded_screenshot(&tool_name, &args);
                         }
 
-                        // MiniEconomy: observe tool usage, exec_cmd fail→recover patterns, and semantic edit→test loops
+                        // MiniEconomy & Ponytail: observe tool usage, exec_cmd fail→recover,
+                        // SessionQualityTelemetry (AST Reuse %, open_callers, Test Freshness), and edit→test loops
                         invoked_tools.push(tool_name.clone());
-                        if tool_name == "exec_cmd" {
+                        if matches!(tool_name.as_str(), "exec_cmd" | "sandbox_exec") {
                             if let Some(cmd) = crate::tools::param::get_str_with_aliases(
                                 &args,
                                 &["command", "cmd"],
@@ -1858,6 +1872,29 @@ impl SubagentWorker {
                                     tool_res.success,
                                     &tool_res.output,
                                 );
+                                crate::agent::verification_barrier::SessionQualityTelemetry::record_command_execution(
+                                    &main_root,
+                                    cmd,
+                                    &tool_res.output,
+                                    tool_res.success,
+                                );
+                            }
+                        }
+                        if tool_res.success && crate::tools::meta::is_file_mutation(&tool_name) {
+                            if let Some((full_path, before)) = file_before {
+                                if let Ok(after) = std::fs::read_to_string(&full_path) {
+                                    let edit_report =
+                                        crate::agent::verification_barrier::SessionQualityTelemetry::record_file_edit(
+                                            &main_root,
+                                            &full_path,
+                                            &before,
+                                            &after,
+                                        );
+                                    if let Some(badge) = edit_report.format_telemetry_badge() {
+                                        pruned_output.push('\n');
+                                        pruned_output.push_str(&badge);
+                                    }
+                                }
                             }
                         }
                         match economy_loop_guard.observe(

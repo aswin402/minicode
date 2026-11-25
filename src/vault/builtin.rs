@@ -1971,12 +1971,13 @@ always_apply: false
 
 # Ponytail Gain & Live Session Quality Scorecard (`dietrichgebert/ponytail`)
 
-## 1. Live Session Quality Telemetry (`SessionQualityTelemetry`)
-Report the real, measured figures from the current `minicode` session and repository:
-- **Symbol Reuse Ratio (`Reuse %`)**: `reused_symbols / (reused_symbols + created_symbols)` tracked by Tree-sitter AST call/definition extraction across `write_file` and `patch_file` edits.
+## 1. Live Session Quality & Economy Telemetry (`SessionQualityTelemetry` + `MiniEconomy`)
+Report the real, measured figures from the current `minicode` session and repository (surfaced jointly via `minicode economy`, `power_diagnose`, and `code_smells`):
+- **Cross-Session Cost & Cache Efficiency (`MiniEconomy`)**: Sessions, turns, cumulative tokens, KV cache hit %, USD spend, and pruned tool schema savings from `.minicode/economy/ledger.json`.
+- **Symbol Reuse Ratio (`Reuse %`)**: `reused_symbols / (reused_symbols + created_symbols)` tracked by Tree-sitter AST call/definition extraction across orchestrator and subagent `write_file`/`patch_file` edits.
 - **Open Callers (`open_callers`)**: Workspace callers (`file:line`) of removed or renamed symbols that still need updating (`0` required before completion).
-- **4-State Test Freshness**: `NotRun` -> `Passed(N)` / `Failed(N)` -> `Stale(last_passed: N)` (automatically transitions to `Stale` whenever source code is modified after a test run).
-- **Shortcut Debt Ledger**: Count of AST-verified `shortcut:` markers (`triggered` vs. `[no-trigger]` rot risk via `code_smells`).
+- **4-State Test Freshness**: `NotRun` -> `Passed(N)` / `Failed(N)` -> `Stale(last_passed: N)` (automatically transitions to `Stale` whenever source code is modified after a test run, across both orchestrator and subagent workers).
+- **Shortcut Debt Ledger**: Count of AST-verified `shortcut:` markers (`triggered` vs. `[no-trigger]` rot risk via `code_smells` and `minicode economy`).
 
 ## 2. Published Benchmark Reference & Honesty Boundary
 ```text

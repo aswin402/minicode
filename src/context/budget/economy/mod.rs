@@ -45,6 +45,19 @@ fn active_session_cell() -> &'static RwLock<Option<String>> {
     ACTIVE_SESSION_ID.get_or_init(|| RwLock::new(None))
 }
 
+/// Ponytail minimalist engineering quality & AST shortcut-debt summary included in `minicode economy`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PonytailQualitySummary {
+    pub level: String,
+    pub reused_symbols: usize,
+    pub created_symbols: usize,
+    pub reuse_pct: Option<u32>,
+    pub open_callers: usize,
+    pub test_freshness: String,
+    pub shortcut_markers_total: usize,
+    pub shortcut_markers_untriggered: usize,
+}
+
 /// Snapshot returned by `minicode economy` CLI.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EconomyStatusSnapshot {
@@ -59,6 +72,7 @@ pub struct EconomyStatusSnapshot {
     pub active_micro_skills: Vec<MicroSkill>,
     pub candidate_micro_skills: usize,
     pub pruned_tools: Vec<String>,
+    pub ponytail_quality: PonytailQualitySummary,
 }
 
 /// Parameters for recording turn-end economy state across all MiniEconomy stores.
@@ -179,6 +193,25 @@ impl MiniEconomy {
             .filter(|s| !s.active && s.contradictions == 0)
             .count();
 
+        let ponytail_level = crate::agent::ponytail::resolve_ponytail_level(workspace_root);
+        let quality_snap =
+            crate::agent::verification_barrier::SessionQualityTelemetry::get_snapshot(
+                workspace_root,
+            )
+            .unwrap_or_default();
+        let (shortcut_markers_total, shortcut_markers_untriggered) =
+            count_workspace_shortcut_markers(workspace_root);
+        let ponytail_quality = PonytailQualitySummary {
+            level: ponytail_level.as_str().to_string(),
+            reused_symbols: quality_snap.reused_symbols.len(),
+            created_symbols: quality_snap.created_symbols.len(),
+            reuse_pct: quality_snap.cumulative_reuse_pct(),
+            open_callers: quality_snap.open_callers.len(),
+            test_freshness: quality_snap.test_freshness.format_summary(),
+            shortcut_markers_total,
+            shortcut_markers_untriggered,
+        };
+
         EconomyStatusSnapshot {
             sessions: ledger.seen_sessions.len(),
             total_turns: ledger.total_turns,
@@ -191,6 +224,7 @@ impl MiniEconomy {
             active_micro_skills,
             candidate_micro_skills,
             pruned_tools: pruner.pruned_tools(),
+            ponytail_quality,
         }
     }
 
@@ -213,6 +247,29 @@ impl MiniEconomy {
         out.push_str(&format!(
             "• **Schema Pruning Savings:** ~{} tokens saved | **Loop Guards Triggered:** {}\n",
             snapshot.estimated_tokens_saved, snapshot.loop_interventions
+        ));
+
+        let pt = &snapshot.ponytail_quality;
+        let reuse_str = match pt.reuse_pct {
+            Some(pct) => format!(
+                "{pct}% ({} reused, {} new)",
+                pt.reused_symbols, pt.created_symbols
+            ),
+            None => format!("{} reused, {} new", pt.reused_symbols, pt.created_symbols),
+        };
+        let debt_str = if pt.shortcut_markers_total == 0 {
+            "0 markers (clean)".to_string()
+        } else {
+            format!(
+                "{} marker(s) ({} [no-trigger] rot risk)",
+                pt.shortcut_markers_total, pt.shortcut_markers_untriggered
+            )
+        };
+        out.push_str(&format!(
+            "\n#### 🧬 Ponytail Minimalist Quality (`ponytail:{}`)\n\
+             • **Symbol Reuse:** {} | **Open Callers:** {} | **Tests:** {}\n\
+             • **Shortcut Debt Ledger (`shortcut:`):** {}\n",
+            pt.level, reuse_str, pt.open_callers, pt.test_freshness, debt_str
         ));
 
         out.push_str(&format!(
@@ -269,6 +326,90 @@ impl MiniEconomy {
             let _ = std::fs::remove_dir_all(dir);
         }
     }
+}
+
+/// Fast AST-verified count of `shortcut:` / `ponytail:` debt markers across the workspace.
+/// Only invokes Tree-sitter on source files that contain the literal prefix, keeping `minicode economy`
+/// instantaneous even in large repositories. Returns `(total_markers, untriggered_rot_risk)`.
+fn count_workspace_shortcut_markers(workspace_root: &Path) -> (usize, usize) {
+    const MAX_FILES_SCANNED: usize = 1500;
+    const MAX_FILE_BYTES: u64 = 256 * 1024;
+    const CODE_EXTS: &[&str] = &[
+        "rs", "ts", "tsx", "js", "jsx", "mjs", "cjs", "py", "go", "java", "kt", "c", "cc", "cpp",
+        "h", "hpp", "cs", "rb", "php", "swift", "dart",
+    ];
+
+    let mut total = 0usize;
+    let mut untriggered = 0usize;
+    let mut scanned = 0usize;
+    let walker = ignore::WalkBuilder::new(workspace_root)
+        .hidden(false)
+        .git_ignore(true)
+        .git_exclude(true)
+        .max_depth(Some(8))
+        .filter_entry(|entry| {
+            let name = entry.file_name().to_string_lossy();
+            !matches!(
+                name.as_ref(),
+                ".git"
+                    | ".minicode"
+                    | "node_modules"
+                    | "target"
+                    | "dist"
+                    | "build"
+                    | "__pycache__"
+                    | ".venv"
+                    | "venv"
+            )
+        })
+        .build();
+
+    for entry in walker.flatten() {
+        if scanned >= MAX_FILES_SCANNED {
+            break;
+        }
+        let path = entry.path();
+        if !entry.file_type().is_some_and(|ft| ft.is_file()) {
+            continue;
+        }
+        let ext = path
+            .extension()
+            .and_then(|e| e.to_str())
+            .unwrap_or("")
+            .to_ascii_lowercase();
+        if !CODE_EXTS.contains(&ext.as_str()) {
+            continue;
+        }
+        let Ok(meta) = std::fs::metadata(path) else {
+            continue;
+        };
+        if meta.len() == 0 || meta.len() > MAX_FILE_BYTES {
+            continue;
+        }
+        scanned += 1;
+        let Ok(content) = std::fs::read_to_string(path) else {
+            continue;
+        };
+        let lower = content.to_ascii_lowercase();
+        if !crate::constants::SHORTCUT_DEBT_MARKERS
+            .iter()
+            .any(|marker| lower.contains(marker))
+        {
+            continue;
+        }
+        let items =
+            crate::context::governance::smell_detector::AstSmellDetector::harvest_shortcut_comments_ast(
+                path, &content,
+            );
+        for item in items {
+            total += 1;
+            if !item.has_trigger {
+                untriggered += 1;
+            }
+        }
+    }
+
+    (total, untriggered)
 }
 
 #[cfg(test)]
@@ -335,6 +476,24 @@ mod tests {
         let report = MiniEconomy::format_status_report(&snap);
         assert!(report.contains("MiniEconomy"));
         assert!(report.contains("python3 -m pytest"));
+        assert!(report.contains("Ponytail Minimalist Quality"));
+
+        // Verify fast AST shortcut-debt marker counting ignores string literals and flags untriggered items
+        std::fs::write(
+            ws.join("sample.rs"),
+            "fn demo() {\n\
+             let _s = \"// shortcut: string literal should be ignored\";\n\
+             // shortcut: linear scan over Vec, upgrade to HashMap when entries > 100\n\
+             // shortcut: hardcoded timeout\n\
+             }\n",
+        )
+        .unwrap();
+        let snap_with_debt = MiniEconomy::status_snapshot(ws);
+        assert_eq!(snap_with_debt.ponytail_quality.shortcut_markers_total, 2);
+        assert_eq!(
+            snap_with_debt.ponytail_quality.shortcut_markers_untriggered,
+            1
+        );
 
         MiniEconomy::reset(ws);
         assert_eq!(MiniEconomy::status_snapshot(ws).total_turns, 0);

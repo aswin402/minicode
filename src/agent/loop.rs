@@ -78,6 +78,11 @@ pub struct AgentLoop {
     pub last_seen_swarm_msg_id: Option<String>,
     /// Memoized Zone 1 static system prompt frozen at session start to preserve KV prefix cache across turns.
     cached_static_system_prompt: Option<String>,
+    /// Active `(CavemanLevel, PonytailLevel)` baked into `cached_static_system_prompt`; changing either invalidates Zone 1.
+    cached_prompt_modes: Option<(
+        crate::agent::caveman::CavemanLevel,
+        crate::agent::ponytail::PonytailLevel,
+    )>,
     /// Skill names inlined into `cached_static_system_prompt` at session start so mid-session scaffolded skills route to Zone 3.
     baseline_static_skills: Option<Vec<String>>,
     /// Signature of the last emitted `PlanUpdated` payload to suppress redundant duplicate events.
@@ -219,6 +224,7 @@ impl AgentLoop {
             mailbox,
             last_seen_swarm_msg_id: None,
             cached_static_system_prompt: None,
+            cached_prompt_modes: None,
             baseline_static_skills: None,
             last_emitted_plan_sig: std::sync::Mutex::new(None),
             turn_workspace_fingerprints: HashMap::new(),
@@ -510,8 +516,52 @@ impl AgentLoop {
         let mut compaction_metrics = self.prune_context();
 
         // 2. Build Tri-Zone context:
-        // Zone 1: Primacy Zone (100% static, immutable system prompt frozen per session for KV cache hits)
+        // Resolve any natural-language Caveman/Ponytail mode triggers BEFORE building Zone 1 so
+        // mid-session toggles ("disable ponytail", "ponytail ultra", "ultracave") take effect immediately.
         let ws_root = self.workspace_root.clone();
+        if let Some(triggered_level) =
+            crate::agent::caveman::CavemanLevel::detect_natural_trigger(user_prompt)
+        {
+            self.config.agent.caveman_mode = triggered_level.is_enabled();
+            if triggered_level.is_enabled() {
+                self.config.agent.caveman_level = triggered_level.as_str().to_string();
+            }
+            let flag_path = crate::agent::caveman::default_flag_path(&ws_root);
+            let _ = crate::agent::caveman::write_flag_safe(&flag_path, triggered_level);
+        }
+        if let Some(ponytail_level) =
+            crate::agent::ponytail::PonytailLevel::detect_natural_trigger(user_prompt)
+        {
+            self.config.agent.ponytail_mode = ponytail_level.is_enabled();
+            if ponytail_level.is_enabled() {
+                self.config.agent.ponytail_level = ponytail_level.as_str().to_string();
+            }
+            let flag_path = crate::agent::ponytail::default_flag_path(&ws_root);
+            let _ = crate::agent::ponytail::write_flag_safe(&flag_path, ponytail_level);
+        }
+
+        // Zone 1: Primacy Zone (static system prompt frozen per session for KV cache hits,
+        // automatically invalidated if Caveman or Ponytail level changed via natural language,
+        // `update_agent_config`, or `/settings`).
+        let live_caveman = crate::agent::caveman::read_flag_safe(
+            &crate::agent::caveman::default_flag_path(&ws_root),
+        )
+        .unwrap_or_else(|| {
+            if self.config.agent.caveman_mode {
+                crate::agent::caveman::CavemanLevel::from_str_active(
+                    &self.config.agent.caveman_level,
+                )
+            } else {
+                crate::agent::caveman::CavemanLevel::Off
+            }
+        });
+        let live_ponytail = crate::agent::ponytail::resolve_ponytail_level(&ws_root);
+        let live_modes = (live_caveman, live_ponytail);
+        if self.cached_prompt_modes != Some(live_modes) {
+            self.cached_static_system_prompt = None;
+            self.cached_prompt_modes = Some(live_modes);
+        }
+
         if self.baseline_static_skills.is_none() {
             self.baseline_static_skills = Some(
                 crate::vault::store::VaultStore::new(&ws_root)
@@ -728,30 +778,6 @@ impl AgentLoop {
             self.intent_ledger = Some(crate::context::memory::intent::IntentLedger::new(
                 user_prompt,
             ));
-        }
-
-        // Auto-detect natural-language Caveman Mode triggers ("talk like caveman", "ultracave", "megacave", "stop caveman")
-        if let Some(triggered_level) =
-            crate::agent::caveman::CavemanLevel::detect_natural_trigger(user_prompt)
-        {
-            self.config.agent.caveman_mode = triggered_level.is_enabled();
-            if triggered_level.is_enabled() {
-                self.config.agent.caveman_level = triggered_level.as_str().to_string();
-            }
-            let flag_path = crate::agent::caveman::default_flag_path(&self.workspace_root);
-            let _ = crate::agent::caveman::write_flag_safe(&flag_path, triggered_level);
-        }
-
-        // Auto-detect natural-language Ponytail Mode triggers ("enable ponytail", "ponytail ultra", "ponytail lite", "stop ponytail")
-        if let Some(ponytail_level) =
-            crate::agent::ponytail::PonytailLevel::detect_natural_trigger(user_prompt)
-        {
-            self.config.agent.ponytail_mode = ponytail_level.is_enabled();
-            if ponytail_level.is_enabled() {
-                self.config.agent.ponytail_level = ponytail_level.as_str().to_string();
-            }
-            let flag_path = crate::agent::ponytail::default_flag_path(&self.workspace_root);
-            let _ = crate::agent::ponytail::write_flag_safe(&flag_path, ponytail_level);
         }
 
         let recency_block = PromptBuilder::build_recency_context_with_signal(
