@@ -43,8 +43,13 @@ const PROTECTED_TOOLS: &[&str] = &[
     "archive_plan",
     "record_decision",
     "activate_tools",
+    "power_brainstorm",
+    "power_plan",
+    "power_worktree_task",
     "power_verify",
     "power_review",
+    "power_diagnose",
+    "power_speckit",
     "git_status",
     "git_diff",
 ];
@@ -231,6 +236,11 @@ mod tests {
         let mut pruner = ToolUsagePruner::default();
         let exposed = vec![
             "read_file".to_string(),
+            "power_brainstorm".to_string(),
+            "power_plan".to_string(),
+            "power_worktree_task".to_string(),
+            "power_diagnose".to_string(),
+            "power_speckit".to_string(),
             "vault_bundle_show".to_string(),
             "browser_mock_route".to_string(),
         ];
@@ -251,6 +261,21 @@ mod tests {
         assert!(pruned.contains(&"vault_bundle_show".to_string()));
         assert!(pruned.contains(&"browser_mock_route".to_string()));
         assert!(!pruned.contains(&"read_file".to_string()));
+        for power_tool in [
+            "power_brainstorm",
+            "power_plan",
+            "power_worktree_task",
+            "power_verify",
+            "power_review",
+            "power_diagnose",
+            "power_speckit",
+        ] {
+            assert!(
+                ToolUsagePruner::is_protected(power_tool)
+                    && !pruned.contains(&power_tool.to_string()),
+                "MiniPower workflow tool `{power_tool}` must never be pruned"
+            );
+        }
 
         // Filtering strips pruned schemas unless explicitly requested
         let mut schemas = vec![
