@@ -188,6 +188,7 @@ impl AgentLoop {
             &config.provider.model,
             None,
         );
+        crate::context::budget::economy::MiniEconomy::set_active_session_id(&session_id);
 
         Self {
             workspace_root: workspace_root.to_path_buf(),

@@ -435,6 +435,14 @@ impl SubagentWorker {
             ));
         }
 
+        // MiniEconomy: Cross-session corroborated repository micro-skills (KV-cache friendly)
+        if let Some(micro_skills_block) =
+            crate::context::budget::economy::MiniEconomy::format_prompt_micro_skills(&main_root)
+        {
+            full_prompt.push('\n');
+            full_prompt.push_str(&micro_skills_block);
+        }
+
         full_prompt
     }
 
@@ -678,6 +686,21 @@ impl SubagentWorker {
                 })
                 .cloned()
                 .collect();
+            let (pruned_subagent_tools, est_subagent_tokens_saved) =
+                crate::context::budget::economy::MiniEconomy::prune_inactive_schemas(
+                    &main_root,
+                    &mut filtered_tools,
+                    &std::collections::HashSet::new(),
+                );
+            if !pruned_subagent_tools.is_empty() {
+                tracing::debug!(
+                    minipub_id = %id,
+                    pruned_count = pruned_subagent_tools.len(),
+                    est_tokens_saved = est_subagent_tokens_saved,
+                    pruned = %pruned_subagent_tools.join(","),
+                    "MiniEconomy pruned cold inactive tool schemas from subagent worker"
+                );
+            }
             crate::context::budget::headroom::CacheAligner::normalize_tool_schemas(
                 &mut filtered_tools,
             );
@@ -728,6 +751,11 @@ impl SubagentWorker {
             let mut seen_global_msg_ids: std::collections::HashSet<String> =
                 std::collections::HashSet::new();
             let mut fetch_tracker = crate::context::budget::dedup::FetchCallTracker::new();
+            let worker_started_at = std::time::Instant::now();
+            let mut economy_loop_guard = crate::context::budget::economy::EditTestLoopGuard::new();
+            let mut command_tracker = crate::context::budget::economy::TurnCommandTracker::new();
+            let mut invoked_tools: Vec<String> = Vec::new();
+            let mut last_cached_prompt_tokens: usize = 0;
             let mut transcript = crate::agent::subagent::transcript::SubagentTranscript::new(
                 &id,
                 role,
@@ -1293,10 +1321,13 @@ impl SubagentWorker {
                         Ok(StreamChunk::Usage {
                             completion_tokens,
                             prompt_tokens,
-                            ..
+                            cached_prompt_tokens,
                         }) => {
                             turn_usage_reported = true;
                             last_prompt_tokens = prompt_tokens;
+                            if cached_prompt_tokens > 0 {
+                                last_cached_prompt_tokens = cached_prompt_tokens;
+                            }
                             cumulative_completion_tokens =
                                 cumulative_completion_tokens.saturating_add(completion_tokens);
                             tokens_used =
@@ -1814,6 +1845,58 @@ impl SubagentWorker {
                             }
                             fetch_tracker.record_preloaded_screenshot(&tool_name, &args);
                         }
+
+                        // MiniEconomy: observe tool usage, exec_cmd fail→recover patterns, and semantic edit→test loops
+                        invoked_tools.push(tool_name.clone());
+                        if tool_name == "exec_cmd" {
+                            if let Some(cmd) = crate::tools::param::get_str_with_aliases(
+                                &args,
+                                &["command", "cmd"],
+                            ) {
+                                command_tracker.observe_exec_cmd(
+                                    cmd,
+                                    tool_res.success,
+                                    &tool_res.output,
+                                );
+                            }
+                        }
+                        match economy_loop_guard.observe(
+                            &tool_name,
+                            &args,
+                            tool_res.success,
+                            &tool_res.output,
+                        ) {
+                            crate::context::budget::economy::LoopIntervention::None => {}
+                            crate::context::budget::economy::LoopIntervention::Redirect {
+                                cycles,
+                                message,
+                                ..
+                            } => {
+                                tracing::warn!(
+                                    minipub_id = %id,
+                                    tool = %tool_name,
+                                    cycles,
+                                    "MiniEconomy subagent edit→test loop guard redirect injected"
+                                );
+                                pruned_output.push_str("\n\n");
+                                pruned_output.push_str(&message);
+                            }
+                            crate::context::budget::economy::LoopIntervention::Escalate {
+                                cycles,
+                                message,
+                                ..
+                            } => {
+                                tracing::warn!(
+                                    minipub_id = %id,
+                                    tool = %tool_name,
+                                    cycles,
+                                    "MiniEconomy subagent edit→test loop guard escalation injected"
+                                );
+                                pruned_output.push_str("\n\n");
+                                pruned_output.push_str(&message);
+                            }
+                        }
+
                         let tool_images = if tool_res.success
                             && !pruned_output.starts_with("<fetch-blocked")
                             && !pruned_output.starts_with('⏭')
@@ -2029,6 +2112,32 @@ impl SubagentWorker {
                     &final_summary,
                     success,
                 );
+                if tokens_used > 0 || !invoked_tools.is_empty() {
+                    let econ_session_id =
+                        crate::context::budget::economy::MiniEconomy::active_session_id()
+                            .unwrap_or_else(|| format!("subagent:{}", id));
+                    let worker_duration_ms = worker_started_at.elapsed().as_millis().max(1) as u64;
+                    crate::context::budget::economy::MiniEconomy::record_turn_complete(
+                        &main_root,
+                        &crate::context::budget::economy::TurnEconomyFinish {
+                            session_id: &econ_session_id,
+                            turn_id: turns_executed.max(1),
+                            provider: active_provider.name(),
+                            model: &options.model,
+                            total_tokens: tokens_used,
+                            cached_tokens: last_cached_prompt_tokens,
+                            duration_ms: worker_duration_ms,
+                            // Do not advance global unused-tool pruning from narrow subagent role whitelists;
+                            // still record `invoked_tools` so any tool used by subagents stays active.
+                            exposed_tools: &[],
+                            invoked_tools: &invoked_tools,
+                            pruned_tools_count: pruned_subagent_tools.len(),
+                            est_tokens_saved: est_subagent_tokens_saved,
+                            loop_interventions: economy_loop_guard.interventions_emitted(),
+                            command_tracker: &command_tracker,
+                        },
+                    );
+                }
             }
 
             if !browser_was_running_at_start
@@ -3008,5 +3117,92 @@ mod tests {
             "Auto-generated browser_screenshot without explicit path arg must still attach image"
         );
         assert_eq!(atts[0].media_type, "image/png");
+    }
+
+    #[tokio::test]
+    async fn test_subagent_worker_minieconomy_micro_skills_and_ledger() {
+        use crate::context::budget::economy::{MiniEconomy, TurnCommandTracker, TurnEconomyFinish};
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let ws = dir.path();
+
+        // 1. Seed a corroborated micro-skill across 2 prior sessions
+        let mut t1 = TurnCommandTracker::new();
+        t1.observe_exec_cmd("pytest", false, "sh: pytest: command not found");
+        t1.observe_exec_cmd("python3 -m pytest", true, "3 passed");
+        MiniEconomy::record_turn_complete(
+            ws,
+            &TurnEconomyFinish {
+                session_id: "prior-s1",
+                turn_id: 1,
+                provider: "mock",
+                model: "mock-model",
+                total_tokens: 1_000,
+                cached_tokens: 0,
+                duration_ms: 100,
+                exposed_tools: &[],
+                invoked_tools: &[],
+                pruned_tools_count: 0,
+                est_tokens_saved: 0,
+                loop_interventions: 0,
+                command_tracker: &t1,
+            },
+        );
+        let mut t2 = TurnCommandTracker::new();
+        t2.observe_exec_cmd("python3 -m pytest", true, "3 passed");
+        MiniEconomy::record_turn_complete(
+            ws,
+            &TurnEconomyFinish {
+                session_id: "prior-s2",
+                turn_id: 1,
+                provider: "mock",
+                model: "mock-model",
+                total_tokens: 1_000,
+                cached_tokens: 0,
+                duration_ms: 100,
+                exposed_tools: &[],
+                invoked_tools: &[],
+                pruned_tools_count: 0,
+                est_tokens_saved: 0,
+                loop_interventions: 0,
+                command_tracker: &t2,
+            },
+        );
+
+        // 2. Verify SubagentWorker system prompt inherits corroborated <workspace_micro_skills>
+        let cfg = SubagentConfig::for_role(SubagentRole::Scout);
+        let worker = SubagentWorker::new(
+            "scout-econ-1".to_string(),
+            "Inspect test runner configuration".to_string(),
+            cfg,
+            ws,
+        );
+        let sys_prompt = worker.build_system_prompt();
+        assert!(
+            sys_prompt.contains("<workspace_micro_skills ")
+                && sys_prompt.contains("</workspace_micro_skills>"),
+            "Subagent system prompt should inherit corroborated micro-skills"
+        );
+        assert!(sys_prompt.contains("python3 -m pytest"));
+
+        // 3. Run worker via MockProvider and confirm subagent completion updates EconomyLedger
+        let provider = Arc::new(crate::agent::mock_provider::MockProvider::new(
+            "mock",
+            "mock-model",
+        ));
+        provider.push_response(
+            &["STATUS: DONE\nConfirmed python3 -m pytest works."],
+            vec![],
+        );
+        let res = worker.run(provider).await.expect("subagent run");
+        assert!(res.success);
+
+        let snap = MiniEconomy::status_snapshot(ws);
+        assert!(
+            snap.total_turns >= 3,
+            "Subagent completion should persist turn metrics into EconomyLedger (got {} turns)",
+            snap.total_turns
+        );
+        assert_eq!(snap.active_micro_skills.len(), 1);
     }
 }

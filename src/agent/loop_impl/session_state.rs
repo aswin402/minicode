@@ -784,6 +784,7 @@ impl AgentLoop {
         self.current_turn_id = 0;
         self.cumulative_tokens_used = 0;
         self.session_id = self.session_store.generate_session_id();
+        crate::context::budget::economy::MiniEconomy::set_active_session_id(&self.session_id);
         self.session_persisted = false;
         self.last_seen_swarm_msg_id = None;
         if let Ok(mut guard) = self.last_emitted_plan_sig.lock() {

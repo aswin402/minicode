@@ -32,6 +32,18 @@ use crate::agent::provider::ToolSchema;
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 use std::path::Path;
+use std::sync::{Mutex, OnceLock, RwLock};
+
+static ECONOMY_IO_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+static ACTIVE_SESSION_ID: OnceLock<RwLock<Option<String>>> = OnceLock::new();
+
+fn economy_io_lock() -> &'static Mutex<()> {
+    ECONOMY_IO_LOCK.get_or_init(|| Mutex::new(()))
+}
+
+fn active_session_cell() -> &'static RwLock<Option<String>> {
+    ACTIVE_SESSION_ID.get_or_init(|| RwLock::new(None))
+}
 
 /// Snapshot returned by `minicode economy` CLI.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -70,6 +82,20 @@ pub struct TurnEconomyFinish<'a> {
 pub struct MiniEconomy;
 
 impl MiniEconomy {
+    /// Registers the active parent orchestrator session ID so parallel subagent workers share
+    /// the parent's session identity when recording ledger spend and micro-skill corroboration.
+    pub fn set_active_session_id(session_id: &str) {
+        if let Ok(mut guard) = active_session_cell().write() {
+            *guard = Some(session_id.to_string());
+        }
+    }
+
+    /// Returns the currently active parent orchestrator session ID, if any.
+    #[must_use]
+    pub fn active_session_id() -> Option<String> {
+        active_session_cell().read().ok().and_then(|g| g.clone())
+    }
+
     /// Returns the KV-cache-friendly `<workspace_micro_skills>` prompt block for active
     /// corroborated facts, or `None` if no corroborated micro-skills exist yet.
     #[must_use]
@@ -94,8 +120,12 @@ impl MiniEconomy {
     }
 
     /// Updates tool usage counters, repository micro-skills, and the cumulative economy ledger
-    /// at the end of a completed turn.
+    /// at the end of a completed turn (serialized across parallel subagent workers).
     pub fn record_turn_complete(workspace_root: &Path, finish: &TurnEconomyFinish<'_>) {
+        let _guard = economy_io_lock()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+
         // 1. Update tool utilization & dual-threshold pruning state
         let mut pruner = ToolUsagePruner::load(workspace_root);
         pruner.record_turn(
@@ -218,6 +248,9 @@ impl MiniEconomy {
 
     /// Restores one or all pruned tools and persists the updated state.
     pub fn restore_tools(workspace_root: &Path, tool_name: Option<&str>) -> usize {
+        let _guard = economy_io_lock()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         let mut pruner = ToolUsagePruner::load(workspace_root);
         let restored = pruner.restore(tool_name);
         pruner.save(workspace_root);
@@ -226,6 +259,9 @@ impl MiniEconomy {
 
     /// Clears all persisted MiniEconomy state for this workspace (`.minicode/economy/`).
     pub fn reset(workspace_root: &Path) {
+        let _guard = economy_io_lock()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         let dir = workspace_root.join(".minicode/economy");
         if dir.is_dir() {
             let _ = std::fs::remove_dir_all(dir);

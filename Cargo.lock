@@ -1368,7 +1368,7 @@ dependencies = [
 
 [[package]]
 name = "minicode"
-version = "0.5.92"
+version = "0.5.93"
 dependencies = [
  "anyhow",
  "async-stream",

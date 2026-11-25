@@ -127,7 +127,7 @@ curl -fsSL https://raw.githubusercontent.com/aswin402/minicode/main/install.sh |
 
 ```bash
 # Pin a specific version
-MINICODE_VERSION=v0.5.92 curl -fsSL https://raw.githubusercontent.com/aswin402/minicode/main/install.sh | bash
+MINICODE_VERSION=v0.5.93 curl -fsSL https://raw.githubusercontent.com/aswin402/minicode/main/install.sh | bash
 
 # Custom install directory
 MINICODE_INSTALL_DIR=/usr/local/bin curl -fsSL https://raw.githubusercontent.com/aswin402/minicode/main/install.sh | bash
@@ -154,7 +154,7 @@ irm https://raw.githubusercontent.com/aswin402/minicode/main/install.ps1 | iex
 
 ```powershell
 # Pin a specific version or custom directory
-$env:MINICODE_VERSION = "v0.5.92"
+$env:MINICODE_VERSION = "v0.5.93"
 $env:MINICODE_INSTALL_DIR = "$env:USERPROFILE\bin"
 irm https://raw.githubusercontent.com/aswin402/minicode/main/install.ps1 | iex
 ```
