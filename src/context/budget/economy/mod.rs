@@ -379,6 +379,26 @@ impl MiniEconomy {
     }
 }
 
+/// Unwraps trailing shell formatting/paging pipes (`| head`, `| tail`, `| cat`, `| tee`,
+/// `| less`, `| more`) so upstream primary-command extraction sees the real executed command
+/// (`python3 -m unittest ... 2>&1 | tail -30` -> `python3 -m unittest ... 2>&1`) without losing
+/// logical `||` operators.
+pub(super) fn unwrap_trailing_formatting_pipes(cmd: &str) -> &str {
+    let mut stage = cmd.trim();
+    while let Some((left, right)) = stage.rsplit_once('|') {
+        if left.ends_with('|') {
+            break; // `||` logical OR, not pipe
+        }
+        let right_bin = right.split_whitespace().next().unwrap_or("");
+        if matches!(right_bin, "head" | "tail" | "cat" | "tee" | "less" | "more") {
+            stage = left.trim_end();
+        } else {
+            break;
+        }
+    }
+    stage
+}
+
 /// Fast AST-verified count of `shortcut:` / `ponytail:` debt markers across the workspace.
 /// Only invokes Tree-sitter on source files that contain the literal prefix, keeping `minicode economy`
 /// instantaneous even in large repositories. Returns `(total_markers, untriggered_rot_risk)`.
@@ -400,18 +420,7 @@ fn count_workspace_shortcut_markers(workspace_root: &Path) -> (usize, usize) {
         .max_depth(Some(8))
         .filter_entry(|entry| {
             let name = entry.file_name().to_string_lossy();
-            !matches!(
-                name.as_ref(),
-                ".git"
-                    | ".minicode"
-                    | "node_modules"
-                    | "target"
-                    | "dist"
-                    | "build"
-                    | "__pycache__"
-                    | ".venv"
-                    | "venv"
-            )
+            !crate::context::walker::is_excluded_dir_name(&name)
         })
         .build();
 

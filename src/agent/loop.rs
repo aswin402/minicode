@@ -3144,30 +3144,16 @@ impl AgentLoop {
 
         // Autonomous Git Auto-Commit if files were modified during this turn (or carried forward
         // from earlier errored/cancelled turns so we never produce broken partial commits).
-        let is_transient_cache_artifact = |rel: &str| {
-            let norm = rel.replace('\\', "/");
-            norm.split('/').any(|seg| {
-                matches!(
-                    seg,
-                    "__pycache__"
-                        | ".pytest_cache"
-                        | ".mypy_cache"
-                        | ".ruff_cache"
-                        | ".DS_Store"
-                        | "Thumbs.db"
-                )
-            }) || norm.ends_with(".pyc")
-                || norm.ends_with(".pyo")
-                || norm.ends_with(".pyd")
-        };
         let mut commit_candidate_files: Vec<String> = self
             .pending_uncommitted_files
             .iter()
-            .filter(|f| !is_transient_cache_artifact(f))
+            .filter(|f| !crate::context::walker::is_transient_cache_path(f))
             .cloned()
             .collect();
         for f in &turn_files_modified {
-            if !is_transient_cache_artifact(f) && !commit_candidate_files.iter().any(|x| x == f) {
+            if !crate::context::walker::is_transient_cache_path(f)
+                && !commit_candidate_files.iter().any(|x| x == f)
+            {
                 commit_candidate_files.push(f.clone());
             }
         }

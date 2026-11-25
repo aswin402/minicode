@@ -1684,17 +1684,43 @@ fn finalize_command_output(
         exit_code,
         context_window,
     );
-    let mut compacted = super::compactor::compact_tool_output_for_context(
-        command_str,
-        &rtk_res.content,
-        exit_code,
-        context_window,
-    );
+    // Single-pass compaction: if a specialized RTK filter (declarative TOML rule, test runner,
+    // git summary, grouped diagnostics, aligned CLI table, or fs listing) already structured the
+    // output, keep it directly without double-filtering. Otherwise, if `compactor` has a dedicated
+    // command strategy (`cargo check`, `git diff`, `go test`, `npm`), run `compactor` once on the
+    // full ANSI/progress-stripped output so it never sees pre-chopped donut text.
+    let compactor_strategy = super::compactor::detect_strategy(command_str);
+    let (mut compacted, telemetry_category): (String, &'static str) = if rtk_res.specialized {
+        (rtk_res.content, rtk_res.category)
+    } else if compactor_strategy != super::compactor::CompactStrategy::Generic {
+        let cleaned = super::rtk_filter::RtkFilter::strip_command_progress_noise(
+            &super::rtk_filter::strip_ansi(&combined),
+        );
+        let out = super::compactor::compact_tool_output_for_context(
+            command_str,
+            &cleaned,
+            exit_code,
+            context_window,
+        );
+        let cat = match compactor_strategy {
+            super::compactor::CompactStrategy::CargoCheck
+            | super::compactor::CompactStrategy::CargoTest => "cargo",
+            super::compactor::CompactStrategy::GitDiff
+            | super::compactor::CompactStrategy::GitLog => "git",
+            super::compactor::CompactStrategy::GoTest
+            | super::compactor::CompactStrategy::Pytest => "test",
+            super::compactor::CompactStrategy::Npm => "npm",
+            super::compactor::CompactStrategy::Generic => rtk_res.category,
+        };
+        (out, cat)
+    } else {
+        (rtk_res.content, rtk_res.category)
+    };
 
     if combined.len() > compacted.len() + 64 {
         crate::context::budget::economy::MiniEconomy::record_shell_filter(
             workspace_root,
-            rtk_res.category,
+            telemetry_category,
             combined.len(),
             compacted.len(),
         );
@@ -2171,5 +2197,35 @@ grep -c "FeatureTabs" FeatureTabs.tsx"#;
         assert_eq!(ua_prof.workload, CommandWorkload::InstantProbe);
         assert_eq!(classify_background_task_name(quoted_ua_curl), None);
         assert_ne!(ua_prof.task_slug, "x11-linux");
+    }
+
+    #[test]
+    fn test_finalize_command_output_single_pass_avoids_double_filtering() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let cfg_dir = tmp.path().join(".minicode");
+        std::fs::create_dir_all(&cfg_dir).expect("mkdir .minicode");
+        std::fs::write(
+            cfg_dir.join("rtk_filters.toml"),
+            r#"
+[[filters]]
+name = "custom-cargo"
+match_command = "cargo test"
+keep_lines_matching = ["^CUSTOM_KEEP:"]
+"#,
+        )
+        .expect("write rtk_filters.toml");
+
+        let mut raw = String::new();
+        for i in 1..=20 {
+            raw.push_str(&format!("running noise line {i}\n"));
+        }
+        raw.push_str("CUSTOM_KEEP: sentinel-survived-single-pass\n");
+
+        let out = finalize_command_output(tmp.path(), "cargo test", raw, "", Some(0), Some(64_000))
+            .expect("finalize succeeds");
+        assert!(
+            out.contains("CUSTOM_KEEP: sentinel-survived-single-pass"),
+            "specialized RTK filter output must not be overwritten or double-filtered by compactor; got: {out}"
+        );
     }
 }

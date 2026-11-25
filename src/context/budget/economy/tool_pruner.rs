@@ -20,39 +20,38 @@ pub const MIN_PROMPTS_FOR_PRUNE: u64 = 10;
 pub const MIN_SESSIONS_FOR_PRUNE: usize = 2;
 pub const ABSOLUTE_SESSIONS_FOR_PRUNE: usize = 5;
 
-/// Core and human-centric tools that are NEVER automatically pruned.
-const PROTECTED_TOOLS: &[&str] = &[
-    "read_file",
-    "batch_read",
-    "look_at",
-    "write_file",
-    "patch_file",
-    "exec_cmd",
-    "grep_search",
-    "file_search",
-    "search_files",
-    "list_files",
-    "locate_symbol",
-    "retrieve_observation",
-    "scratchpad_read",
-    "scratchpad_write",
-    "send_worker_message",
-    "ask_user",
-    "create_plan",
-    "update_progress",
-    "archive_plan",
-    "record_decision",
-    "activate_tools",
-    "power_brainstorm",
-    "power_plan",
-    "power_worktree_task",
-    "power_verify",
-    "power_review",
-    "power_diagnose",
-    "power_speckit",
-    "git_status",
-    "git_diff",
-];
+/// Returns `true` if `tool_name` is a protected core/workflow/coordination primitive that must
+/// never be auto-pruned. Derived dynamically from `minicode`'s canonical tool registry metadata
+/// (`CORE_ACTIVE_TOOL_NAMES`, `ToolCategory::MiniPower | Exec`, `is_file_mutation`, `is_discovery_safe`)
+/// rather than a separate hand-maintained list.
+#[must_use]
+fn is_metadata_protected(tool_name: &str) -> bool {
+    let canonical = crate::tools::meta::canonical_name(tool_name);
+    canonical == "activate_tools"
+        || canonical == "retrieve_observation"
+        || crate::constants::CORE_ACTIVE_TOOL_NAMES.contains(&canonical)
+        || crate::tools::meta::is_file_mutation(canonical)
+        || crate::tools::meta::is_discovery_safe(canonical)
+        || matches!(
+            crate::tools::meta::category_of(canonical),
+            Some(
+                crate::tools::category::ToolCategory::MiniPower
+                    | crate::tools::category::ToolCategory::Exec
+            )
+        )
+        || matches!(
+            canonical,
+            "look_at"
+                | "batch_read"
+                | "search_files"
+                | "list_files"
+                | "git_status"
+                | "git_diff"
+                | "scratchpad_read"
+                | "scratchpad_write"
+                | "send_worker_message"
+        )
+}
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ToolUsageEntry {
@@ -100,7 +99,7 @@ impl ToolUsagePruner {
 
     #[must_use]
     pub fn is_protected(tool_name: &str) -> bool {
-        PROTECTED_TOOLS.contains(&tool_name)
+        is_metadata_protected(tool_name)
     }
 
     /// Prunes cold non-essential tool schemas from `schemas`, preserving all protected tools and

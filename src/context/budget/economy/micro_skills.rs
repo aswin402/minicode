@@ -281,53 +281,77 @@ impl MicroSkillStore {
 }
 
 /// Extracts a normalized 1–3 token command prefix (e.g. `pytest`, `python3 -m pytest`,
-/// `bun run test`, `cargo test`) while ignoring chained shell glue or env assignments.
+/// `bun run test`, `cargo test`, `zig build`) for ANY executable toolchain by reusing
+/// `compactor::extract_primary_command` (handling `cd ... &&`, `nice -n 19`, `timeout`, `ENV=1`)
+/// and unwrapping trailing formatting pipes (`| head`, `| tail`, `| cat`, `| tee`).
 fn normalize_command_prefix(raw_cmd: &str) -> Option<String> {
     let trimmed = raw_cmd.trim();
-    if trimmed.is_empty() || trimmed.len() > 240 {
+    if trimmed.is_empty() || trimmed.len() > 280 || trimmed.contains('\n') {
         return None;
     }
-    // Skip complex multi-command pipelines or subshells
-    if trimmed.contains('\n')
-        || trimmed.contains("&&")
-        || trimmed.contains(';')
-        || trimmed.contains('|')
-    {
-        return None;
-    }
-    let tokens: Vec<&str> = trimmed
-        .split_whitespace()
-        .skip_while(|t| t.contains('=') && !t.starts_with('-'))
-        .collect();
+
+    // Unwrap trailing formatting/paging pipes (`cmd 2>&1 | tail -40`) before extracting primary stage
+    let stage = super::unwrap_trailing_formatting_pipes(trimmed);
+
+    let primary = crate::tools::compactor::extract_primary_command(stage);
+    let tokens: Vec<&str> = primary.split_whitespace().collect();
     if tokens.is_empty() {
         return None;
     }
-    let first = tokens[0];
-    // Strip harmless `nice -n <N>` prefix so `nice -n 19 cargo test` normalizes cleanly
-    let effective = if first == "nice" && tokens.len() >= 4 && tokens[1] == "-n" {
-        &tokens[3..]
-    } else {
-        &tokens[..]
-    };
-    if effective.is_empty() {
+
+    let bin = tokens[0];
+    let bin_name = bin.rsplit('/').next().unwrap_or(bin);
+    if bin_name.is_empty() || bin_name.starts_with('-') || bin_name.starts_with('$') {
         return None;
     }
 
-    let bin = effective[0];
-    // Only learn facts for well-known developer toolchains/runners, never arbitrary data/echo cmds
-    const TRACKED_BINS: &[&str] = &[
-        "pytest", "python", "python3", "uv", "pip", "pip3", "poetry", "npm", "npx", "pnpm", "yarn",
-        "bun", "bunx", "node", "vitest", "jest", "tsc", "eslint", "cargo", "rustc", "go", "make",
-        "just", "mvn", "gradle", "dotnet", "flutter", "dart", "mix", "bundle", "rspec", "rake",
-    ];
-    if !TRACKED_BINS.contains(&bin) {
+    // Exclude passive read-only/shell-glue utilities; learn from ANY real build/test/dev binary
+    if matches!(
+        bin_name,
+        "cd" | "ls"
+            | "cat"
+            | "head"
+            | "tail"
+            | "wc"
+            | "pwd"
+            | "echo"
+            | "printf"
+            | "true"
+            | "false"
+            | "which"
+            | "whereis"
+            | "type"
+            | "find"
+            | "rg"
+            | "grep"
+            | "egrep"
+            | "fgrep"
+            | "sed"
+            | "awk"
+            | "cut"
+            | "sort"
+            | "uniq"
+            | "tr"
+            | "mkdir"
+            | "rm"
+            | "cp"
+            | "mv"
+            | "touch"
+            | "chmod"
+            | "stat"
+            | "test"
+            | "["
+            | "export"
+            | "unset"
+            | "set"
+    ) {
         return None;
     }
 
-    // Keep up to 3 semantic tokens (skip file paths / flags after the subcommand)
+    // Keep up to 3 semantic tokens (skip flags except `-m` module runner, skip file paths)
     let mut parts = vec![bin];
-    for tok in effective.iter().skip(1).take(3) {
-        if *tok == "-m" && (bin == "python" || bin == "python3") {
+    for tok in tokens.iter().skip(1).take(3) {
+        if *tok == "-m" && parts.len() == 1 {
             parts.push(*tok);
             continue;
         }
@@ -346,6 +370,8 @@ fn detect_environment_failure_hint(output: &str) -> Option<&'static str> {
     let lower = output.to_ascii_lowercase();
     if lower.contains("command not found") || lower.contains("not recognized as an internal") {
         Some("command not found")
+    } else if lower.contains("permission denied") {
+        Some("executable permission denied")
     } else if lower.contains("no such file or directory") && lower.contains("exec") {
         Some("executable missing")
     } else if lower.contains("missing script:") || lower.contains("script not found") {
@@ -359,24 +385,69 @@ fn detect_environment_failure_hint(output: &str) -> Option<&'static str> {
     }
 }
 
+/// Determines whether a recovered command `working` is semantically related to a previously failed
+/// command `failed` using language-agnostic token overlap + character bigram Dice similarity,
+/// without hardcoding ecosystem runner lists.
 fn are_related_commands(failed: &str, working: &str) -> bool {
     let f_tokens: Vec<&str> = failed.split_whitespace().collect();
     let w_tokens: Vec<&str> = working.split_whitespace().collect();
     if f_tokens.is_empty() || w_tokens.is_empty() {
         return false;
     }
-    // Same task word shared (e.g. `pytest` <-> `python3 -m pytest`, `npm test` <-> `bun run test`)
-    for ft in &f_tokens {
-        if ft.len() >= 3 && w_tokens.contains(ft) {
+
+    // 1. Direct shared semantic token (e.g. `pytest` <-> `python3 -m pytest`, `npm test` <-> `bun run test`,
+    //    `mvn test` <-> `./mvnw test`, `make build` <-> `just build`)
+    let f_base_tokens: Vec<&str> = f_tokens
+        .iter()
+        .map(|t| t.rsplit('/').next().unwrap_or(t))
+        .collect();
+    let w_base_tokens: Vec<&str> = w_tokens
+        .iter()
+        .map(|t| t.rsplit('/').next().unwrap_or(t))
+        .collect();
+    for ft in &f_base_tokens {
+        if ft.len() >= 3 && w_base_tokens.contains(ft) {
             return true;
         }
     }
-    // Same ecosystem swap (e.g. `npm` <-> `bun`/`pnpm`/`yarn`, `python` <-> `python3`/`uv`)
-    const JS_RUNNERS: &[&str] = &["npm", "npx", "pnpm", "yarn", "bun", "bunx", "node"];
-    const PY_RUNNERS: &[&str] = &["python", "python3", "pytest", "uv", "pip", "pip3", "poetry"];
-    let both_js = JS_RUNNERS.contains(&f_tokens[0]) && JS_RUNNERS.contains(&w_tokens[0]);
-    let both_py = PY_RUNNERS.contains(&f_tokens[0]) && PY_RUNNERS.contains(&w_tokens[0]);
-    both_js || both_py
+
+    // 2. Character bigram Dice similarity between binary basenames (`python` <-> `python3`,
+    //    `pip` <-> `pip3`, `gradlew` <-> `gradle`, `mvnw` <-> `mvn`)
+    let f_bin = f_base_tokens[0];
+    let w_bin = w_base_tokens[0];
+    if bigram_dice_similarity(f_bin, w_bin) >= 0.55 {
+        return true;
+    }
+
+    // 3. Shared runner action subcommand when invoking two package/task runners in sequence
+    //    (e.g. `npm run dev` -> `bun dev`, `yarn lint` -> `pnpm lint`)
+    f_base_tokens.iter().skip(1).any(|ft| {
+        ft.len() >= 3
+            && w_base_tokens
+                .iter()
+                .skip(1)
+                .any(|wt| wt == ft || bigram_dice_similarity(ft, wt) >= 0.70)
+    })
+}
+
+/// Computes Sorensen-Dice similarity over lowercase ASCII character bigrams (`[0.0, 1.0]`).
+fn bigram_dice_similarity(a: &str, b: &str) -> f64 {
+    let a_bytes: Vec<u8> = a.bytes().map(|c| c.to_ascii_lowercase()).collect();
+    let b_bytes: Vec<u8> = b.bytes().map(|c| c.to_ascii_lowercase()).collect();
+    if a_bytes.len() < 2 || b_bytes.len() < 2 {
+        return if a_bytes == b_bytes { 1.0 } else { 0.0 };
+    }
+    let a_bigrams: Vec<[u8; 2]> = a_bytes.windows(2).map(|w| [w[0], w[1]]).collect();
+    let mut b_pool: Vec<[u8; 2]> = b_bytes.windows(2).map(|w| [w[0], w[1]]).collect();
+    let total = a_bigrams.len() + b_pool.len();
+    let mut matches = 0usize;
+    for bg in &a_bigrams {
+        if let Some(pos) = b_pool.iter().position(|x| x == bg) {
+            b_pool.swap_remove(pos);
+            matches += 1;
+        }
+    }
+    (2.0 * matches as f64) / (total as f64)
 }
 
 #[cfg(test)]
@@ -418,5 +489,33 @@ mod tests {
         assert_eq!((act3, ev3), (0, 1));
         assert!(store.active_skills().is_empty());
         assert!(store.format_prompt_block().is_none());
+    }
+
+    #[test]
+    fn test_micro_skill_learns_chained_piped_and_unlisted_binaries_via_similarity() {
+        let mut store = MicroSkillStore::default();
+
+        // Session 1: chained `cd` + piped `| tail -20` fails -> unwrapped primary recovers
+        // Also tests a build binary (`./gradlew` -> `gradle`) never listed in any hardcoded table!
+        let mut t1 = TurnCommandTracker::new();
+        t1.observe_exec_cmd(
+            "cd /workspace/app && ./gradlew test 2>&1 | tail -20",
+            false,
+            "bash: ./gradlew: Permission denied",
+        );
+        t1.observe_exec_cmd(
+            "cd /workspace/app && gradle test",
+            true,
+            "BUILD SUCCESSFUL in 2s",
+        );
+        let _ = store.apply_turn_observations("s1", &t1);
+
+        let mut t2 = TurnCommandTracker::new();
+        t2.observe_exec_cmd("gradle test | head -30", true, "BUILD SUCCESSFUL in 1s");
+        let (activated, evicted) = store.apply_turn_observations("s2", &t2);
+        assert_eq!((activated, evicted), (1, 0));
+        let block = store.format_prompt_block().expect("prompt block");
+        assert!(block.contains("gradle test"));
+        assert!(block.contains("./gradlew test"));
     }
 }

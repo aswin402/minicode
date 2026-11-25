@@ -12,6 +12,11 @@ pub const STANDARD_EXCLUDED_DIRS: &[&str] = &[
     "build",
     ".minicode/backups",
     ".cache",
+    "__pycache__",
+    ".pytest_cache",
+    ".mypy_cache",
+    ".ruff_cache",
+    ".tox",
 ];
 
 /// Returns true if a directory name should be pruned immediately during tree traversal
@@ -23,6 +28,24 @@ pub fn is_excluded_dir_name(name: &str) -> bool {
         || name == ".turbo"
         || name == ".nuxt"
         || name == ".svelte-kit"
+}
+
+/// Returns true if a single filename or directory entry represents transient build/bytecode/OS noise
+/// that should never pollute workspace mutation tracking, git auto-commits, or directory listings.
+#[inline]
+pub fn is_transient_cache_entry(name: &str) -> bool {
+    is_excluded_dir_name(name)
+        || matches!(name, ".DS_Store" | "Thumbs.db")
+        || name.ends_with(".pyc")
+        || name.ends_with(".pyo")
+        || name.ends_with(".pyd")
+}
+
+/// Returns true if any segment or filename of `rel_path` is a transient cache/bytecode/VCS artifact.
+#[inline]
+pub fn is_transient_cache_path(rel_path: &str) -> bool {
+    let norm = rel_path.replace('\\', "/");
+    norm.split('/').any(is_transient_cache_entry)
 }
 
 /// Canonical workspace file walker engine for minicode

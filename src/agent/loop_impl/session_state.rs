@@ -476,25 +476,12 @@ impl AgentLoop {
                     return true;
                 }
                 let name = entry.file_name().to_string_lossy();
-                if matches!(
-                    name.as_ref(),
-                    ".git"
-                        | "node_modules"
-                        | "target"
-                        | "__pycache__"
-                        | ".pytest_cache"
-                        | ".mypy_cache"
-                        | ".ruff_cache"
-                        | ".tox"
-                        | ".venv"
-                        | "venv"
-                        | ".DS_Store"
-                        | "Thumbs.db"
-                ) || name == crate::constants::WORKSPACE_DIR_NAME
+                if crate::context::walker::is_transient_cache_entry(&name)
+                    || name == crate::constants::WORKSPACE_DIR_NAME
                 {
                     return false;
                 }
-                !(name.ends_with(".pyc") || name.ends_with(".pyo") || name.ends_with(".pyd"))
+                true
             })
             .build();
 
