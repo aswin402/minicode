@@ -6,6 +6,7 @@ pub mod ccr_cache;
 pub mod compressor;
 pub mod dedup;
 pub mod donut;
+pub mod economy;
 pub mod flaky;
 pub mod headroom;
 pub mod json_crusher;
@@ -16,6 +17,10 @@ pub mod observation_pruner;
 pub use budget::*;
 #[allow(unused_imports)]
 pub use ccr_cache::CcrCache;
+#[allow(unused_imports)]
+pub use economy::{
+    EditTestLoopGuard, LoopIntervention, MiniEconomy, TurnCommandTracker, TurnEconomyFinish,
+};
 #[allow(unused_imports)]
 pub use micro_compact::{MicroCompactMetrics, MicroCompactor};
 pub use observation_pruner::ObservationPruner;

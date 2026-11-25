@@ -56,6 +56,14 @@ pub struct AgentLoop {
     active_working_set: std::collections::VecDeque<String>,
     /// Algorithmic stuck detector halting repetitive tool loops.
     pub stuck_detector: crate::agent::stuck_detector::StuckDetector,
+    /// Semantic edit→test failure-loop guard (MiniEconomy) catching repeated error signatures across differing edits.
+    pub economy_loop_guard: crate::context::budget::economy::EditTestLoopGuard,
+    /// Per-turn command fail→recover tracker feeding cross-session corroborated micro-skills.
+    pub(super) turn_command_tracker: crate::context::budget::economy::TurnCommandTracker,
+    /// Number of cold tool schemas pruned by MiniEconomy during the current turn.
+    pub(super) turn_pruned_tools_count: std::sync::atomic::AtomicUsize,
+    /// Estimated prompt tokens saved by MiniEconomy schema pruning during the current turn.
+    pub(super) turn_pruned_tokens_saved: std::sync::atomic::AtomicUsize,
     /// Redundant fetch/query call tracker warning on 2nd and blocking on 3rd+ identical read call.
     pub fetch_tracker: crate::context::budget::dedup::FetchCallTracker,
     /// Speculative early dispatch and parallel execution engine for read-only tools.
@@ -199,6 +207,10 @@ impl AgentLoop {
             compactor,
             active_working_set: std::collections::VecDeque::with_capacity(10),
             stuck_detector: crate::agent::stuck_detector::StuckDetector::new(),
+            economy_loop_guard: crate::context::budget::economy::EditTestLoopGuard::new(),
+            turn_command_tracker: crate::context::budget::economy::TurnCommandTracker::new(),
+            turn_pruned_tools_count: std::sync::atomic::AtomicUsize::new(0),
+            turn_pruned_tokens_saved: std::sync::atomic::AtomicUsize::new(0),
             fetch_tracker: crate::context::budget::dedup::FetchCallTracker::new(),
             speculative_executor,
             cumulative_tokens_used: 0,
@@ -838,8 +850,14 @@ impl AgentLoop {
             tracing::warn!(turn = turn_id, error = %e, "Failed to record turn start checkpoint");
         }
 
-        // Reset stuck detector at start of user turn
+        // Reset stuck detector & MiniEconomy per-turn trackers at start of user turn
         self.stuck_detector.reset();
+        self.economy_loop_guard.reset();
+        self.turn_command_tracker.reset();
+        self.turn_pruned_tools_count
+            .store(0, std::sync::atomic::Ordering::Relaxed);
+        self.turn_pruned_tokens_saved
+            .store(0, std::sync::atomic::Ordering::Relaxed);
 
         // Emit current plan without auto-completing tasks against pre-existing files on disk
         self.emit_current_plan(Some(turn_id), &event_sender);
@@ -3310,6 +3328,12 @@ impl AgentLoop {
             let _ = event_sender.send(final_ctx_event);
         }
 
+        let turn_duration_ms = turn_started_at
+            .elapsed()
+            .unwrap_or_default()
+            .as_millis()
+            .max(1) as u64;
+
         let end_event = AgentEvent::TurnEnd {
             turn_id,
             status: if was_cancelled {
@@ -3325,13 +3349,7 @@ impl AgentLoop {
             total_tokens_used: turn_tokens_used,
             files_modified: turn_files_modified.clone(),
             cached_prompt_tokens: last_cached_prompt_tokens,
-            duration_ms: Some(
-                turn_started_at
-                    .elapsed()
-                    .unwrap_or_default()
-                    .as_millis()
-                    .max(1) as u64,
-            ),
+            duration_ms: Some(turn_duration_ms),
         };
         if let Err(e) = self
             .session_store
@@ -3342,6 +3360,37 @@ impl AgentLoop {
         event_sender.send(end_event)?;
         if !background_workers_active {
             crate::agent::subagent::clear_live_event_sender();
+        }
+
+        // MiniEconomy: persist cross-session cost ledger, tool utilization pruning state, and micro-skills
+        if !was_cancelled && (turn_tokens_used > 0 || !turn_tool_calls.is_empty()) {
+            let exposed_tools: Vec<String> = tools.iter().map(|t| t.name.clone()).collect();
+            let invoked_tools: Vec<String> =
+                turn_tool_calls.iter().map(|c| c.name.clone()).collect();
+            let pruned_tools_count = self
+                .turn_pruned_tools_count
+                .load(std::sync::atomic::Ordering::Relaxed);
+            let est_tokens_saved = self
+                .turn_pruned_tokens_saved
+                .load(std::sync::atomic::Ordering::Relaxed);
+            crate::context::budget::economy::MiniEconomy::record_turn_complete(
+                &self.workspace_root,
+                &crate::context::budget::economy::TurnEconomyFinish {
+                    session_id: &self.session_id,
+                    turn_id,
+                    provider: &self.config.provider.default,
+                    model: &self.config.provider.model,
+                    total_tokens: turn_tokens_used,
+                    cached_tokens: last_cached_prompt_tokens,
+                    duration_ms: turn_duration_ms,
+                    exposed_tools: &exposed_tools,
+                    invoked_tools: &invoked_tools,
+                    pruned_tools_count,
+                    est_tokens_saved,
+                    loop_interventions: self.economy_loop_guard.interventions_emitted(),
+                    command_tracker: &self.turn_command_tracker,
+                },
+            );
         }
 
         if !was_cancelled && !circuit_tripped {

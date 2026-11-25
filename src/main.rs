@@ -255,6 +255,16 @@ enum Commands {
         explain: Option<String>,
     },
 
+    /// Inspect or manage MiniEconomy cross-session token savings, micro-skills, and pruned tools
+    Economy {
+        #[command(subcommand)]
+        action: Option<EconomyCommands>,
+
+        /// Output machine-readable JSON snapshot
+        #[arg(long)]
+        json: bool,
+    },
+
     /// Initialize a new MiniKit project or scaffold a stack
     Init {
         /// Project name (defaults to current directory name)
@@ -609,6 +619,24 @@ enum BlockCommands {
 }
 
 #[derive(Subcommand, Debug)]
+enum EconomyCommands {
+    /// Show repository token spend, cache hit rate, savings, learned micro-skills, and pruned tools
+    Status,
+
+    /// List learned cross-session repository micro-skills (active and candidate)
+    Skills,
+
+    /// Restore one pruned tool or all pruned tools back into active schema rotation
+    Restore {
+        /// Optional specific tool name to restore (omit to restore all pruned tools)
+        tool: Option<String>,
+    },
+
+    /// Reset all MiniEconomy state (.minicode/economy/) for this workspace
+    Reset,
+}
+
+#[derive(Subcommand, Debug)]
 enum KitCommands {
     /// Show real-time package metadata and latest version from upstream registries
     Info {
@@ -736,6 +764,10 @@ async fn main() -> anyhow::Result<()> {
         .await?;
         return Ok(());
     }
+    if let Some(Commands::Economy { action, json }) = cli.command {
+        handle_economy_cli(&workspace_canonical, action, json)?;
+        return Ok(());
+    }
 
     // 3. Load configuration hierarchy
     let mut config = Config::load(Some(&workspace_canonical), cli.config.as_deref())?;
@@ -859,6 +891,7 @@ async fn main() -> anyhow::Result<()> {
             )
             .await?;
         }
+        Some(Commands::Economy { .. }) => unreachable!(), // Handled earlier
         Some(Commands::Doctor {
             env,
             diff,
@@ -2638,4 +2671,80 @@ async fn run_interactive_mode(
 
     // Cleanly terminate process and all thread pools
     std::process::exit(0);
+}
+
+fn handle_economy_cli(
+    workspace: &std::path::Path,
+    action: Option<EconomyCommands>,
+    json: bool,
+) -> anyhow::Result<()> {
+    use minicode::context::budget::economy::{MicroSkillStore, MiniEconomy};
+
+    match action.unwrap_or(EconomyCommands::Status) {
+        EconomyCommands::Status => {
+            let snap = MiniEconomy::status_snapshot(workspace);
+            if json {
+                println!("{}", serde_json::to_string_pretty(&snap)?);
+            } else {
+                print!("{}", MiniEconomy::format_status_report(&snap));
+            }
+        }
+        EconomyCommands::Skills => {
+            let store = MicroSkillStore::load(workspace);
+            if json {
+                println!("{}", serde_json::to_string_pretty(&store.skills)?);
+            } else if store.skills.is_empty() {
+                println!(
+                    "No repository micro-skills learned yet. Facts are automatically learned from command fail→recover observations and promoted after 2 corroborated sessions."
+                );
+            } else {
+                println!("### Repository Micro-Skills ({})\n", store.skills.len());
+                for skill in &store.skills {
+                    let status = if skill.active {
+                        "ACTIVE"
+                    } else if skill.contradictions > 0 {
+                        "EVICTED"
+                    } else {
+                        "CANDIDATE"
+                    };
+                    println!(
+                        "- [{}] {} (confirmations: {}, contradictions: {})",
+                        status, skill.fact, skill.confirmations, skill.contradictions
+                    );
+                }
+            }
+        }
+        EconomyCommands::Restore { tool } => {
+            let restored = MiniEconomy::restore_tools(workspace, tool.as_deref());
+            if json {
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&serde_json::json!({
+                        "restored": restored,
+                        "tool": tool,
+                    }))?
+                );
+            } else if let Some(name) = tool {
+                if restored > 0 {
+                    println!("Restored pruned tool `{name}` back into active rotation.");
+                } else {
+                    println!("Tool `{name}` was not marked as pruned.");
+                }
+            } else {
+                println!("Restored {restored} pruned tool(s) back into active rotation.");
+            }
+        }
+        EconomyCommands::Reset => {
+            MiniEconomy::reset(workspace);
+            if json {
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&serde_json::json!({ "reset": true }))?
+                );
+            } else {
+                println!("Cleared all MiniEconomy data (.minicode/economy/) for this workspace.");
+            }
+        }
+    }
+    Ok(())
 }

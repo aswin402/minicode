@@ -728,6 +728,27 @@ impl AgentLoop {
             active_mcp_servers,
             &effective_tool_names,
         );
+
+        // MiniEconomy: experience-driven pruning of cold non-essential tool schemas
+        let (pruned_names, est_saved) =
+            crate::context::budget::economy::MiniEconomy::prune_inactive_schemas(
+                &self.workspace_root,
+                &mut tools,
+                &effective_tool_names,
+            );
+        self.turn_pruned_tools_count
+            .store(pruned_names.len(), std::sync::atomic::Ordering::Relaxed);
+        self.turn_pruned_tokens_saved
+            .store(est_saved, std::sync::atomic::Ordering::Relaxed);
+        if !pruned_names.is_empty() {
+            tracing::debug!(
+                pruned_count = pruned_names.len(),
+                est_tokens_saved = est_saved,
+                pruned = %pruned_names.join(","),
+                "MiniEconomy pruned cold inactive tool schemas"
+            );
+        }
+
         let active_caveman_level = if self.config.agent.caveman_mode {
             crate::agent::caveman::CavemanLevel::from_str_active(&self.config.agent.caveman_level)
         } else {
@@ -775,6 +796,12 @@ impl AgentLoop {
         self.session_emitted_ui_warehouse_sig = None;
         self.last_human_prompt = None;
         self.fetch_tracker.clear();
+        self.economy_loop_guard.reset();
+        self.turn_command_tracker.reset();
+        self.turn_pruned_tools_count
+            .store(0, std::sync::atomic::Ordering::Relaxed);
+        self.turn_pruned_tokens_saved
+            .store(0, std::sync::atomic::Ordering::Relaxed);
         self._active_guard = None;
         crate::context::budget::ccr_cache::reclaim_idle_heap();
         tracing::info!(session_id = %self.session_id, "Reset to fresh lazy session");

@@ -392,6 +392,14 @@ impl PromptBuilder {
             stack_directive.trim()
         ));
 
+        // MiniEconomy: Cross-session corroborated repository micro-skills (KV-cache friendly in Zone 1)
+        if let Some(micro_skills_block) =
+            crate::context::budget::economy::MiniEconomy::format_prompt_micro_skills(workspace_dir)
+        {
+            prompt.push('\n');
+            prompt.push_str(&micro_skills_block);
+        }
+
         prompt
     }
 

@@ -313,6 +313,49 @@ impl AgentLoop {
             }
         }
 
+        // === MiniEconomy: Command Fail→Recover Observation & Semantic Edit→Test Loop Guard ===
+        if tool_call.name == "exec_cmd" {
+            if let Some(cmd) =
+                crate::tools::param::get_str_with_aliases(&tool_call.arguments, &["command", "cmd"])
+            {
+                self.turn_command_tracker.observe_exec_cmd(
+                    cmd,
+                    tool_result.success,
+                    &tool_result.output,
+                );
+            }
+        }
+        match self.economy_loop_guard.observe(
+            &tool_call.name,
+            &tool_call.arguments,
+            tool_result.success,
+            &tool_result.output,
+        ) {
+            crate::context::budget::economy::LoopIntervention::None => {}
+            crate::context::budget::economy::LoopIntervention::Redirect {
+                cycles, message, ..
+            } => {
+                tracing::warn!(
+                    tool = %tool_call.name,
+                    cycles,
+                    "MiniEconomy edit→test loop guard redirect injected"
+                );
+                tool_result.output.push_str("\n\n");
+                tool_result.output.push_str(&message);
+            }
+            crate::context::budget::economy::LoopIntervention::Escalate {
+                cycles, message, ..
+            } => {
+                tracing::warn!(
+                    tool = %tool_call.name,
+                    cycles,
+                    "MiniEconomy edit→test loop guard escalation injected"
+                );
+                tool_result.output.push_str("\n\n");
+                tool_result.output.push_str(&message);
+            }
+        }
+
         // Dynamic tool schema activation (activate_tools, lazy invocation, or near-miss lookup)
         if tool_call.name == "activate_tools" && tool_result.success {
             let cat_arg = crate::tools::param::get_str_with_aliases(
