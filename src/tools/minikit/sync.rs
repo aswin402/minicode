@@ -115,6 +115,47 @@ impl MiniKitSyncEngine {
         serde_json::Value::Object(arch)
     }
 
+    /// Excludes minicode's transient local paths (`.minicode/`, `screenshots/`, generated package
+    /// docs) silently via `.git/info/exclude` when inside a git repo that has no root `.gitignore`,
+    /// avoiding untracked working-tree pollution during read-only review/inspection sessions.
+    /// When a root `.gitignore` already exists, or outside a git repo, delegates to `ensure_gitignore`.
+    pub fn ensure_git_local_exclude(workspace_root: &Path) {
+        let gitignore_path = workspace_root.join(".gitignore");
+        let git_exclude_path = workspace_root.join(".git").join("info").join("exclude");
+        if !gitignore_path.exists() && git_exclude_path.parent().is_some_and(Path::is_dir) {
+            let existing = fs::read_to_string(&git_exclude_path).unwrap_or_default();
+            let rules = [
+                ".minicode/",
+                "screenshots/",
+                "minikit_docs/packages/",
+                "minikit_docs/index.md",
+                "minikit_docs/log.md",
+                "minikit.json",
+            ];
+            let missing: Vec<&str> = rules
+                .iter()
+                .copied()
+                .filter(|r| !existing.lines().any(|l| l.trim() == *r))
+                .collect();
+            if !missing.is_empty() {
+                let mut updated = existing;
+                if !updated.is_empty() && !updated.ends_with('\n') {
+                    updated.push('\n');
+                }
+                if !updated.contains("# minicode local runtime") {
+                    updated.push_str("\n# minicode local runtime & transient memory\n");
+                }
+                for r in missing {
+                    updated.push_str(r);
+                    updated.push('\n');
+                }
+                let _ = fs::write(&git_exclude_path, updated);
+            }
+            return;
+        }
+        Self::ensure_gitignore(workspace_root);
+    }
+
     /// Ensures that `.minicode/` local runtime/transient memory, `screenshots/`, `minikit.json`,
     /// and generated package/catalog docs (`minikit_docs/packages/`, `index.md`, `log.md`) are
     /// excluded in `.gitignore`, while keeping `minikit_docs/core/*.md` trackable by default.
@@ -3059,6 +3100,23 @@ mod tests {
         MiniKitSyncEngine::ensure_gitignore(ws);
         let content3 = fs::read_to_string(ws.join(".gitignore")).unwrap();
         assert_eq!(content2, content3);
+    }
+
+    #[test]
+    fn test_ensure_git_local_exclude_keeps_git_repo_without_gitignore_clean() {
+        let dir = tempdir().unwrap();
+        let ws = dir.path();
+        fs::create_dir_all(ws.join(".git/info")).unwrap();
+        fs::write(ws.join(".git/info/exclude"), "# git default\n").unwrap();
+
+        MiniKitSyncEngine::ensure_git_local_exclude(ws);
+        assert!(
+            !ws.join(".gitignore").exists(),
+            "must NOT create untracked root .gitignore in a git repo during read-only session startup"
+        );
+        let exclude = fs::read_to_string(ws.join(".git/info/exclude")).unwrap();
+        assert!(exclude.contains(".minicode/"));
+        assert!(exclude.contains("minikit.json"));
     }
 
     #[test]

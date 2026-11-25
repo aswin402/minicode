@@ -4,7 +4,8 @@ use crate::constants::{GIT_DIFF_MAX_BYTES, GIT_LOCKFILES};
 pub struct DiffFilter;
 
 impl DiffFilter {
-    /// Condenses large lockfiles and trims the diff if it exceeds `GIT_DIFF_MAX_BYTES`.
+    /// Condenses large lockfiles, strips secret/credential file hunks (`.env`, `*.pem`, `*.key`,
+    /// etc.), and trims the diff if it exceeds `GIT_DIFF_MAX_BYTES`.
     pub fn filter_diff(raw_diff: &str) -> String {
         if raw_diff.trim().is_empty() {
             return String::new();
@@ -14,6 +15,7 @@ impl DiffFilter {
         let mut current_file: Option<String> = None;
         let mut current_block_lines = Vec::new();
         let mut is_lockfile = false;
+        let mut is_secret = false;
         let mut additions = 0;
         let mut deletions = 0;
 
@@ -21,7 +23,11 @@ impl DiffFilter {
             if line.starts_with("diff --git ") {
                 // Flush previous block
                 if let Some(file) = current_file.take() {
-                    if is_lockfile {
+                    if is_secret {
+                        filtered_blocks.push(format!(
+                            "diff --git a/{file} b/{file}\n[{file} secret/credential diff omitted by Secret-Path Guard]\n"
+                        ));
+                    } else if is_lockfile {
                         filtered_blocks.push(format!(
                             "diff --git a/{file} b/{file}\n[{file} lockfile diff truncated: +{additions} / -{deletions} lines]\n"
                         ));
@@ -38,28 +44,34 @@ impl DiffFilter {
                     .trim_start_matches("b/")
                     .to_string();
 
-                is_lockfile = GIT_LOCKFILES.iter().any(|&lock| file_name.ends_with(lock));
+                is_secret = crate::git::mini_review::ReviewRuleEngine::is_secret_path(&file_name);
+                is_lockfile =
+                    !is_secret && GIT_LOCKFILES.iter().any(|&lock| file_name.ends_with(lock));
                 current_file = Some(file_name);
                 current_block_lines.clear();
                 current_block_lines.push(line.to_string());
                 additions = 0;
                 deletions = 0;
-            } else {
-                if is_lockfile {
-                    if line.starts_with('+') && !line.starts_with("+++") {
-                        additions += 1;
-                    } else if line.starts_with('-') && !line.starts_with("---") {
-                        deletions += 1;
-                    }
-                } else {
-                    current_block_lines.push(line.to_string());
+            } else if is_secret {
+                // Drop every hunk line of secret/credential files unconditionally
+            } else if is_lockfile {
+                if line.starts_with('+') && !line.starts_with("+++") {
+                    additions += 1;
+                } else if line.starts_with('-') && !line.starts_with("---") {
+                    deletions += 1;
                 }
+            } else {
+                current_block_lines.push(line.to_string());
             }
         }
 
         // Flush last block
         if let Some(file) = current_file {
-            if is_lockfile {
+            if is_secret {
+                filtered_blocks.push(format!(
+                    "diff --git a/{file} b/{file}\n[{file} secret/credential diff omitted by Secret-Path Guard]\n"
+                ));
+            } else if is_lockfile {
                 filtered_blocks.push(format!(
                     "diff --git a/{file} b/{file}\n[{file} lockfile diff truncated: +{additions} / -{deletions} lines]\n"
                 ));
@@ -110,5 +122,14 @@ mod tests {
     fn test_filter_diff_handles_empty() {
         assert_eq!(DiffFilter::filter_diff(""), "");
         assert_eq!(DiffFilter::filter_diff("   \n "), "");
+    }
+
+    #[test]
+    fn test_filter_diff_omits_secret_paths_while_keeping_code() {
+        let raw = "diff --git a/.env b/.env\nnew file mode 100644\n--- /dev/null\n+++ b/.env\n+DATABASE_PASSWORD=example_local_secret_fixture_000000\ndiff --git a/src/auth.rs b/src/auth.rs\n--- a/src/auth.rs\n+++ b/src/auth.rs\n+pub fn ok() -> bool { true }\n";
+        let filtered = DiffFilter::filter_diff(raw);
+        assert!(filtered.contains("secret/credential diff omitted"));
+        assert!(!filtered.contains("example_local_secret_fixture"));
+        assert!(filtered.contains("pub fn ok() -> bool { true }"));
     }
 }

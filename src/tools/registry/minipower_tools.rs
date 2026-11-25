@@ -672,12 +672,71 @@ struct ReviewerRunContext<'a> {
     staged_only: bool,
     is_rereview: bool,
     static_report: &'a str,
+    diff_excerpt: &'a str,
     target_files: &'a [String],
     has_tracked_diff: bool,
     background: Option<&'a str>,
     analysis: bool,
     rules_prompt: &'a str,
     cluster_label: Option<&'a str>,
+}
+
+/// Filters a unified git diff down to hunks belonging to `allowed_files` (or returns the full diff
+/// if `allowed_files` is empty), capped cleanly at `max_chars` for fast inline Reviewer grounding.
+fn extract_scoped_diff_excerpt(
+    raw_diff: &str,
+    allowed_files: &[String],
+    max_chars: usize,
+) -> String {
+    if raw_diff.trim().is_empty() || max_chars == 0 {
+        return String::new();
+    }
+    if allowed_files.is_empty() {
+        return raw_diff.chars().take(max_chars).collect();
+    }
+    let allowed: std::collections::HashSet<String> =
+        allowed_files.iter().map(|f| f.replace('\\', "/")).collect();
+    let mut out = String::new();
+    let mut include_block = false;
+    for line in raw_diff.lines() {
+        if line.starts_with("diff --git ") {
+            let path = line
+                .split_whitespace()
+                .last()
+                .unwrap_or("")
+                .trim_start_matches("b/")
+                .replace('\\', "/");
+            include_block = allowed.contains(&path);
+        } else if let Some(stripped) = line.strip_prefix("+++ b/") {
+            let path = stripped.trim().replace('\\', "/");
+            if !include_block && allowed.contains(&path) {
+                include_block = true;
+            }
+        }
+        if include_block {
+            if out.len() + line.len() + 1 > max_chars {
+                out.push_str("\n[... diff excerpt truncated — inspect remaining lines with batch_read ...]\n");
+                break;
+            }
+            out.push_str(line);
+            out.push('\n');
+        }
+    }
+    out
+}
+
+/// Decides max parallel AST clusters for `power_review`: only fans out on initial reviews whose
+/// filtered diff is large enough (`>= MIN_DIFF_LINES_FOR_FANOUT`) to justify parallel workers.
+fn review_max_clusters(is_rereview: bool, raw_audited_diff: &str) -> usize {
+    if is_rereview {
+        return 1;
+    }
+    let diff_lines = raw_audited_diff.lines().count();
+    if diff_lines >= crate::git::mini_review::ReviewFileClusterer::MIN_DIFF_LINES_FOR_FANOUT {
+        crate::git::mini_review::ReviewFileClusterer::DEFAULT_MAX_CLUSTERS
+    } else {
+        1
+    }
 }
 
 async fn run_reviewer_subagent(workspace_root: &Path, ctx: &ReviewerRunContext<'_>) -> String {
@@ -714,7 +773,10 @@ async fn run_reviewer_subagent(workspace_root: &Path, ctx: &ReviewerRunContext<'
                 .join("\n")
         )
     };
-    let step_one = if !is_git_repo {
+    let has_inline_diff = !ctx.diff_excerpt.trim().is_empty();
+    let step_one = if has_inline_diff {
+        "1. Review the inline unified diff below FIRST; use a single `batch_read` (and targeted `grep_search` for callers) only where surrounding file context is needed. Do NOT waste turns running git status/diff or shell commands.".to_string()
+    } else if !is_git_repo {
         "1. NOTE: This workspace has NO `.git` repository — do **NOT** call `git_diff` or git commands. Use `batch_read` / `read_file` directly on the workspace source files listed below.".to_string()
     } else if all_untracked_only {
         "1. NOTE: This is an initial repository where changes are untracked (`git diff` is empty) — do **NOT** waste a turn running `git_diff`. Inspect the untracked source files listed below directly with `batch_read` / `read_file`.".to_string()
@@ -728,9 +790,17 @@ async fn run_reviewer_subagent(workspace_root: &Path, ctx: &ReviewerRunContext<'
             }
         )
     };
-    let static_excerpt: String = ctx.static_report.chars().take(4000).collect();
+    let diff_section = if has_inline_diff {
+        format!(
+            "\n### Scoped Unified Diff\n```diff\n{}\n```\n",
+            ctx.diff_excerpt.trim()
+        )
+    } else {
+        String::new()
+    };
+    let static_excerpt: String = ctx.static_report.chars().take(3500).collect();
     let scoped_rereview_note = if ctx.is_rereview {
-        "\n- SCOPED RE-REVIEW ONLY: Inspect ONLY the listed prior findings and verify whether the fix diff introduced any regression. Do NOT invent new refactoring or test-extraction requests outside the listed findings; finish in <= 4 tool calls."
+        "\n- SCOPED RE-REVIEW ONLY: Inspect ONLY the listed prior findings and verify whether the fix diff introduced any regression. Do NOT invent new refactoring or test-extraction requests outside the listed findings; finish in <= 3 turns."
     } else {
         ""
     };
@@ -763,16 +833,22 @@ async fn run_reviewer_subagent(workspace_root: &Path, ctx: &ReviewerRunContext<'
     };
     let precision_section =
         crate::git::mini_review::ReviewPrecisionPrompts::ASYMMETRIC_FACT_CHECK_CONTRACT;
-    let tool_budget_hint = if ctx.is_rereview { 4 } else { 8 };
+    let tool_budget_hint = if ctx.is_rereview {
+        3
+    } else if ctx.cluster_label.is_some() {
+        4
+    } else {
+        5
+    };
     let prompt = format!(
         "You are the dedicated read-only code reviewer for this workspace. Review stage: `{stage}`.\n\
          {step_one}\n\
          2. Check them against the spec (`{spec}`, if it exists) and `.minicode/decisions.md`.\n\
-         3. Verify the static audit findings below are real; do not repeat false positives, and do NOT re-run slow build suites.\n\
-         4. Complete your inspection concisely within <= {tool_budget_hint} tool calls and report only concrete problems (correctness, missing edge cases, security, spec gaps) with file:line, \
+         3. Verify the static audit findings below are real; do not repeat false positives, do NOT run shell commands or inspect `.env`/secret files, and do NOT re-run slow build suites.\n\
+         4. Complete your inspection concisely within <= {tool_budget_hint} turns using `batch_read`/`read_file`/`grep_search`/`locate_symbol` and report only concrete problems (correctness, missing edge cases, security, spec gaps) with file:line, \
             most severe first. Do not modify any files.{scoped_rereview_note}\n\
          End with a line `STATUS: DONE` if the changes are acceptable, otherwise `STATUS: DONE_WITH_CONCERNS`.\n\
-         {background_section}{cluster_section}{files_hint}{rules_section}\n{precision_section}{behavior_section}\n\
+         {background_section}{cluster_section}{files_hint}{rules_section}\n{precision_section}{behavior_section}{diff_section}\n\
          ### Static audit (context)\n{static_excerpt}",
         stage = ctx.stage,
         step_one = step_one,
@@ -785,6 +861,7 @@ async fn run_reviewer_subagent(workspace_root: &Path, ctx: &ReviewerRunContext<'
         rules_section = rules_section,
         precision_section = precision_section,
         behavior_section = behavior_section,
+        diff_section = diff_section,
         static_excerpt = static_excerpt
     );
     let app_cfg = crate::config::Config::load_for_workspace(workspace_root);
@@ -793,19 +870,22 @@ async fn run_reviewer_subagent(workspace_root: &Path, ctx: &ReviewerRunContext<'
         &app_cfg.agent.minipub,
     );
     // Pin explicit turn cap so dynamic scope scaling and elastic extensions cannot blow a concise
-    // code review out to 20-30 turns, and strip browser_* tools so code reviewers never clobber
-    // the parent session's pooled browser instance.
-    let turn_cap = if ctx.is_rereview {
-        config.max_turns.min(4)
-    } else {
-        config.max_turns.min(8)
-    };
-    let reviewer_token_floor = if ctx.is_rereview { 55_000 } else { 85_000 };
+    // code review out to 20-30 turns; strip browser_* and shell execution tools (`exec_cmd`,
+    // `minitask`) so read-only Reviewers stay fast (batch_read/grep_search only) and cannot
+    // bypass the Secret-Path Guard via `cat .env`.
+    let turn_cap = config.max_turns.min(tool_budget_hint);
+    let reviewer_token_floor = if ctx.is_rereview { 45_000 } else { 70_000 };
     let reviewer_token_budget = config.token_budget.max(reviewer_token_floor);
     config = config
         .with_explicit_max_turns(Some(turn_cap))
         .with_explicit_token_budget(Some(reviewer_token_budget));
-    config.tool_whitelist.retain(|t| !t.starts_with("browser_"));
+    config.tool_whitelist.retain(|t| {
+        !t.starts_with("browser_")
+            && t != "exec_cmd"
+            && t != "run_command"
+            && t != "minitask"
+            && t != "shell"
+    });
     match crate::agent::orchestrator::MultiAgentOrchestrator::delegate_with_config(
         workspace_root,
         &prompt,
@@ -1831,11 +1911,7 @@ pub async fn dispatch(
                         ));
                     }
 
-                    let max_clusters = if effective_is_rereview {
-                        1
-                    } else {
-                        crate::git::mini_review::ReviewFileClusterer::DEFAULT_MAX_CLUSTERS
-                    };
+                    let max_clusters = review_max_clusters(effective_is_rereview, &raw_audited_diff);
                     let clusters = crate::git::mini_review::ReviewFileClusterer::cluster_files(
                         workspace_root,
                         &selection.reviewable_files,
@@ -1852,6 +1928,11 @@ pub async fn dispatch(
                         let futs = clusters.iter().map(|cluster| {
                             let rules_prompt =
                                 rule_engine.format_rules_for_prompt(&cluster.files, 2400);
+                            let diff_excerpt = extract_scoped_diff_excerpt(
+                                &raw_audited_diff,
+                                &cluster.files,
+                                10_000,
+                            );
                             let label = format!("#{} ({})", cluster.id, cluster.label);
                             let subagent_payload_ref = &subagent_payload;
                             let stage_ref = &stage_arg;
@@ -1861,6 +1942,7 @@ pub async fn dispatch(
                                     staged_only,
                                     is_rereview: effective_is_rereview,
                                     static_report: subagent_payload_ref,
+                                    diff_excerpt: &diff_excerpt,
                                     target_files: &cluster.files,
                                     has_tracked_diff,
                                     background,
@@ -1888,11 +1970,17 @@ pub async fn dispatch(
                             .map(|c| c.files.as_slice())
                             .unwrap_or(&selection.reviewable_files);
                         let rules_prompt = rule_engine.format_rules_for_prompt(single_files, 2400);
+                        let diff_excerpt = extract_scoped_diff_excerpt(
+                            &raw_audited_diff,
+                            single_files,
+                            12_000,
+                        );
                         let ctx = ReviewerRunContext {
                             stage: &stage_arg,
                             staged_only,
                             is_rereview: effective_is_rereview,
                             static_report: &subagent_payload,
+                            diff_excerpt: &diff_excerpt,
                             target_files: single_files,
                             has_tracked_diff,
                             background,
@@ -2855,5 +2943,17 @@ diff --git a/old.ts b/old.ts
             0,
             "preview=true must never increment reviewer subagent runs"
         );
+    }
+
+    #[test]
+    fn test_review_max_clusters_gates_fanout_by_diff_size() {
+        let small_diff = "+line\n".repeat(120);
+        let large_diff = "+line\n".repeat(450);
+        assert_eq!(review_max_clusters(false, &small_diff), 1);
+        assert_eq!(
+            review_max_clusters(false, &large_diff),
+            crate::git::mini_review::ReviewFileClusterer::DEFAULT_MAX_CLUSTERS
+        );
+        assert_eq!(review_max_clusters(true, &large_diff), 1);
     }
 }

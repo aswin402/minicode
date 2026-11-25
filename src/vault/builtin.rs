@@ -700,7 +700,7 @@ description: "Create, read, edit, and redline Microsoft Word (.docx) documents u
 category: "docs"
 kind: "workflow"
 globs: ["*.docx", "*docx*.js", "*docx*.ts", "*docx*.py"]
-triggers: ["docx", "word document", ".docx", "redline", "tracked changes", "ooxml", "python-docx", "docx-js"]
+triggers: ["docx", "word document", ".docx", "redline", "docx tracked changes", "ooxml", "python-docx", "docx-js"]
 allowed_tools: ["exec_cmd", "read_file", "write_file", "patch_file"]
 always_apply: false
 ---
@@ -1092,7 +1092,7 @@ description: "Use when completing tasks, implementing major features, or before 
 category: "quality"
 kind: "workflow"
 globs: ["**/*"]
-triggers: ["requesting-code-review", "power_review", "code review", "spec review", "quality review", "self-review"]
+triggers: ["requesting-code-review", "spec review", "quality review", "self-review", "two-stage review"]
 allowed_tools: ["power_review", "git_diff", "git_status", "read_file", "delegate_task", "record_decision"]
 always_apply: false
 ---
@@ -1100,7 +1100,7 @@ always_apply: false
 # Requesting Code Review (MiniPower / obra/superpowers v7.0.1)
 
 ## Two-Stage Review Protocol (`power_review`)
-Call `power_review(task_name=..., stage="both"|"spec"|"quality"|"re-review", base_sha=..., head_sha=..., acceptance_criteria=[...], findings=[...], fix_round=1)` after every task in `subagent-driven-development` or before `finishing-a-development-branch`:
+Call `power_review(task_name=..., stage="both"|"spec"|"quality"|"re-review", base_sha=..., head_sha=..., background="<1-3 sentence intent>", analysis=true, acceptance_criteria=[...], findings=[...], fix_round=1)` after every task in `subagent-driven-development` or before `finishing-a-development-branch`:
 1. **Compute Accurate Base Commit**: Determine the diff range from `git merge-base` against the target branch rather than assuming `HEAD~1`, and pass `base_sha` and `head_sha` so `power_review` writes `.minicode/sdd/<slug>/review-<base7>..<head7>.diff`.
 2. **Stage 1: Spec Compliance (`stage: "spec"` or `"both"`)**:
    - Checks every requirement in `<docs_dir>/core/spec.md` and `.minicode/plan/task_plan.md` against the actual implementation line-by-line.
@@ -2995,10 +2995,12 @@ mod tests {
         );
 
         // Verify BM25F auto-promotes `power_review` on a standalone PR/code review prompt without an active plan
+        // and does NOT false-positive activate `docx` on "uncommitted changes"
         let tmp = tempfile::tempdir().expect("tempdir");
         let vstore = crate::vault::store::VaultStore::new(tmp.path());
+        let review_prompt = "Review my uncommitted changes carefully for bugs, security issues, repo rule violations, and behavioral impact.";
         let auto_tools = vstore.collect_active_skill_allowed_tools(
-            Some("please run a code review on my PR diff"),
+            Some(review_prompt),
             None,
             &Vec::<String>::new(),
         );
@@ -3006,6 +3008,24 @@ mod tests {
             auto_tools.iter().any(|t| t == "power_review"),
             "standalone code review prompt must auto-promote `power_review` via mini-review skill, got: {:?}",
             auto_tools
+        );
+        let (_, activated) = vstore
+            .format_dynamic_turn_skills_with_names(
+                Some(review_prompt),
+                None,
+                &Vec::<String>::new(),
+                &[],
+            )
+            .expect("expected dynamic turn skill activation");
+        assert!(
+            activated.iter().any(|s| s == "mini-review"),
+            "expected `mini-review` to activate on code review prompt, got: {:?}",
+            activated
+        );
+        assert!(
+            !activated.iter().any(|s| s == "docx"),
+            "`docx` must NOT false-positive activate on code review prompt, got: {:?}",
+            activated
         );
     }
 }

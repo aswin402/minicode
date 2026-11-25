@@ -24,6 +24,12 @@ impl ReviewFileClusterer {
     pub const DEFAULT_MAX_CLUSTER_SIZE: usize = 8;
     /// Maximum number of concurrent clusters to avoid excessive subagent fan-out on huge diffs.
     pub const DEFAULT_MAX_CLUSTERS: usize = 3;
+    /// Minimum files required in any cluster before spawning a separate parallel Reviewer worker
+    /// (prevents wasting a full Reviewer subagent on a 1–2 file orphan remainder like `8 + 8 + 1`).
+    pub const MIN_CLUSTER_FILES_FOR_FANOUT: usize = 3;
+    /// Minimum total diff line count before fanning out across multiple parallel Reviewer clusters.
+    /// Small multi-file diffs (< 400 lines) are reviewed much faster and cheaper by a single worker.
+    pub const MIN_DIFF_LINES_FOR_FANOUT: usize = 400;
 
     /// Partitions `files` into cohesive clusters.
     /// Returns a single cluster when `files.len() <= max_cluster_size` (zero overhead on small diffs).
@@ -192,6 +198,25 @@ impl ReviewFileClusterer {
             }
         }
 
+        // Eliminate tiny orphan tail clusters (< MIN_CLUSTER_FILES_FOR_FANOUT) so we never burn
+        // a full Reviewer subagent on 1–2 leftover files (e.g. `8 + 8 + 1` -> `9 + 8`).
+        while packed.len() > 1 {
+            packed.sort_by(|a, b| {
+                b.len()
+                    .cmp(&a.len())
+                    .then_with(|| a.first().cmp(&b.first()))
+            });
+            let smallest_len = packed.last().map_or(usize::MAX, Vec::len);
+            if smallest_len >= Self::MIN_CLUSTER_FILES_FOR_FANOUT {
+                break;
+            }
+            if let Some(mut orphan) = packed.pop() {
+                if let Some(target) = packed.iter_mut().min_by_key(|b| b.len()) {
+                    target.append(&mut orphan);
+                }
+            }
+        }
+
         packed
             .into_iter()
             .enumerate()
@@ -313,5 +338,30 @@ mod tests {
             .files
             .iter()
             .any(|f| f == "src/lib/__tests__/storage.test.ts"));
+    }
+
+    #[test]
+    fn test_eliminates_orphan_singleton_cluster_on_17_files() {
+        let tmp = tempfile::tempdir().unwrap();
+        let files: Vec<String> = (1..=17)
+            .map(|i| format!("src/mod_{:02}/file_{:02}.ts", (i - 1) / 4, i))
+            .collect();
+
+        let clusters = ReviewFileClusterer::cluster_files(tmp.path(), &files, 8, 3);
+        assert_eq!(
+            clusters.len(),
+            2,
+            "17 files with cap=8 must fold the 1-file orphan into 2 balanced clusters (9+8), got: {:?}",
+            clusters.iter().map(|c| c.files.len()).collect::<Vec<_>>()
+        );
+        assert!(
+            clusters
+                .iter()
+                .all(|c| c.files.len() >= ReviewFileClusterer::MIN_CLUSTER_FILES_FOR_FANOUT),
+            "every cluster must contain at least {} files",
+            ReviewFileClusterer::MIN_CLUSTER_FILES_FOR_FANOUT
+        );
+        let total: usize = clusters.iter().map(|c| c.files.len()).sum();
+        assert_eq!(total, 17);
     }
 }

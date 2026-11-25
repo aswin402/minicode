@@ -4,7 +4,7 @@ description: "MiniReview precision code review workflow combining deterministic 
 category: "quality-review"
 kind: "workflow"
 globs: ["**/*"]
-triggers: ["code review", "review", "pr review", "audit diff", "mini-review", "minireview", "sarif"]
+triggers: ["code review", "review", "review the code", "review my code", "pr review", "audit diff", "mini-review", "minireview", "sarif"]
 allowed_tools: ["power_review", "power_verify", "git_diff", "read_file", "grep_search", "locate_symbol"]
 always_apply: false
 ---

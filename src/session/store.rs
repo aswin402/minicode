@@ -152,8 +152,8 @@ impl SessionStore {
             tracing::warn!(path = %sessions_dir.display(), error = %e, "Failed to create sessions directory");
         }
 
-        // Auto-ensure .minicode/ is ignored in git
-        crate::tools::minikit::sync::MiniKitSyncEngine::ensure_gitignore(workspace_root);
+        // Auto-ensure .minicode/ is ignored in git without dirtying working trees that have no .gitignore
+        crate::tools::minikit::sync::MiniKitSyncEngine::ensure_git_local_exclude(workspace_root);
 
         // One-time auto-migration: if any old sessions for this workspace exist in ~/.config/minicode/sessions,
         // move them cleanly into .minicode/sessions/ so all history lives strictly in the project.

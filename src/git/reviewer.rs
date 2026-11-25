@@ -171,10 +171,11 @@ impl GitReviewer {
                     let filtered_range_diff =
                         crate::git::diff_filter::DiffFilter::filter_diff(&range_diff);
                     range_files.retain(|rel| {
-                        !crate::agent::verification_barrier::VerificationBarrier::is_ignored_artifact_or_vendor_path(
-                            workspace_root,
-                            rel,
-                        )
+                        !crate::git::mini_review::ReviewRuleEngine::is_secret_path(rel)
+                            && !crate::agent::verification_barrier::VerificationBarrier::is_ignored_artifact_or_vendor_path(
+                                workspace_root,
+                                rel,
+                            )
                     });
                     if !range_files.is_empty() || !filtered_range_diff.trim().is_empty() {
                         return Self::evaluate_diff_and_files(
@@ -204,10 +205,12 @@ impl GitReviewer {
             if !staged_only && !status.untracked.is_empty() {
                 let mut untracked_raw = String::new();
                 for rel in &status.untracked {
-                    if crate::agent::verification_barrier::VerificationBarrier::is_ignored_artifact_or_vendor_path(
-                        workspace_root,
-                        rel,
-                    ) {
+                    if crate::git::mini_review::ReviewRuleEngine::is_secret_path(rel)
+                        || crate::agent::verification_barrier::VerificationBarrier::is_ignored_artifact_or_vendor_path(
+                            workspace_root,
+                            rel,
+                        )
+                    {
                         continue;
                     }
                     let full = workspace_root.join(rel);
@@ -254,10 +257,11 @@ impl GitReviewer {
                 all
             };
             target_files.retain(|rel| {
-                !crate::agent::verification_barrier::VerificationBarrier::is_ignored_artifact_or_vendor_path(
-                    workspace_root,
-                    rel,
-                )
+                !crate::git::mini_review::ReviewRuleEngine::is_secret_path(rel)
+                    && !crate::agent::verification_barrier::VerificationBarrier::is_ignored_artifact_or_vendor_path(
+                        workspace_root,
+                        rel,
+                    )
             });
 
             if target_files.is_empty() && diff_text.trim().is_empty() {
@@ -278,10 +282,11 @@ impl GitReviewer {
                     let filtered_head_diff =
                         crate::git::diff_filter::DiffFilter::filter_diff(&head_diff);
                     head_files.retain(|rel| {
-                        !crate::agent::verification_barrier::VerificationBarrier::is_ignored_artifact_or_vendor_path(
-                            workspace_root,
-                            rel,
-                        )
+                        !crate::git::mini_review::ReviewRuleEngine::is_secret_path(rel)
+                            && !crate::agent::verification_barrier::VerificationBarrier::is_ignored_artifact_or_vendor_path(
+                                workspace_root,
+                                rel,
+                            )
                     });
                     if !head_files.is_empty() && !filtered_head_diff.trim().is_empty() {
                         return Self::evaluate_diff_and_files(
@@ -369,7 +374,9 @@ impl GitReviewer {
         for line in diff_text.lines() {
             if let Some(stripped) = line.strip_prefix("+++ b/") {
                 current_file = stripped.trim().to_string();
-                skip_current_file = crate::agent::verification_barrier::VerificationBarrier::is_ignored_artifact_or_vendor_path(
+                skip_current_file = crate::git::mini_review::ReviewRuleEngine::is_secret_path(
+                    &current_file,
+                ) || crate::agent::verification_barrier::VerificationBarrier::is_ignored_artifact_or_vendor_path(
                     workspace_root,
                     &current_file,
                 );
@@ -1110,6 +1117,50 @@ mod tests {
         assert!(
             raw_diff.contains("src/calc.ts") && raw_diff.contains("tests/calc.test.ts"),
             "returned diff must include unified diff for post-merge review package"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_review_workspace_never_leaks_untracked_dotenv_secrets_into_diff() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let root = dir.path();
+
+        for args in [
+            vec!["init"],
+            vec!["config", "user.name", "Reviewer Test"],
+            vec!["config", "user.email", "reviewer@minicode.local"],
+        ] {
+            tokio::process::Command::new("git")
+                .args(&args)
+                .current_dir(root)
+                .output()
+                .await
+                .expect("git setup");
+        }
+
+        std::fs::write(
+            root.join(".env"),
+            "DATABASE_PASSWORD=example_local_secret_fixture_000000\n",
+        )
+        .expect("write .env");
+        std::fs::create_dir_all(root.join("src")).expect("mkdir src");
+        std::fs::write(root.join("src/app.ts"), "export const ok = true;\n").expect("write app");
+
+        let (report, raw_diff) = GitReviewer::review_workspace_with_range(root, false, None, None)
+            .await
+            .expect("review_workspace_with_range");
+
+        assert_eq!(
+            report.files_audited, 1,
+            "must exclude .env from audited files"
+        );
+        assert!(
+            !raw_diff.contains("example_local_secret_fixture"),
+            "raw_diff must NEVER contain .env secret values"
+        );
+        assert!(
+            !raw_diff.contains("DATABASE_PASSWORD"),
+            "raw_diff must NEVER copy untracked .env lines"
         );
     }
 }
