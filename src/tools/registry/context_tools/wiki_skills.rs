@@ -93,6 +93,15 @@ pub fn get_schemas() -> Vec<ToolSchema> {
                     "bundle_dir": {
                         "type": "string",
                         "description": "Optional relative bundle root directory (defaults to '.minicode/wiki'; e.g. 'minikit_docs')"
+                    },
+                    "change_summary": {
+                        "type": "string",
+                        "description": "Optional concise summary of why this concept changed; preserves and appends to a per-page `## Timeline` provenance trail"
+                    },
+                    "timeline_kind": {
+                        "type": "string",
+                        "enum": ["decision", "evidence", "reversal", "note"],
+                        "description": "Optional timeline entry kind when `change_summary` is provided (defaults to 'decision')"
                     }
                 },
                 "required": ["topic", "title", "content"]
@@ -327,6 +336,8 @@ pub async fn dispatch(
                 enforce_augmentation_guard: param::opt_bool(args, "augment", false),
                 bundle_dir: param::opt_str(args, "bundle_dir")
                     .map(|_| resolve_bundle_dir(workspace_root, args, true)),
+                change_summary: param::opt_str(args, "change_summary").map(|s| s.to_string()),
+                timeline_kind: param::opt_str(args, "timeline_kind").map(|s| s.to_string()),
             };
 
             WikiManager::write_entry_with_okf(

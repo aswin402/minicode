@@ -27,12 +27,11 @@ impl ObservationPruner {
         let orig_bytes = raw_output.len();
 
         // 1. Structured JSON array crushing (`SmartCrusher` + `AdaptiveSizer` + `AnchorSelector` + native TOON)
-        // Guardrail: never rewrite verbatim source/config file reads (`read_file` on package.json, etc.)
-        // because patch/edit tools rely on exact original text and line numbers.
-        let is_source_file_read = matches!(
-            tool_name,
-            "read_file" | "read_files" | "view_file" | "read_file_outline" | "get_file_content"
-        );
+        // Guardrail: never rewrite verbatim source/config file reads (`read_file`, `batch_read`, `look_at`,
+        // or aliases like `view_file` resolved through `tools::meta::canonical_name`) because patch/edit
+        // tools rely on exact original text and line numbers.
+        let canonical_tool = crate::tools::meta::canonical_name(tool_name);
+        let is_source_file_read = matches!(canonical_tool, "read_file" | "batch_read" | "look_at");
         if !is_source_file_read {
             if let Some((crushed, _)) = JsonCrusher::crush(raw_output) {
                 let comp_tokens = ContextCompressor::count_tokens_fast(&crushed);
@@ -593,8 +592,19 @@ mod tests {
         let roundtrip = ToonCodec::decode_value(&pruned_mcp).expect("lossless TOON decode");
         assert_eq!(roundtrip, graphql_payload);
 
-        // 2. `read_file` on JSON source/config files must NEVER be rewritten to TOON (preserves exact lines for patch_file!)
-        let preserved_read = ObservationPruner::prune_for_llm("read_file", &raw_pretty);
-        assert_eq!(preserved_read, raw_pretty);
+        // 2. Source/config file reads (`read_file`, `batch_read`, and alias `view_file`) must NEVER
+        //    be rewritten to TOON (preserves exact lines for patch_file!)
+        assert_eq!(
+            ObservationPruner::prune_for_llm("read_file", &raw_pretty),
+            raw_pretty
+        );
+        assert_eq!(
+            ObservationPruner::prune_for_llm("batch_read", &raw_pretty),
+            raw_pretty
+        );
+        assert_eq!(
+            ObservationPruner::prune_for_llm("view_file", &raw_pretty),
+            raw_pretty
+        );
     }
 }

@@ -720,6 +720,11 @@ impl AgentLoop {
                     effective_tool_names.insert(sticky_tool);
                 }
             }
+            // Auto-promote `project_brain` when the workspace has a `BRAIN.md` or `brain/pages/`
+            // (zero schema token cost in workspaces that have not opted into Project Brain)
+            if crate::context::memory::brain::ProjectBrain::is_initialized(&self.workspace_root) {
+                effective_tool_names.insert("project_brain".to_string());
+            }
         }
 
         let mut tools = crate::tools::category::assemble_active_tools_full(

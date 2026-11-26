@@ -443,6 +443,15 @@ impl SubagentWorker {
             full_prompt.push_str(&micro_skills_block);
         }
 
+        // Repo-native Project Brain index (`brain/pages/`, zero cost when uninitialized)
+        if let Some(brain_index) =
+            crate::context::memory::brain::ProjectBrain::format_index_for_prompt(&main_root)
+        {
+            full_prompt.push('\n');
+            full_prompt.push_str(&brain_index);
+            full_prompt.push('\n');
+        }
+
         full_prompt
     }
 

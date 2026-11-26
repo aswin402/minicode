@@ -600,6 +600,15 @@ impl PromptBuilder {
             recency.push('\n');
         }
 
+        // 8. Repo-Native Project Brain Index (`brain/pages/`, zero cost when uninitialized)
+        if let Some(brain_index) =
+            crate::context::memory::brain::ProjectBrain::format_index_for_prompt(workspace_dir)
+        {
+            recency.push_str("  ");
+            recency.push_str(brain_index.trim());
+            recency.push('\n');
+        }
+
         // === KV-CACHE ANCHOR DELIMITER ===
         // Delimits invariant/slowly-evolving context from volatile turn-by-turn state
         recency.push_str("  <!-- KV_CACHE_ANCHOR -->\n");

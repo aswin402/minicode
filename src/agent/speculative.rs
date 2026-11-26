@@ -1,6 +1,6 @@
 use crate::agent::types::{ToolCall, ToolResult};
 use crate::tools::concurrency::{
-    classify_tool, is_parallelizable_file_mutation, normalize_mutation_target,
+    classify_tool_with_args, is_parallelizable_file_mutation, normalize_mutation_target,
     SubagentIsolationProfile,
 };
 use crate::tools::ToolRegistry;
@@ -153,7 +153,7 @@ impl ExecutionPlanner {
         let mut subagent_profiles: Vec<SubagentIsolationProfile> = Vec::new();
 
         for call in calls {
-            let safety = classify_tool(&call.name);
+            let safety = classify_tool_with_args(&call.name, &call.arguments);
             if safety.is_read_only() {
                 Self::flush_mutation_batch(&mut stages, &mut mutation_batch, &mut mutation_paths);
                 Self::flush_subagent_batch(
@@ -304,7 +304,7 @@ impl SpeculativeExecutor {
             return;
         }
 
-        let safety = classify_tool(&tool_call.name);
+        let safety = classify_tool_with_args(&tool_call.name, &tool_call.arguments);
         if safety.is_barrier() {
             tracing::debug!(
                 tool = %tool_call.name,
@@ -463,7 +463,9 @@ impl SpeculativeExecutor {
         }
 
         if calls.len() > 1 {
-            let all_read_only = calls.iter().all(|c| classify_tool(&c.name).is_read_only());
+            let all_read_only = calls
+                .iter()
+                .all(|c| classify_tool_with_args(&c.name, &c.arguments).is_read_only());
             if all_read_only {
                 tracing::info!(
                     count = calls.len(),

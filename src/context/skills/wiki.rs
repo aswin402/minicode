@@ -36,6 +36,11 @@ pub struct WikiOkfOptions {
     pub attester: Option<crate::context::okf::OkfAttester>,
     pub enforce_augmentation_guard: bool,
     pub bundle_dir: Option<PathBuf>,
+    /// Optional concise summary explaining why this concept changed; when provided, preserves any
+    /// existing per-page `## Timeline` section and appends an immutable provenance entry.
+    pub change_summary: Option<String>,
+    /// Optional timeline entry kind (`decision`, `evidence`, `reversal`, `note`; defaults to `decision`).
+    pub timeline_kind: Option<String>,
 }
 
 pub struct WikiManager;
@@ -156,11 +161,45 @@ impl WikiManager {
         };
 
         let trimmed_content = content.trim();
-        let body = if trimmed_content.starts_with("# ") {
+        let mut body = if trimmed_content.starts_with("# ") {
             format!("{}\n", trimmed_content)
         } else {
             format!("# {}\n\n{}\n", title, trimmed_content)
         };
+
+        // Preserve any prior per-page `## Timeline` entries and append a provenance entry when
+        // `change_summary` is provided (anti-drift guarantee inspired by `brain.md`).
+        let existing_timeline = fs::read_to_string(dir.join(format!("{concept_id}.md")))
+            .ok()
+            .and_then(|raw| extract_markdown_timeline_entries(&raw));
+        let clean_summary = opts
+            .change_summary
+            .as_deref()
+            .map(|s| s.split_whitespace().collect::<Vec<_>>().join(" "))
+            .filter(|s| !s.is_empty());
+
+        if existing_timeline.is_some() || clean_summary.is_some() {
+            let mut timeline_lines: Vec<String> = existing_timeline.unwrap_or_default();
+            if let Some(summary) = clean_summary {
+                let kind = opts
+                    .timeline_kind
+                    .as_deref()
+                    .map(|k| k.trim().to_ascii_lowercase())
+                    .filter(|k| matches!(k.as_str(), "decision" | "evidence" | "reversal" | "note"))
+                    .unwrap_or_else(|| "decision".to_string());
+                timeline_lines.push(format!("- {now_iso} [{kind}] {summary}"));
+            }
+            if !timeline_lines.is_empty()
+                && !body.contains("\n## Timeline")
+                && !body.starts_with("## Timeline")
+            {
+                body.push_str("\n## Timeline\n");
+                for line in timeline_lines {
+                    body.push_str(&line);
+                    body.push('\n');
+                }
+            }
+        }
 
         let outcome = write_concept_doc(
             &dir,
@@ -673,6 +712,33 @@ fn sanitize_concept_id(topic: &str) -> String {
     segments.join("/")
 }
 
+/// Extracts existing bullet lines under a `## Timeline` section in a Markdown wiki document so
+/// subsequent rewrites preserve per-page provenance history (tolerant of trailing whitespace).
+fn extract_markdown_timeline_entries(raw: &str) -> Option<Vec<String>> {
+    let mut in_timeline = false;
+    let mut entries = Vec::new();
+    for line in raw.lines() {
+        let trimmed = line.trim();
+        if !in_timeline {
+            if trimmed == "## Timeline" {
+                in_timeline = true;
+            }
+            continue;
+        }
+        if trimmed.starts_with("## ") || trimmed.starts_with("# ") || trimmed == "---" {
+            break;
+        }
+        if trimmed.starts_with("- ") {
+            entries.push(trimmed.to_string());
+        }
+    }
+    if entries.is_empty() {
+        None
+    } else {
+        Some(entries)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -749,5 +815,46 @@ mod tests {
         assert!(compiled.contains("Trust Tier: `machine-confirmed`"));
         assert!(compiled.contains("[[architecture-overview|Architecture Overview]]"));
         assert!(compiled.contains("[[tui-scheduler|TUI Frame Scheduler]]"));
+    }
+
+    #[test]
+    fn test_wiki_preserves_and_appends_per_page_timeline() {
+        let dir = tempdir().unwrap();
+        let ws = dir.path();
+
+        WikiManager::write_entry_with_okf(
+            ws,
+            "storage-engine",
+            "Storage Engine",
+            "Use JSONL logs for local telemetry.",
+            &["storage".to_string()],
+            &[],
+            WikiOkfOptions {
+                change_summary: Some("Initial JSONL decision".to_string()),
+                timeline_kind: Some("decision".to_string()),
+                ..WikiOkfOptions::default()
+            },
+        )
+        .unwrap();
+
+        WikiManager::write_entry_with_okf(
+            ws,
+            "storage-engine",
+            "Storage Engine",
+            "Switched to atomic temp-file + rename Markdown pages.",
+            &["storage".to_string()],
+            &[],
+            WikiOkfOptions {
+                change_summary: Some("Reversed JSONL in favor of diffable Markdown".to_string()),
+                timeline_kind: Some("reversal".to_string()),
+                ..WikiOkfOptions::default()
+            },
+        )
+        .unwrap();
+
+        let doc = WikiManager::read_entry(ws, "storage-engine").unwrap();
+        assert!(doc.contains("## Timeline"));
+        assert!(doc.contains("[decision] Initial JSONL decision"));
+        assert!(doc.contains("[reversal] Reversed JSONL in favor of diffable Markdown"));
     }
 }

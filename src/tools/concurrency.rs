@@ -242,6 +242,7 @@ pub fn classify_tool(name: &str) -> ToolSafetyLevel {
         | "create_plan"
         | "log_finding"
         | "record_decision"
+        | "project_brain"
         | "update_progress"
         | "archive_plan"
         | "create_skill"
@@ -313,6 +314,26 @@ pub fn classify_tool(name: &str) -> ToolSafetyLevel {
         // Fail-safe default: treat any unrecognized tool as Mutating barrier
         _ => ToolSafetyLevel::Mutating,
     }
+}
+
+/// Classifies a tool call using both tool name and JSON arguments so multi-action tools
+/// (`project_brain`) allow read-only actions (`list`, `read`, `search`, `validate`) to run
+/// concurrently while write actions (`init`, `bootstrap`, `create`, `update_truth`,
+/// `append_timeline`) remain sequential `Mutating` barriers.
+pub fn classify_tool_with_args(name: &str, args: &serde_json::Value) -> ToolSafetyLevel {
+    let canonical = crate::tools::meta::canonical_name(name);
+    if canonical == "project_brain" {
+        let action = args
+            .get("action")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("");
+        return if matches!(action, "list" | "read" | "search" | "validate") {
+            ToolSafetyLevel::ReadOnly
+        } else {
+            ToolSafetyLevel::Mutating
+        };
+    }
+    classify_tool(canonical)
 }
 
 /// Convenience helper to check if a tool is read-only.
@@ -553,6 +574,22 @@ mod tests {
         );
         assert_eq!(classify_tool("block_insert"), ToolSafetyLevel::Mutating);
         assert_eq!(classify_tool("block_scaffold"), ToolSafetyLevel::Mutating);
+        assert_eq!(classify_tool("project_brain"), ToolSafetyLevel::Mutating);
+        assert_eq!(
+            classify_tool_with_args("project_brain", &serde_json::json!({"action": "read"})),
+            ToolSafetyLevel::ReadOnly
+        );
+        assert_eq!(
+            classify_tool_with_args("project_brain", &serde_json::json!({"action": "search"})),
+            ToolSafetyLevel::ReadOnly
+        );
+        assert_eq!(
+            classify_tool_with_args(
+                "project_brain",
+                &serde_json::json!({"action": "update_truth"})
+            ),
+            ToolSafetyLevel::Mutating
+        );
         assert!(!is_read_only("write_file"));
         assert!(is_barrier("write_file"));
     }

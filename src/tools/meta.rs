@@ -138,6 +138,7 @@ pub const DISPLAY_TITLE_RULES: &[(&[&str], &str)] = &[
     (&["begin_transaction"], "Begin Transaction"),
     (&["commit_transaction"], "Commit Transaction"),
     (&["rollback_transaction"], "Rollback Transaction"),
+    (&["project_brain"], "Project Brain"),
 ];
 
 /// Bitflags describing the cross-cutting behavioral semantics of a tool.
@@ -176,6 +177,7 @@ pub const DISCOVERY_SAFE_MUTATIONS: &[&str] = &[
     "update_progress",
     "archive_plan",
     "record_decision",
+    "project_brain",
     "remember_fact",
     "update_fact",
     "forget_fact",

@@ -293,6 +293,74 @@ pub fn get_schemas() -> Vec<ToolSchema> {
                 "required": ["action"]
             }),
         },
+        ToolSchema {
+            name: "project_brain".to_string(),
+            description: "Manage durable, Git-tracked project memory pages (`BRAIN.md` + `brain/pages/<id>.md`, compatible with `mindmuxai/brain.md`). Enforces atomic `compiled_truth` + append-only `## Timeline` provenance so architectural decisions, requirements, concepts, and reversals survive across sessions and agents without silent drift.".to_string(),
+            parameters: json!({
+                "type": "object",
+                "properties": {
+                    "action": {
+                        "type": "string",
+                        "enum": ["init", "bootstrap", "list", "read", "search", "create", "update_truth", "append_timeline", "validate"],
+                        "description": "Operation: 'init' (create BRAIN.md + brain/pages/), 'bootstrap' (seed overview/stack from repo manifests), 'list', 'read', 'search', 'create', 'update_truth' (rewrites compiled_truth + atomically appends timeline with mandatory summary), 'append_timeline' (append evidence/reversal/note without editing truth), or 'validate'"
+                    },
+                    "id": {
+                        "type": "string",
+                        "description": "Kebab-case page ID (e.g. 'pure-rust-tls'; required for read, create, update_truth, append_timeline)"
+                    },
+                    "title": {
+                        "type": "string",
+                        "description": "Human-readable one-line page title (required for create; optional override for update_truth)"
+                    },
+                    "category": {
+                        "type": "string",
+                        "enum": ["project", "decision", "concept", "reference", "person"],
+                        "description": "Page category (required for create; optional filter for list)"
+                    },
+                    "status": {
+                        "type": "string",
+                        "enum": ["active", "draft", "archived"],
+                        "description": "Lifecycle status (defaults to 'active' on create; optional filter for list or update for update_truth)"
+                    },
+                    "compiled_truth": {
+                        "type": "string",
+                        "description": "Current best understanding Markdown body (required for create and update_truth)"
+                    },
+                    "summary": {
+                        "type": "string",
+                        "description": "Concise one-line explanation of why this page was created/changed or what evidence occurred (required for update_truth and append_timeline)"
+                    },
+                    "kind": {
+                        "type": "string",
+                        "enum": ["decision", "evidence", "reversal", "note"],
+                        "description": "Timeline entry kind (defaults to 'decision' for update_truth, 'note' for append_timeline)"
+                    },
+                    "source": {
+                        "type": "string",
+                        "description": "Optional provenance source (file path, PR, commit, benchmark, or URL)"
+                    },
+                    "tags": {
+                        "type": "array",
+                        "items": { "type": "string" },
+                        "description": "Optional search tags"
+                    },
+                    "affects": {
+                        "type": "array",
+                        "items": { "type": "string" },
+                        "description": "Optional related brain page IDs affected by this decision/event"
+                    },
+                    "query": {
+                        "type": "string",
+                        "description": "Search query keywords (required for search)"
+                    },
+                    "project_name": {
+                        "type": "string",
+                        "description": "Optional project name for action='init'"
+                    }
+                },
+                "required": ["action"]
+            }),
+        },
     ]
 }
 
@@ -1465,6 +1533,239 @@ pub async fn dispatch(
                 .into()),
             }
         })()),
+        "project_brain" => Some((|| {
+            use crate::context::memory::brain::{
+                AppendTimelineRequest, BrainCategory, BrainStatus, CreatePageRequest, ProjectBrain,
+                TimelineKind, UpdateTruthRequest,
+            };
+
+            let action = param::require_str(args, "action", "project_brain")?;
+            match action {
+                "init" => {
+                    let project_name = param::opt_str(args, "project_name");
+                    ProjectBrain::init(workspace_root, project_name)
+                }
+                "bootstrap" => ProjectBrain::bootstrap(workspace_root),
+                "list" => {
+                    let cat = param::opt_str(args, "category")
+                        .map(|s| {
+                            s.parse::<BrainCategory>()
+                                .map_err(|reason| ToolError::InvalidArguments {
+                                    name: "project_brain".to_string(),
+                                    reason,
+                                })
+                        })
+                        .transpose()?;
+                    let st = param::opt_str(args, "status")
+                        .map(|s| {
+                            s.parse::<BrainStatus>()
+                                .map_err(|reason| ToolError::InvalidArguments {
+                                    name: "project_brain".to_string(),
+                                    reason,
+                                })
+                        })
+                        .transpose()?;
+                    let pages = ProjectBrain::list_pages(workspace_root, cat, st)?;
+                    if pages.is_empty() {
+                        return Ok("No pages found in `brain/pages/`. Use `project_brain(action=\"bootstrap\")` or `action=\"create\"` to start durable project memory.".to_string());
+                    }
+                    let mut out = format!("Project Brain Pages ({}):\n", pages.len());
+                    for p in pages {
+                        let tags_str = if p.tags.is_empty() {
+                            String::new()
+                        } else {
+                            format!(" [{}]", p.tags.join(", "))
+                        };
+                        out.push_str(&format!(
+                            "- `{}` | {} | {} | {} (updated {}, {} timeline event(s)){}\n",
+                            p.id,
+                            p.category.as_str(),
+                            p.status.as_str(),
+                            p.title,
+                            p.updated,
+                            p.timeline_count,
+                            tags_str
+                        ));
+                    }
+                    Ok(out)
+                }
+                "read" => {
+                    let id = param::require_str(args, "id", "project_brain")?;
+                    let page = ProjectBrain::read_page(workspace_root, id)?;
+                    Ok(ProjectBrain::format_page_display(workspace_root, &page))
+                }
+                "search" => {
+                    let query = param::require_str(args, "query", "project_brain")?;
+                    let hits = ProjectBrain::search_pages(workspace_root, query, 10)?;
+                    if hits.is_empty() {
+                        return Ok(format!("No Project Brain pages matched query `{query}`."));
+                    }
+                    let mut out = format!("Project Brain Search Results for `{query}` ({}):\n", hits.len());
+                    for hit in hits {
+                        out.push_str(&format!(
+                            "- `{}` ({} | {}, score {:.2}): {}\n  {}\n",
+                            hit.summary.id,
+                            hit.summary.category.as_str(),
+                            hit.summary.status.as_str(),
+                            hit.score,
+                            hit.summary.title,
+                            hit.snippet
+                        ));
+                    }
+                    Ok(out)
+                }
+                "create" => {
+                    let id = param::require_str(args, "id", "project_brain")?.to_string();
+                    let title = param::require_str(args, "title", "project_brain")?.to_string();
+                    let category = param::opt_str(args, "category")
+                        .unwrap_or("decision")
+                        .parse::<BrainCategory>()
+                        .map_err(|reason| ToolError::InvalidArguments {
+                            name: "project_brain".to_string(),
+                            reason,
+                        })?;
+                    let status = param::opt_str(args, "status")
+                        .unwrap_or("active")
+                        .parse::<BrainStatus>()
+                        .map_err(|reason| ToolError::InvalidArguments {
+                            name: "project_brain".to_string(),
+                            reason,
+                        })?;
+                    let compiled_truth =
+                        param::require_str(args, "compiled_truth", "project_brain")?.to_string();
+                    let summary = param::opt_str(args, "summary").unwrap_or("").to_string();
+                    let source = param::opt_str(args, "source").map(str::to_string);
+                    let tags = param::opt_string_array(args, "tags").unwrap_or_default();
+                    let affects = param::opt_string_array(args, "affects").unwrap_or_default();
+
+                    let page = ProjectBrain::create_page(
+                        workspace_root,
+                        CreatePageRequest {
+                            id,
+                            title,
+                            category,
+                            status,
+                            tags,
+                            compiled_truth,
+                            summary,
+                            source,
+                            affects,
+                        },
+                    )?;
+                    Ok(format!(
+                        "✔ Created Project Brain page `brain/pages/{}.md` ({} | {}, 1 timeline entry).",
+                        page.id,
+                        page.category.as_str(),
+                        page.status.as_str()
+                    ))
+                }
+                "update_truth" => {
+                    let id = param::require_str(args, "id", "project_brain")?.to_string();
+                    let compiled_truth =
+                        param::require_str(args, "compiled_truth", "project_brain")?.to_string();
+                    let summary = param::require_str(args, "summary", "project_brain")?.to_string();
+                    let kind = param::opt_str(args, "kind")
+                        .unwrap_or("decision")
+                        .parse::<TimelineKind>()
+                        .map_err(|reason| ToolError::InvalidArguments {
+                            name: "project_brain".to_string(),
+                            reason,
+                        })?;
+                    let status = param::opt_str(args, "status")
+                        .map(|s| {
+                            s.parse::<BrainStatus>()
+                                .map_err(|reason| ToolError::InvalidArguments {
+                                    name: "project_brain".to_string(),
+                                    reason,
+                                })
+                        })
+                        .transpose()?;
+                    let title = param::opt_str(args, "title").map(str::to_string);
+                    let tags = param::opt_string_array(args, "tags");
+                    let source = param::opt_str(args, "source").map(str::to_string);
+                    let affects = param::opt_string_array(args, "affects").unwrap_or_default();
+
+                    let page = ProjectBrain::update_truth(
+                        workspace_root,
+                        UpdateTruthRequest {
+                            id,
+                            compiled_truth,
+                            summary,
+                            kind,
+                            title,
+                            status,
+                            tags,
+                            source,
+                            affects,
+                        },
+                    )?;
+                    Ok(format!(
+                        "✔ Atomically updated `compiled_truth` and appended `{}` timeline entry on `brain/pages/{}.md` ({} total timeline events).",
+                        kind.as_str(),
+                        page.id,
+                        page.timeline.len()
+                    ))
+                }
+                "append_timeline" => {
+                    let id = param::require_str(args, "id", "project_brain")?.to_string();
+                    let summary = param::require_str(args, "summary", "project_brain")?.to_string();
+                    let kind = param::opt_str(args, "kind")
+                        .unwrap_or("note")
+                        .parse::<TimelineKind>()
+                        .map_err(|reason| ToolError::InvalidArguments {
+                            name: "project_brain".to_string(),
+                            reason,
+                        })?;
+                    let source = param::opt_str(args, "source").map(str::to_string);
+                    let affects = param::opt_string_array(args, "affects").unwrap_or_default();
+
+                    let page = ProjectBrain::append_timeline(
+                        workspace_root,
+                        AppendTimelineRequest {
+                            id,
+                            kind,
+                            summary,
+                            source,
+                            affects,
+                        },
+                    )?;
+                    Ok(format!(
+                        "✔ Appended `{}` entry to `brain/pages/{}.md` timeline ({} total events; `compiled_truth` untouched).",
+                        kind.as_str(),
+                        page.id,
+                        page.timeline.len()
+                    ))
+                }
+                "validate" => {
+                    let report = ProjectBrain::validate(workspace_root);
+                    if report.pages_checked == 0 {
+                        return Ok("Project Brain has 0 pages to validate.".to_string());
+                    }
+                    let mut out = format!(
+                        "Project Brain Validation: {} page(s) checked | {} error(s), {} warning(s).\n",
+                        report.pages_checked,
+                        report.error_count(),
+                        report.warning_count()
+                    );
+                    for issue in &report.issues {
+                        out.push_str(&format!(
+                            "- [{}] `{}`: {}\n",
+                            issue.severity.to_uppercase(),
+                            issue.page_id,
+                            issue.message
+                        ));
+                    }
+                    Ok(out)
+                }
+                other => Err(ToolError::InvalidArguments {
+                    name: "project_brain".to_string(),
+                    reason: format!(
+                        "Unknown action '{other}' (expected: init, bootstrap, list, read, search, create, update_truth, append_timeline, validate)"
+                    ),
+                }
+                .into()),
+            }
+        })()),
         _ => None,
     }
 }
@@ -2134,5 +2435,68 @@ mod tests {
             std::fs::read_to_string(core_dir.join("prd.md")).unwrap(),
             custom_prd
         );
+    }
+
+    #[tokio::test]
+    async fn test_project_brain_tool_dispatch_end_to_end() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let ws = tmp.path();
+
+        let create_out = dispatch(
+            "project_brain",
+            &serde_json::json!({
+                "action": "create",
+                "id": "auth-strategy",
+                "title": "JWT Stateless Auth",
+                "category": "decision",
+                "compiled_truth": "Use short-lived Ed25519 JWT access tokens with rotating refresh cookies.",
+                "summary": "Chosen over sticky sessions for horizontal scaling",
+                "tags": ["auth", "security"]
+            }),
+            ws,
+        )
+        .await
+        .expect("handled")
+        .expect("create ok");
+        assert!(create_out.contains("brain/pages/auth-strategy.md"));
+
+        let update_out = dispatch(
+            "project_brain",
+            &serde_json::json!({
+                "action": "update_truth",
+                "id": "auth-strategy",
+                "compiled_truth": "Use opaque session tokens backed by Redis for instant revocation.",
+                "summary": "Reversed JWT decision after compliance audit required instant logout",
+                "kind": "reversal",
+                "source": "SEC-AUDIT-2026"
+            }),
+            ws,
+        )
+        .await
+        .expect("handled")
+        .expect("update ok");
+        assert!(update_out.contains("reversal"));
+
+        let read_out = dispatch(
+            "project_brain",
+            &serde_json::json!({"action": "read", "id": "auth-strategy"}),
+            ws,
+        )
+        .await
+        .expect("handled")
+        .expect("read ok");
+        assert!(read_out.contains("opaque session tokens"));
+        assert!(read_out.contains("Chosen over sticky sessions"));
+        assert!(read_out.contains("Reversed JWT decision"));
+
+        let val_out = dispatch(
+            "project_brain",
+            &serde_json::json!({"action": "validate"}),
+            ws,
+        )
+        .await
+        .expect("handled")
+        .expect("validate ok");
+        assert!(val_out.contains("0 error(s), 0 warning(s)"));
     }
 }

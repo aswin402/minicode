@@ -1,3 +1,4 @@
+pub mod brain;
 pub mod checkpoint;
 pub mod decay;
 pub mod episodic;
@@ -8,6 +9,8 @@ pub mod progressive_memory;
 pub mod task_dag;
 pub mod working_memory;
 
+#[allow(unused_imports)]
+pub use brain::ProjectBrain;
 #[allow(unused_imports)]
 pub use intent::*;
 pub use memory::*;
