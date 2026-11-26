@@ -441,6 +441,395 @@ pub fn matches_file_pattern(rel_path: &str, pattern: &str) -> bool {
     })
 }
 
+/// Shared sorted stopword list (English grammar + common code keywords) used by lexical
+/// tokenizers across BM25 search, code smell analysis, and task complexity scoring.
+pub const SHARED_CONTENT_STOPWORDS: &[&str] = &[
+    "all", "and", "any", "are", "can", "const", "def", "does", "false", "for", "from", "had",
+    "has", "have", "how", "into", "its", "let", "mut", "new", "none", "pub", "return", "self",
+    "some", "that", "the", "these", "this", "those", "true", "use", "using", "var", "was", "were",
+    "what", "when", "where", "why", "will", "with",
+];
+
+/// Returns `true` when lowercase `word` is in [`SHARED_CONTENT_STOPWORDS`] ($O(\log K)$ binary search).
+#[must_use]
+pub fn is_content_stopword(word: &str) -> bool {
+    SHARED_CONTENT_STOPWORDS.binary_search(&word).is_ok()
+}
+
+/// Tokenizes code or prose into lowercase content terms with camelCase/PascalCase + snake_case
+/// splitting, optional morphological stemming, and optional deduplication (zero regexes).
+#[must_use]
+pub fn tokenize_identifier_content_terms(
+    text: &str,
+    min_len: usize,
+    stem: bool,
+    unique: bool,
+) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut seen = if unique {
+        Some(std::collections::HashSet::new())
+    } else {
+        None
+    };
+
+    let mut emit = |raw_word: &str| {
+        if raw_word.len() < min_len || is_content_stopword(raw_word) {
+            return;
+        }
+        let term = if stem {
+            let normalized = crate::vault::models::VaultSkill::normalize_stem(raw_word);
+            if normalized.len() >= min_len && !is_content_stopword(normalized) {
+                normalized
+            } else {
+                raw_word
+            }
+        } else {
+            raw_word
+        };
+        if let Some(ref mut seen_set) = seen {
+            if !seen_set.insert(term.to_string()) {
+                return;
+            }
+        }
+        out.push(term.to_string());
+    };
+
+    for raw in text.split(|c: char| !c.is_ascii_alphanumeric()) {
+        if raw.is_empty() {
+            continue;
+        }
+        let chars: Vec<char> = raw.chars().collect();
+        let mut word = String::with_capacity(raw.len());
+        for (i, &ch) in chars.iter().enumerate() {
+            let split_here = i > 0
+                && ch.is_ascii_uppercase()
+                && (chars[i - 1].is_ascii_lowercase()
+                    || chars.get(i + 1).is_some_and(|n| n.is_ascii_lowercase()));
+            if split_here && !word.is_empty() {
+                emit(&word);
+                word.clear();
+            }
+            word.push(ch.to_ascii_lowercase());
+        }
+        if !word.is_empty() {
+            emit(&word);
+        }
+    }
+
+    out
+}
+
+#[derive(Debug, Clone)]
+enum CharClassItem {
+    Single(char),
+    Range(char, char),
+}
+
+#[derive(Debug, Clone)]
+enum GlobAtom {
+    Literal(char),
+    AnySingle,
+    SingleStar,
+    DoubleStar,
+    DoubleStarSlash,
+    CharClass {
+        negated: bool,
+        items: Vec<CharClassItem>,
+    },
+}
+
+fn fold_glob_char(ch: char, case_insensitive: bool) -> char {
+    if case_insensitive {
+        ch.to_ascii_lowercase()
+    } else {
+        ch
+    }
+}
+
+fn expand_glob_braces(pattern: &str) -> Vec<String> {
+    const MAX_BRACE_VARIANTS: usize = 64;
+    let mut variants = vec![pattern.to_string()];
+
+    loop {
+        let mut expanded_any = false;
+        let mut next_variants = Vec::with_capacity(variants.len());
+
+        for pat in variants {
+            if let Some((open, close)) = find_first_brace_group(&pat) {
+                let prefix = &pat[..open];
+                let inner = &pat[open + 1..close];
+                let suffix = &pat[close + 1..];
+                let alts = split_top_level_commas(inner);
+                if alts.len() > 1 {
+                    expanded_any = true;
+                    for alt in alts {
+                        if next_variants.len() >= MAX_BRACE_VARIANTS {
+                            break;
+                        }
+                        next_variants.push(format!("{prefix}{alt}{suffix}"));
+                    }
+                    continue;
+                }
+            }
+            if next_variants.len() < MAX_BRACE_VARIANTS {
+                next_variants.push(pat);
+            }
+        }
+
+        variants = next_variants;
+        if !expanded_any || variants.len() >= MAX_BRACE_VARIANTS {
+            break;
+        }
+    }
+
+    variants
+}
+
+fn find_first_brace_group(s: &str) -> Option<(usize, usize)> {
+    let mut open_idx = None;
+    let mut depth = 0usize;
+    let mut in_bracket = false;
+    for (idx, ch) in s.char_indices() {
+        if in_bracket {
+            if ch == ']' {
+                in_bracket = false;
+            }
+            continue;
+        }
+        match ch {
+            '[' => in_bracket = true,
+            '{' => {
+                if depth == 0 {
+                    open_idx = Some(idx);
+                }
+                depth += 1;
+            }
+            '}' if depth > 0 => {
+                depth -= 1;
+                if depth == 0 {
+                    return open_idx.map(|o| (o, idx));
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+fn split_top_level_commas(inner: &str) -> Vec<&str> {
+    let mut parts = Vec::new();
+    let mut start = 0usize;
+    let mut depth = 0usize;
+    let mut in_bracket = false;
+    for (idx, ch) in inner.char_indices() {
+        if in_bracket {
+            if ch == ']' {
+                in_bracket = false;
+            }
+            continue;
+        }
+        match ch {
+            '[' => in_bracket = true,
+            '{' => depth += 1,
+            '}' if depth > 0 => depth -= 1,
+            ',' if depth == 0 => {
+                parts.push(&inner[start..idx]);
+                start = idx + 1;
+            }
+            _ => {}
+        }
+    }
+    parts.push(&inner[start..]);
+    parts
+}
+
+fn parse_glob_atoms(pattern: &str, case_insensitive: bool) -> Vec<GlobAtom> {
+    let chars: Vec<char> = pattern.chars().collect();
+    let n = chars.len();
+    let mut atoms = Vec::with_capacity(n);
+    let mut i = 0;
+
+    while i < n {
+        match chars[i] {
+            '*' => {
+                let mut stars = 0;
+                while i < n && chars[i] == '*' {
+                    stars += 1;
+                    i += 1;
+                }
+                if stars >= 2 {
+                    if i < n && chars[i] == '/' {
+                        i += 1;
+                        atoms.push(GlobAtom::DoubleStarSlash);
+                    } else {
+                        atoms.push(GlobAtom::DoubleStar);
+                    }
+                } else {
+                    atoms.push(GlobAtom::SingleStar);
+                }
+            }
+            '?' => {
+                i += 1;
+                atoms.push(GlobAtom::AnySingle);
+            }
+            '[' => {
+                if let Some((atom, next_i)) = parse_char_class(&chars, i, case_insensitive) {
+                    atoms.push(atom);
+                    i = next_i;
+                } else {
+                    atoms.push(GlobAtom::Literal('['));
+                    i += 1;
+                }
+            }
+            ch => {
+                i += 1;
+                atoms.push(GlobAtom::Literal(fold_glob_char(ch, case_insensitive)));
+            }
+        }
+    }
+
+    atoms
+}
+
+fn parse_char_class(
+    chars: &[char],
+    start: usize,
+    case_insensitive: bool,
+) -> Option<(GlobAtom, usize)> {
+    let n = chars.len();
+    let mut i = start + 1;
+    if i >= n {
+        return None;
+    }
+
+    let negated = matches!(chars[i], '!' | '^');
+    if negated {
+        i += 1;
+    }
+
+    let mut items = Vec::new();
+    while i < n {
+        if chars[i] == ']' && !items.is_empty() {
+            return Some((GlobAtom::CharClass { negated, items }, i + 1));
+        }
+        let first = if chars[i] == '\\' && i + 1 < n {
+            i += 1;
+            chars[i]
+        } else {
+            chars[i]
+        };
+        let first_folded = fold_glob_char(first, case_insensitive);
+        if i + 2 < n && chars[i + 1] == '-' && chars[i + 2] != ']' {
+            let end_ch = fold_glob_char(chars[i + 2], case_insensitive);
+            let (lo, hi) = if first_folded <= end_ch {
+                (first_folded, end_ch)
+            } else {
+                (end_ch, first_folded)
+            };
+            items.push(CharClassItem::Range(lo, hi));
+            i += 3;
+        } else {
+            items.push(CharClassItem::Single(first_folded));
+            i += 1;
+        }
+    }
+    None
+}
+
+fn char_class_matches(negated: bool, items: &[CharClassItem], ch: char) -> bool {
+    let hit = items.iter().any(|item| match *item {
+        CharClassItem::Single(c) => ch == c,
+        CharClassItem::Range(lo, hi) => (lo..=hi).contains(&ch),
+    });
+    if negated {
+        !hit
+    } else {
+        hit
+    }
+}
+
+fn glob_match_atoms_dp(atoms: &[GlobAtom], text: &str, case_insensitive: bool) -> bool {
+    let t: Vec<char> = text
+        .chars()
+        .map(|c| fold_glob_char(c, case_insensitive))
+        .collect();
+    let tn = t.len();
+
+    let mut prev = vec![false; tn + 1];
+    let mut curr = vec![false; tn + 1];
+    prev[0] = true;
+
+    for atom in atoms {
+        curr.fill(false);
+        match atom {
+            GlobAtom::DoubleStarSlash => {
+                // Matches 0 directories (`prev[j]`) OR 1+ directory prefixes ending at `'/'`
+                curr[0] = prev[0];
+                let mut seen_prev = prev[0];
+                for j in 1..=tn {
+                    curr[j] = prev[j] || (t[j - 1] == '/' && seen_prev);
+                    seen_prev |= prev[j];
+                }
+            }
+            GlobAtom::DoubleStar => {
+                curr[0] = prev[0];
+                for j in 1..=tn {
+                    curr[j] = prev[j] || curr[j - 1];
+                }
+            }
+            GlobAtom::SingleStar => {
+                curr[0] = prev[0];
+                for j in 1..=tn {
+                    curr[j] = prev[j] || (t[j - 1] != '/' && curr[j - 1]);
+                }
+            }
+            GlobAtom::AnySingle => {
+                for j in 1..=tn {
+                    curr[j] = t[j - 1] != '/' && prev[j - 1];
+                }
+            }
+            GlobAtom::CharClass { negated, items } => {
+                for j in 1..=tn {
+                    curr[j] = t[j - 1] != '/'
+                        && char_class_matches(*negated, items, t[j - 1])
+                        && prev[j - 1];
+                }
+            }
+            GlobAtom::Literal(lit) => {
+                for j in 1..=tn {
+                    curr[j] = t[j - 1] == *lit && prev[j - 1];
+                }
+            }
+        }
+        std::mem::swap(&mut prev, &mut curr);
+    }
+
+    prev[tn]
+}
+
+/// Exact-case $O(|P| \cdot |T|)$ DP path glob matcher (`O(|T|)` memory, zero regexes) supporting:
+/// `*` (single path segment), `**` / `**/` (cross-segment), `?`, `[...]` character classes,
+/// and `{a,b}` brace alternations.
+#[must_use]
+pub fn glob_match_dp(pattern: &str, text: &str) -> bool {
+    let norm_pat = pattern.replace('\\', "/");
+    let norm_text = text.replace('\\', "/");
+    expand_glob_braces(&norm_pat)
+        .iter()
+        .any(|variant| glob_match_atoms_dp(&parse_glob_atoms(variant, false), &norm_text, false))
+}
+
+/// Case-insensitive $O(|P| \cdot |T|)$ DP path glob matcher (`O(|T|)` memory, zero regexes)
+/// supporting `*`, `**`, `**/`, `?`, `[...]` character classes, and `{a,b}` brace alternations.
+#[must_use]
+pub fn glob_match_case_insensitive(pattern: &str, text: &str) -> bool {
+    let norm_pat = pattern.replace('\\', "/");
+    let norm_text = text.replace('\\', "/");
+    expand_glob_braces(&norm_pat)
+        .iter()
+        .any(|variant| glob_match_atoms_dp(&parse_glob_atoms(variant, true), &norm_text, true))
+}
+
 /// Computes the Levenshtein edit distance between two strings using a single-row $O(\min(N, M))$ buffer.
 #[must_use]
 pub fn levenshtein_distance(a: &str, b: &str) -> usize {
@@ -579,5 +968,56 @@ mod tests {
             "Create a premium, modern landing page for minicode…"
         );
         assert_eq!(truncate_words("Short headline", 57), "Short headline");
+    }
+
+    #[test]
+    fn test_shared_stopwords_are_strictly_sorted() {
+        assert!(
+            SHARED_CONTENT_STOPWORDS.windows(2).all(|w| w[0] < w[1]),
+            "SHARED_CONTENT_STOPWORDS must remain strictly sorted for binary_search"
+        );
+        assert!(is_content_stopword("return"));
+        assert!(!is_content_stopword("tokenizer"));
+    }
+
+    #[test]
+    fn test_tokenize_identifier_content_terms_modes() {
+        let unique = tokenize_identifier_content_terms(
+            "parseHTTPResponse and parse_http_response for the user",
+            3,
+            false,
+            true,
+        );
+        assert_eq!(unique, vec!["parse", "http", "response", "user"]);
+
+        let stemmed_tf =
+            tokenize_identifier_content_terms("validateTokens validating token", 2, true, false);
+        assert!(stemmed_tf.len() >= 3);
+        assert!(stemmed_tf.iter().filter(|t| t.as_str() == "token").count() >= 2);
+    }
+
+    #[test]
+    fn test_glob_match_dp_and_brace_char_class_semantics() {
+        assert!(glob_match_case_insensitive(
+            "**/*.{tsx,jsx,ts,js,css}",
+            "src/components/App.tsx"
+        ));
+        assert!(glob_match_case_insensitive(
+            "**/*.{tsx,jsx,ts,js,css}",
+            "index.css"
+        ));
+        assert!(!glob_match_case_insensitive(
+            "**/*.{tsx,jsx,ts,js,css}",
+            "Cargo.toml"
+        ));
+        assert!(glob_match_case_insensitive("*.{rs,toml}", "Cargo.TOML"));
+        assert!(glob_match_dp("src/**/mod.rs", "src/mod.rs"));
+        assert!(glob_match_dp("src/**/mod.rs", "src/a/b/mod.rs"));
+        assert!(!glob_match_dp("src/*.rs", "src/a/mod.rs"));
+        assert!(glob_match_dp("src/*.rs", "src/mod.rs"));
+        assert!(glob_match_dp("file_[0-9].rs", "file_7.rs"));
+        assert!(!glob_match_dp("file_[!0-9].rs", "file_7.rs"));
+        assert!(glob_match_dp("{src,tests}/**/*.{rs,md}", "tests/unit/a.rs"));
+        assert!(!glob_match_dp("{src,tests}/**/*.{rs,md}", "docs/a.rs"));
     }
 }

@@ -411,50 +411,9 @@ struct StructuralBlock {
     text: String,
 }
 
-/// Tokenizes code or natural-language queries with camelCase/PascalCase + snake_case splitting
-/// and morphological stemming (zero regexes).
+/// Tokenizes code or natural-language queries via the shared camelCase/snake_case stemming tokenizer.
 fn tokenize_bulk_query_terms(text: &str) -> Vec<String> {
-    const STOPWORDS: &[&str] = &[
-        "the", "and", "for", "with", "from", "into", "that", "this", "these", "those", "are",
-        "was", "were", "has", "have", "had", "will", "can", "all", "any", "how", "what", "where",
-        "when", "why", "does", "use", "using", "pub", "let", "const", "var", "mut", "self",
-        "return", "true", "false", "none", "some",
-    ];
-    let mut out = Vec::new();
-    for raw in text.split(|c: char| !c.is_ascii_alphanumeric()) {
-        if raw.is_empty() {
-            continue;
-        }
-        let chars: Vec<char> = raw.chars().collect();
-        let mut word = String::new();
-        for (i, &ch) in chars.iter().enumerate() {
-            let split_here = i > 0
-                && ch.is_ascii_uppercase()
-                && (chars[i - 1].is_ascii_lowercase()
-                    || chars.get(i + 1).is_some_and(|n| n.is_ascii_lowercase()));
-            if split_here && !word.is_empty() {
-                push_stemmed_term(&word, STOPWORDS, &mut out);
-                word.clear();
-            }
-            word.push(ch.to_ascii_lowercase());
-        }
-        if !word.is_empty() {
-            push_stemmed_term(&word, STOPWORDS, &mut out);
-        }
-    }
-    out
-}
-
-fn push_stemmed_term(word: &str, stopwords: &[&str], out: &mut Vec<String>) {
-    if word.len() < 2 || stopwords.contains(&word) {
-        return;
-    }
-    let stem = crate::vault::models::VaultSkill::normalize_stem(word);
-    if stem.len() >= 2 && !stopwords.contains(&stem) {
-        out.push(stem.to_string());
-    } else {
-        out.push(word.to_string());
-    }
+    crate::utils::strings::tokenize_identifier_content_terms(text, 2, true, false)
 }
 
 /// Partitions a source or Markdown file along structural boundaries (Tree-sitter AST declarations,

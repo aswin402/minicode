@@ -25,6 +25,14 @@ pub const TOOL_ALIASES: &[(&str, &str)] = &[
     ("spawn_subagent", "delegate_task"),
     ("subagent_transcript_drilldown", "manage_subagents"),
     ("view_outline", "look_at"),
+    ("check_architecture", "audit_architecture"),
+    ("impact_analysis", "code_impact"),
+    ("graph_visualize", "code_trace"),
+    ("semantic_code_search", "hybrid_search"),
+    ("create_pr", "github_pr_create"),
+    ("create_skill", "vault_create"),
+    ("list_skills", "vault_search"),
+    ("inspect_skill", "vault_show"),
 ];
 
 /// Tools that spawn subagents, swarms, or DAG workers (delegated LLM execution).
@@ -67,59 +75,32 @@ pub const NON_WORKSPACE_MUTATIONS: &[&str] = &[
     "activate_tools",
 ];
 
-/// Declarative UI display title table mapping tool identifiers (and legacy aliases) to concise
-/// human-readable badge labels. Tools not listed fall back to `Title Case` split on `_`.
+/// Declarative UI display title overrides for tools/aliases whose human badge differs from
+/// automatic `snake_case -> Title Case` formatting (and `kit_*`/`onpkg_*` -> `MiniKit ...`).
 pub const DISPLAY_TITLE_RULES: &[(&[&str], &str)] = &[
     (&["exec_cmd", "bash", "run_command", "shell", "cmd"], "Bash"),
-    (&["read_file", "cat", "view_file"], "Read File"),
-    (&["batch_read"], "Batch Read"),
-    (&["look_at", "view_outline"], "Look At"),
-    (&["write_file", "create_file"], "Write File"),
+    (&["cat", "view_file"], "Read File"),
+    (&["view_outline"], "Look At"),
+    (&["create_file"], "Write File"),
     (
         &["patch_file", "edit_file", "replace_file_content"],
         "Edit File",
     ),
     (&["list_directory", "list_dir", "ls"], "List Dir"),
-    (&["grep_search", "search_code", "grep"], "Grep Search"),
+    (&["search_code", "grep"], "Grep Search"),
     (
         &["find_files", "find_by_name", "locate_files", "file_search"],
         "Find Files",
     ),
-    (&["file_info", "stat_file"], "File Info"),
+    (&["stat_file"], "File Info"),
     (&["make_directory", "mkdir"], "Make Dir"),
-    (&["remove_file", "rm"], "Remove File"),
+    (&["rm"], "Remove File"),
     (&["webfetch"], "Web Fetch"),
     (&["web_search", "search_web"], "Web Search"),
-    (&["git_status"], "Git Status"),
-    (&["git_diff"], "Git Diff"),
-    (&["git_commit"], "Git Commit"),
-    (&["git_log"], "Git Log"),
-    (&["git_branch"], "Git Branch"),
-    (&["code_graph", "symbol_graph"], "Code Graph"),
-    (&["semantic_search"], "Semantic Search"),
+    (&["symbol_graph"], "Code Graph"),
     (
         &["explore_symbol", "symbol_definition", "locate_symbol"],
         "Explore Symbol",
-    ),
-    (&["blast_radius"], "Blast Radius"),
-    (&["kit_doctor", "onpkg_doctor"], "MiniKit Doctor"),
-    (
-        &["kit_stack_list", "onpkg_stack_list"],
-        "MiniKit Stack List",
-    ),
-    (&["kit_stack_add", "onpkg_stack_add"], "MiniKit Stack Add"),
-    (&["kit_stack_new", "onpkg_stack_new"], "MiniKit Stack New"),
-    (
-        &["kit_stack_remove", "onpkg_stack_remove"],
-        "MiniKit Stack Remove",
-    ),
-    (
-        &["kit_stack_diff", "onpkg_stack_diff"],
-        "MiniKit Stack Diff",
-    ),
-    (
-        &["kit_skill_remove", "onpkg_skill_remove"],
-        "MiniKit Skill Remove",
     ),
     (
         &["kit_info", "kit_pkg_info", "onpkg_pkg_info"],
@@ -135,10 +116,6 @@ pub const DISPLAY_TITLE_RULES: &[(&[&str], &str)] = &[
     ),
     (&["spawn_subagent", "delegate_task"], "Spawn Subagent"),
     (&["send_subagent_message"], "Message Subagent"),
-    (&["begin_transaction"], "Begin Transaction"),
-    (&["commit_transaction"], "Commit Transaction"),
-    (&["rollback_transaction"], "Rollback Transaction"),
-    (&["project_brain"], "Project Brain"),
 ];
 
 /// Bitflags describing the cross-cutting behavioral semantics of a tool.
@@ -282,17 +259,8 @@ pub fn invalidates_local_reads(name: &str) -> bool {
     !crate::tools::concurrency::classify_tool(canonical_name(name)).is_read_only()
 }
 
-/// Formats an internal tool identifier into a human-readable UI badge title using the
-/// declarative [`DISPLAY_TITLE_RULES`] table, falling back to Title Case on `_` boundaries.
-#[must_use]
-pub fn format_display_title(raw_name: &str) -> String {
-    for (names, title) in DISPLAY_TITLE_RULES {
-        if names.contains(&raw_name) {
-            return (*title).to_string();
-        }
-    }
-    raw_name
-        .split('_')
+fn title_case_snake(name: &str) -> String {
+    name.split('_')
         .map(|word| {
             let mut chars = word.chars();
             match chars.next() {
@@ -302,6 +270,25 @@ pub fn format_display_title(raw_name: &str) -> String {
         })
         .collect::<Vec<_>>()
         .join(" ")
+}
+
+/// Formats an internal tool identifier into a human-readable UI badge title using the
+/// declarative [`DISPLAY_TITLE_RULES`] overrides, automatic `kit_*`/`onpkg_*` MiniKit branding,
+/// and Title Case fallback on `_` boundaries.
+#[must_use]
+pub fn format_display_title(raw_name: &str) -> String {
+    for (names, title) in DISPLAY_TITLE_RULES {
+        if names.contains(&raw_name) {
+            return (*title).to_string();
+        }
+    }
+    if let Some(rest) = raw_name
+        .strip_prefix("kit_")
+        .or_else(|| raw_name.strip_prefix("onpkg_"))
+    {
+        return format!("MiniKit {}", title_case_snake(rest));
+    }
+    title_case_snake(raw_name)
 }
 
 /// Lazily built map of every registered built-in tool name to its owning category.
@@ -384,6 +371,9 @@ mod tests {
         assert!(!invalidates_local_reads("create_plan"));
         assert!(invalidates_local_reads("patch_file"));
         assert_eq!(format_display_title("exec_cmd"), "Bash");
+        assert_eq!(format_display_title("git_status"), "Git Status");
+        assert_eq!(format_display_title("kit_stack_add"), "MiniKit Stack Add");
+        assert_eq!(format_display_title("kit_add"), "MiniKit Package Add");
         assert_eq!(format_display_title("custom_tool_xyz"), "Custom Tool Xyz");
     }
 
@@ -426,6 +416,15 @@ mod tests {
         assert!(is_delegation("spawn_agent"));
         assert!(!is_delegation("minitask"));
         assert!(requires_strict_approval("bash"));
+        assert!(requires_strict_approval("create_pr"));
+        assert_eq!(canonical_name("check_architecture"), "audit_architecture");
+        assert_eq!(canonical_name("impact_analysis"), "code_impact");
+        assert_eq!(canonical_name("graph_visualize"), "code_trace");
+        assert_eq!(canonical_name("semantic_code_search"), "hybrid_search");
+        assert_eq!(canonical_name("create_pr"), "github_pr_create");
+        assert_eq!(canonical_name("create_skill"), "vault_create");
+        assert_eq!(canonical_name("list_skills"), "vault_search");
+        assert_eq!(canonical_name("inspect_skill"), "vault_show");
         assert_eq!(category_of("view_file"), Some(ToolCategory::Files));
     }
 }

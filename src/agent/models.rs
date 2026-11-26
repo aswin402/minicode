@@ -408,6 +408,8 @@ static MODELS_DEV_CONTEXT_MAP: std::sync::OnceLock<std::sync::RwLock<HashMap<Str
     std::sync::OnceLock::new();
 static MODELS_DEV_OUTPUT_MAP: std::sync::OnceLock<std::sync::RwLock<HashMap<String, usize>>> =
     std::sync::OnceLock::new();
+static MODELS_DEV_PRICING_MAP: std::sync::OnceLock<std::sync::RwLock<HashMap<String, (f64, f64)>>> =
+    std::sync::OnceLock::new();
 static DISK_MODELS_CACHE: std::sync::OnceLock<std::sync::RwLock<Option<ModelsCache>>> =
     std::sync::OnceLock::new();
 
@@ -427,35 +429,71 @@ fn models_dev_output_lock() -> &'static std::sync::RwLock<HashMap<String, usize>
     MODELS_DEV_OUTPUT_MAP.get_or_init(|| std::sync::RwLock::new(HashMap::new()))
 }
 
+fn models_dev_pricing_lock() -> &'static std::sync::RwLock<HashMap<String, (f64, f64)>> {
+    MODELS_DEV_PRICING_MAP.get_or_init(|| std::sync::RwLock::new(HashMap::new()))
+}
+
 fn lookup_in_models_dev_map(
     lock: &std::sync::RwLock<HashMap<String, usize>>,
     model: &str,
 ) -> Option<usize> {
+    lookup_in_models_dev_generic(lock, model, |val| val > 0)
+}
+
+fn lookup_in_models_dev_generic<T: Copy>(
+    lock: &std::sync::RwLock<HashMap<String, T>>,
+    model: &str,
+    is_valid: impl Fn(T) -> bool,
+) -> Option<T> {
     let lower = model.trim().to_lowercase();
     if lower.is_empty() {
         return None;
     }
     let guard = lock.read().ok()?;
-    if let Some(&val) = guard.get(&lower) {
-        if val > 0 {
-            return Some(val);
-        }
-    }
-    if let Some((_, short)) = lower.rsplit_once('/') {
-        if let Some(&val) = guard.get(short) {
-            if val > 0 {
-                return Some(val);
-            }
-        }
-    }
-    if let Some((base, _)) = lower.split_once(':') {
-        if let Some(&val) = guard.get(base) {
-            if val > 0 {
+    for candidate in [
+        Some(lower.as_str()),
+        lower.rsplit_once('/').map(|(_, short)| short),
+        lower.split_once(':').map(|(base, _)| base),
+    ]
+    .into_iter()
+    .flatten()
+    {
+        if let Some(&val) = guard.get(candidate) {
+            if is_valid(val) {
                 return Some(val);
             }
         }
     }
     None
+}
+
+/// Looks up exact `(input_usd_per_1m, output_usd_per_1m)` pricing from the in-memory `models.dev`
+/// catalog index when populated.
+pub fn lookup_models_dev_pricing(model: &str) -> Option<(f64, f64)> {
+    lookup_in_models_dev_generic(models_dev_pricing_lock(), model, |(inp, outp)| {
+        inp.is_finite() && outp.is_finite() && inp >= 0.0 && outp >= 0.0
+    })
+}
+
+/// Caches live `(input_usd_per_1m, output_usd_per_1m)` rates for a model identifier in memory.
+pub fn cache_models_dev_pricing(model: &str, input_usd_per_1m: f64, output_usd_per_1m: f64) {
+    if !input_usd_per_1m.is_finite()
+        || !output_usd_per_1m.is_finite()
+        || input_usd_per_1m < 0.0
+        || output_usd_per_1m < 0.0
+    {
+        return;
+    }
+    let low = model.trim().to_lowercase();
+    if low.is_empty() {
+        return;
+    }
+    if let Ok(mut map) = models_dev_pricing_lock().write() {
+        map.insert(low.clone(), (input_usd_per_1m, output_usd_per_1m));
+        if let Some((_, short)) = low.rsplit_once('/') {
+            map.insert(short.to_string(), (input_usd_per_1m, output_usd_per_1m));
+        }
+    }
 }
 
 /// Looks up exact output token limit from the in-memory `models.dev` catalog index if populated.
@@ -585,70 +623,91 @@ pub fn get_model_context_limit(model: &str) -> usize {
         || lower.contains("jan")
         || tagged_params_b.is_some();
 
-    if lower.contains("gemini-1.5-pro") || lower.contains("2m") {
-        crate::constants::CONTEXT_WINDOW_2M
-    } else if lower.contains("gemini-2")
-        || lower.contains("gemini-1.5")
-        || lower.contains("1m")
-        || lower.contains("minimax-text-01")
+    const HIGH_CONTEXT_RULES: &[(&[&str], usize)] = &[
+        (
+            &["gemini-1.5-pro", "2m"],
+            crate::constants::CONTEXT_WINDOW_2M,
+        ),
+        (
+            &["gemini-2", "gemini-1.5", "1m", "minimax-text-01"],
+            crate::constants::CONTEXT_WINDOW_1M,
+        ),
+        (
+            &[
+                "claude-3-7",
+                "claude-3-5",
+                "claude-3",
+                "sonnet",
+                "opus",
+                "codestral",
+                "mistral-large",
+            ],
+            crate::constants::CONTEXT_WINDOW_200K,
+        ),
+    ];
+
+    if let Some((_, limit)) = HIGH_CONTEXT_RULES
+        .iter()
+        .find(|(patterns, _)| patterns.iter().any(|p| lower.contains(p)))
     {
-        crate::constants::CONTEXT_WINDOW_1M
-    } else if lower.contains("claude-3-7")
-        || lower.contains("claude-3-5")
-        || lower.contains("claude-3")
-        || lower.contains("sonnet")
-        || lower.contains("opus")
-        || lower.contains("codestral")
-        || lower.contains("mistral-large")
-    {
-        crate::constants::CONTEXT_WINDOW_200K
-    } else if is_local_provider {
+        return *limit;
+    }
+
+    if is_local_provider {
+        const PARAM_BILLIONS_CONTEXT_SCALE: &[(f64, usize)] = &[
+            (65.0, crate::constants::CONTEXT_WINDOW_64K),
+            (24.0, crate::constants::CONTEXT_WINDOW_32K),
+            (6.0, crate::constants::CONTEXT_WINDOW_16K),
+        ];
         if let Some(b) = tagged_params_b {
-            if b >= 65.0 {
-                crate::constants::CONTEXT_WINDOW_64K
-            } else if b >= 24.0 {
-                crate::constants::CONTEXT_WINDOW_32K
-            } else if b >= 6.0 {
-                crate::constants::CONTEXT_WINDOW_16K
-            } else {
-                crate::constants::CONTEXT_WINDOW_8K
-            }
-        } else if lower.contains("qwen-2.5")
-            || lower.contains("qwen2.5")
-            || lower.contains("llama-3.3")
-            || lower.contains("llama-3.1")
+            return PARAM_BILLIONS_CONTEXT_SCALE
+                .iter()
+                .find(|(min_b, _)| b >= *min_b)
+                .map_or(crate::constants::CONTEXT_WINDOW_8K, |(_, limit)| *limit);
+        }
+        const LOCAL_LONG_CONTEXT_FAMILIES: &[&str] =
+            &["qwen-2.5", "qwen2.5", "llama-3.3", "llama-3.1"];
+        return if LOCAL_LONG_CONTEXT_FAMILIES
+            .iter()
+            .any(|p| lower.contains(p))
         {
             crate::constants::CONTEXT_WINDOW_32K
         } else {
             crate::constants::CONTEXT_WINDOW_8K
-        }
-    } else if lower.contains("gpt-4o")
-        || lower.contains("gpt-4.1")
-        || lower.contains("o1")
-        || lower.contains("o3")
-        || lower.contains("o4")
-        || lower.contains("glm")
-        || lower.contains("z.ai")
-        || lower.contains("zhipu")
-        || lower.contains("deepseek")
-        || lower.contains("qwen-2.5")
-        || lower.contains("qwen2.5")
-        || lower.contains("llama-3.1")
-        || lower.contains("llama-3.2")
-        || lower.contains("llama-3.3")
-    {
-        crate::constants::CONTEXT_WINDOW_128K
-    } else if lower.contains("qwen")
-        || lower.contains("liquid")
-        || lower.contains("lfm")
-        || lower.contains("north")
-    {
-        crate::constants::CONTEXT_WINDOW_64K
-    } else if lower.contains("gemma") || lower.contains("llama-3") {
-        crate::constants::CONTEXT_WINDOW_8K
-    } else {
-        crate::constants::CONTEXT_WINDOW_128K
+        };
     }
+
+    const CLOUD_FAMILY_CONTEXT_RULES: &[(&[&str], usize)] = &[
+        (
+            &[
+                "gpt-4o",
+                "gpt-4.1",
+                "o1",
+                "o3",
+                "o4",
+                "glm",
+                "z.ai",
+                "zhipu",
+                "deepseek",
+                "qwen-2.5",
+                "qwen2.5",
+                "llama-3.1",
+                "llama-3.2",
+                "llama-3.3",
+            ],
+            crate::constants::CONTEXT_WINDOW_128K,
+        ),
+        (
+            &["qwen", "liquid", "lfm", "north"],
+            crate::constants::CONTEXT_WINDOW_64K,
+        ),
+        (&["gemma", "llama-3"], crate::constants::CONTEXT_WINDOW_8K),
+    ];
+
+    CLOUD_FAMILY_CONTEXT_RULES
+        .iter()
+        .find(|(patterns, _)| patterns.iter().any(|p| lower.contains(p)))
+        .map_or(crate::constants::CONTEXT_WINDOW_128K, |(_, limit)| *limit)
 }
 
 const MODELS_CACHE_SCHEMA_VERSION: u32 = 2;
@@ -1216,10 +1275,11 @@ impl ModelFetcher {
         let body: serde_json::Value = resp.json().await?;
         let mut provider_map: HashMap<String, Vec<ModelInfo>> = HashMap::new();
 
-        // Populate global context-length, output-limit, and compact ModelInfo maps in a single pass
+        // Populate global context-length, output-limit, pricing, and compact ModelInfo maps in a single pass
         if let Some(root_obj) = body.as_object() {
             let mut out_guard = models_dev_output_lock().write().ok();
             let mut ctx_guard = models_dev_context_lock().write().ok();
+            let mut pricing_guard = models_dev_pricing_lock().write().ok();
 
             for (prov_key, prov_val) in root_obj {
                 let Some(models_obj) = prov_val.get("models").and_then(|m| m.as_object()) else {
@@ -1265,6 +1325,27 @@ impl ModelFetcher {
                         }
                     }
 
+                    let cost_obj = model_val.get("cost");
+                    let cost_input = cost_obj
+                        .and_then(|c| c.get("input"))
+                        .and_then(|i| i.as_f64())
+                        .filter(|v| v.is_finite() && *v >= 0.0);
+                    let cost_output = cost_obj
+                        .and_then(|c| c.get("output"))
+                        .and_then(|o| o.as_f64())
+                        .filter(|v| v.is_finite() && *v >= 0.0);
+
+                    if let (Some(ref mut pricing_map), Some(inp), Some(outp)) =
+                        (&mut pricing_guard, cost_input, cost_output)
+                    {
+                        let qualified = format!("{}/{}", prov_key.to_lowercase(), low);
+                        pricing_map.entry(qualified).or_insert((inp, outp));
+                        pricing_map.entry(low.clone()).or_insert((inp, outp));
+                        if let Some((_, short)) = low.rsplit_once('/') {
+                            pricing_map.entry(short.to_string()).or_insert((inp, outp));
+                        }
+                    }
+
                     if is_non_chat_utility_model(&low) {
                         continue;
                     }
@@ -1286,12 +1367,7 @@ impl ModelFetcher {
                         .unwrap_or(id)
                         .to_string();
                     let context_length = ctx_opt.or_else(|| parse_context_window_from_name(id));
-                    let is_free = low.contains("free")
-                        || model_val
-                            .get("cost")
-                            .and_then(|c| c.get("input"))
-                            .and_then(|i| i.as_f64())
-                            == Some(0.0);
+                    let is_free = low.contains("free") || cost_input == Some(0.0);
 
                     prov_models.push(ModelInfo {
                         id: id.to_string(),

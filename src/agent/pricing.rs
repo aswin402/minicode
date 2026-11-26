@@ -1,37 +1,54 @@
-/// Dynamic pricing and dollar spend calculator for AI model token consumption
+/// Dynamic pricing and dollar spend calculator for AI model token consumption.
 pub struct ModelPricing;
+
+/// Local/free provider prefixes whose token spend is always `$0.00`.
+const FREE_PROVIDER_MARKERS: &[&str] = &["ollama", "local", "lmstudio", "vllm", "llama.cpp"];
+
+/// Offline fallback `(input_usd_per_1m, output_usd_per_1m)` table consulted only when live
+/// `models.dev` catalog pricing is not yet populated in memory.
+const FALLBACK_PRICING_RULES: &[(&[&str], (f64, f64))] = &[
+    (&["claude-3-5-haiku", "haiku"], (0.80, 4.00)),
+    (&["claude"], (3.00, 15.00)),
+    (&["gpt-4o-mini", "-mini"], (0.15, 0.60)),
+    (&["gpt-4o"], (2.50, 10.00)),
+    (&["o3-mini", "o1"], (1.10, 4.40)),
+    (
+        &["gemini-2.5-flash", "gemini-2.0-flash", "flash"],
+        (0.10, 0.40),
+    ),
+    (&["gemini"], (1.25, 5.00)),
+    (&["deepseek"], (0.14, 0.28)),
+];
+
+const DEFAULT_FALLBACK_RATE: (f64, f64) = (1.00, 3.00);
 
 impl ModelPricing {
     /// Returns estimated `(input_usd_per_1m, output_usd_per_1m)` token rates for a provider/model pair.
+    /// Queries live `models.dev` catalog pricing first, falling back to `FALLBACK_PRICING_RULES` offline.
     pub fn input_output_rates(provider: &str, model: &str) -> (f64, f64) {
-        let prov_lower = provider.to_lowercase();
-        let model_lower = model.to_lowercase();
+        let prov_lower = provider.trim().to_lowercase();
+        let model_lower = model.trim().to_lowercase();
 
-        if prov_lower.contains("ollama") || prov_lower.contains("local") {
-            (0.0, 0.0)
-        } else if model_lower.contains("claude-3-5-haiku") || model_lower.contains("haiku") {
-            (0.80, 4.00)
-        } else if model_lower.contains("claude") {
-            (3.00, 15.00)
-        } else if model_lower.contains("gpt-4o-mini") || model_lower.contains("-mini") {
-            (0.15, 0.60)
-        } else if model_lower.contains("gpt-4o") {
-            (2.50, 10.00)
-        } else if model_lower.contains("o3-mini") || model_lower.contains("o1") {
-            (1.10, 4.40)
-        } else if model_lower.contains("gemini-2.5-flash")
-            || model_lower.contains("gemini-2.0-flash")
-            || model_lower.contains("flash")
+        if FREE_PROVIDER_MARKERS.iter().any(|p| prov_lower.contains(p))
+            || model_lower.ends_with(":free")
         {
-            (0.10, 0.40)
-        } else if model_lower.contains("gemini") {
-            (1.25, 5.00)
-        } else if model_lower.contains("deepseek") {
-            (0.14, 0.28)
-        } else {
-            // Default conservative fallback rate
-            (1.00, 3.00)
+            return (0.0, 0.0);
         }
+
+        if !prov_lower.is_empty() {
+            let qualified = format!("{prov_lower}/{model_lower}");
+            if let Some(rates) = crate::agent::models::lookup_models_dev_pricing(&qualified) {
+                return rates;
+            }
+        }
+        if let Some(rates) = crate::agent::models::lookup_models_dev_pricing(&model_lower) {
+            return rates;
+        }
+
+        FALLBACK_PRICING_RULES
+            .iter()
+            .find(|(patterns, _)| patterns.iter().any(|p| model_lower.contains(p)))
+            .map_or(DEFAULT_FALLBACK_RATE, |(_, rates)| *rates)
     }
 
     /// Computes estimated dollar cost given provider, model, and token metrics
@@ -94,5 +111,13 @@ mod tests {
         // (10_000 / 1M) * 0.10 + (2_000 / 1M) * 0.40 = 0.001 + 0.0008 = 0.0018
         assert!((cost - 0.0018).abs() < 0.0001);
         assert_eq!(ModelPricing::format_cost(cost), "$0.0018");
+    }
+
+    #[test]
+    fn test_live_models_dev_pricing_overrides_static_fallback() {
+        crate::agent::models::cache_models_dev_pricing("custom-vendor/future-model-9", 0.42, 1.68);
+        let rates = ModelPricing::input_output_rates("custom-vendor", "future-model-9");
+        assert!((rates.0 - 0.42).abs() < 1e-6);
+        assert!((rates.1 - 1.68).abs() < 1e-6);
     }
 }

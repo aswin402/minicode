@@ -108,6 +108,10 @@ pub fn get_schemas() -> Vec<ToolSchema> {
                     "file_pattern": {
                         "type": "string",
                         "description": "Optional glob filter for file names or paths (e.g. '*.rs', 'src/context/*')"
+                    },
+                    "target_layer": {
+                        "type": "string",
+                        "description": "Optional architectural layer to boost/filter by via two-stage cross-encoder reranking (e.g. 'UI', 'Service', 'Data', 'API')"
                     }
                 },
                 "required": ["query"]
@@ -456,6 +460,20 @@ pub fn dispatch(
             let prefer_symbol = opt_bool(args, "prefer_symbol", true);
             let fts_anchors = opt_string_array(args, "fts").unwrap_or_default();
             let file_pattern = opt_str(args, "file_pattern").or_else(|| opt_str(args, "glob"));
+            let target_layer = opt_str(args, "target_layer");
+
+            if target_layer.is_some() && queries.len() == 1 {
+                let result =
+                    crate::context::reranker::CrossEncoderReranker::search_and_rerank_with_options(
+                        workspace_root,
+                        &queries[0],
+                        limit.clamp(1, 20),
+                        target_layer,
+                        &fts_anchors,
+                        file_pattern,
+                    )?;
+                return Ok(result.format_markdown());
+            }
 
             let mut index = crate::context::hybrid::HybridIndex::new();
             index.build_index(workspace_root)?;

@@ -537,7 +537,7 @@ impl WorkflowRouter {
                         out.push_str(&format!("    • `{}`\n", rel.display()));
                     }
                 }
-                out.push_str("  Directive: Decide when structural graph intelligence helps — on unfamiliar multi-file repos or cross-module refactors, invoke `repo_map`, `locate_symbol`, `impact_analysis`, or `sync_code_graph` (which build/delta-sync per-file AST shards automatically); for localized edits, read/edit directly.\n");
+                out.push_str("  Directive: Decide when structural graph intelligence helps — on unfamiliar multi-file repos or cross-module refactors, invoke `repo_map`, `locate_symbol`, `code_impact`, or `sync_code_graph` (which build/delta-sync per-file AST shards automatically); for localized edits, read/edit directly.\n");
             }
         }
         out.push_str("</workspace_repository_state>");

@@ -76,7 +76,7 @@ impl ToolCategory {
             Self::Git => "Git version control (git_status, git_diff, git_commit, git_push, git_log, git_review)",
             Self::Web => "Web search & browser automation (webfetch, search_web, browser_navigate, browser_screenshot, browser_qa_audit)",
             Self::MiniKit => "MiniKit stack scaffolding, packages & skills (kit_stack_add, kit_add, kit_sync)",
-            Self::Codegraph => "CodeGraph architecture, AST refactoring & blast radius (code_explore, diff_impact, code_impact, ast_refactor, impact_analysis, repo_map)",
+            Self::Codegraph => "CodeGraph architecture, AST refactoring & blast radius (code_explore, diff_impact, code_impact, code_trace, ast_refactor, repo_map)",
             Self::Agent => "Multi-agent coordination & hypotheses (delegate_task, fanout_subagents, execute_task_dag, explore_hypotheses)",
             Self::Memory => "Progressive memory, two-tier planning, Git-tracked Project Brain (BRAIN.md), architecture governance & wiki (create_plan, update_progress, archive_plan, record_decision, project_brain, wiki_write)",
             Self::MiniPower => "MiniPower methodology, verification barrier, SpecKit, MiniDoctor health scanner & worktree tasks (power_brainstorm, power_plan, power_review, power_verify, power_worktree_task, power_speckit, project_doctor)",

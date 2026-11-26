@@ -78,22 +78,22 @@ pub fn get_schemas() -> Vec<ToolSchema> {
         },
         ToolSchema {
             name: "code_trace".to_string(),
-            description: "Trace execution flow and call hierarchy from an entrypoint symbol across the codebase AST dependency graph, rendering an ASCII tree with architectural metrics.".to_string(),
+            description: "Trace execution flow and call hierarchy from an entrypoint symbol or file across the codebase AST dependency graph, rendering ASCII/Unicode call-graph trees or architectural box summaries.".to_string(),
             parameters: json!({
                 "type": "object",
                 "properties": {
                     "entrypoint": {
                         "type": "string",
-                        "description": "Target function, method, or symbol to trace execution flow from"
+                        "description": "Target function, method, symbol, or file path to trace execution flow from (alias: 'target')"
                     },
                     "max_depth": {
                         "type": "integer",
-                        "description": "Maximum depth of call hierarchy to explore (default: 3, max: 5)"
+                        "description": "Maximum depth of call hierarchy to explore (default: 3, max: 6)"
                     },
                     "direction": {
                         "type": "string",
-                        "enum": ["downstream", "upstream", "both"],
-                        "description": "Direction of call graph traversal: 'downstream' (what this calls), 'upstream' (who calls this), or 'both' (default: 'downstream')"
+                        "enum": ["downstream", "upstream", "both", "box"],
+                        "description": "Direction/view mode: 'downstream' (what this calls, default), 'upstream' (who calls this), 'both' (callers + callees), or 'box' (architectural summary card)"
                     }
                 },
                 "required": ["entrypoint"]
@@ -349,12 +349,18 @@ pub async fn dispatch(
             Ok(summary)
         })()),
         "code_trace" => Some((|| {
-            let entrypoint = param::require_str(args, "entrypoint", "code_trace")?;
-            let max_depth = param::opt_usize(args, "max_depth", 3).clamp(1, 5);
-            let direction_str = param::opt_str(args, "direction").unwrap_or("downstream");
+            let entrypoint = param::require_str_with_aliases(
+                args,
+                &["entrypoint", "target", "symbol"],
+                "code_trace",
+            )?;
+            let max_depth = param::opt_usize(args, "max_depth", 3).clamp(1, 6);
+            let direction_str =
+                param::get_str_with_aliases(args, &["direction", "mode"]).unwrap_or("downstream");
             let mode = match direction_str.to_lowercase().as_str() {
                 "upstream" | "callers" => crate::context::graph_visualizer::VisualizeMode::Upstream,
                 "both" | "all" => crate::context::graph_visualizer::VisualizeMode::Both,
+                "box" | "card" => crate::context::graph_visualizer::VisualizeMode::Box,
                 _ => crate::context::graph_visualizer::VisualizeMode::Downstream,
             };
 

@@ -450,45 +450,11 @@ impl ReadAdmissionMiddleware {
             }
             if !after_double_dash && arg.starts_with('-') && arg != "-" {
                 if is_head_or_tail {
-                    if arg == "-n" || arg == "--lines" {
-                        if let Some(val) = tokens.get(i + 1) {
-                            if Self::is_small_line_bound(val) {
-                                is_bounded_small = true;
-                            }
-                            i += 2;
-                            continue;
-                        }
-                    } else if let Some(val) = arg
-                        .strip_prefix("-n")
-                        .or_else(|| arg.strip_prefix("--lines="))
+                    if let Some((small_bound, advance)) =
+                        Self::parse_head_tail_bound(tokens, i, byte_ceiling)
                     {
-                        if Self::is_small_line_bound(val) {
-                            is_bounded_small = true;
-                        }
-                        i += 1;
-                        continue;
-                    } else if arg == "-c" || arg == "--bytes" {
-                        if let Some(val) = tokens.get(i + 1) {
-                            if Self::is_small_byte_bound(val, byte_ceiling) {
-                                is_bounded_small = true;
-                            }
-                            i += 2;
-                            continue;
-                        }
-                    } else if let Some(val) = arg
-                        .strip_prefix("-c")
-                        .or_else(|| arg.strip_prefix("--bytes="))
-                    {
-                        if Self::is_small_byte_bound(val, byte_ceiling) {
-                            is_bounded_small = true;
-                        }
-                        i += 1;
-                        continue;
-                    } else if arg.len() > 1 && arg[1..].chars().all(|c| c.is_ascii_digit()) {
-                        if Self::is_small_line_bound(&arg[1..]) {
-                            is_bounded_small = true;
-                        }
-                        i += 1;
+                        is_bounded_small |= small_bound;
+                        i += advance;
                         continue;
                     }
                 }
@@ -513,6 +479,44 @@ impl ReadAdmissionMiddleware {
         } else {
             Some((bin, is_bounded_small, files))
         }
+    }
+
+    /// Parses a `head`/`tail` line or byte bound flag at `tokens[idx]`, returning
+    /// `Some((is_small_bound, tokens_consumed))`.
+    fn parse_head_tail_bound(
+        tokens: &[String],
+        idx: usize,
+        byte_ceiling: usize,
+    ) -> Option<(bool, usize)> {
+        const BOUND_FLAGS: &[(&str, &str, &str, bool)] = &[
+            ("-n", "--lines", "--lines=", false),
+            ("-c", "--bytes", "--bytes=", true),
+        ];
+
+        let arg = tokens.get(idx)?.as_str();
+        for &(short, long, long_eq, is_bytes) in BOUND_FLAGS {
+            let (raw_val, advance) = if arg == short || arg == long {
+                (tokens.get(idx + 1)?.as_str(), 2)
+            } else if let Some(val) = arg
+                .strip_prefix(short)
+                .or_else(|| arg.strip_prefix(long_eq))
+            {
+                (val, 1)
+            } else {
+                continue;
+            };
+            let is_small = if is_bytes {
+                Self::is_small_byte_bound(raw_val, byte_ceiling)
+            } else {
+                Self::is_small_line_bound(raw_val)
+            };
+            return Some((is_small, advance));
+        }
+
+        if arg.len() > 1 && arg[1..].chars().all(|c| c.is_ascii_digit()) {
+            return Some((Self::is_small_line_bound(&arg[1..]), 1));
+        }
+        None
     }
 
     fn is_small_line_bound(raw: &str) -> bool {

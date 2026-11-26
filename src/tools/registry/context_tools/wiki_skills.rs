@@ -203,55 +203,6 @@ pub fn get_schemas() -> Vec<ToolSchema> {
                 "required": ["action"]
             }),
         },
-        ToolSchema {
-            name: "create_skill".to_string(),
-            description: "Create and hot-load a new specialized skill package in .minicode/skills/<name>/SKILL.md with instructions and allowed tools.".to_string(),
-            parameters: json!({
-                "type": "object",
-                "properties": {
-                    "name": {
-                        "type": "string",
-                        "description": "Skill name identifier (e.g. 'rust-perf', 'db-migration')"
-                    },
-                    "description": {
-                        "type": "string",
-                        "description": "High-level summary of what this skill does"
-                    },
-                    "instructions": {
-                        "type": "string",
-                        "description": "Detailed multi-step markdown instructions, rules, and examples"
-                    },
-                    "allowed_tools": {
-                        "type": "array",
-                        "items": { "type": "string" },
-                        "description": "Optional list of tool names this skill leverages"
-                    }
-                },
-                "required": ["name", "description", "instructions"]
-            }),
-        },
-        ToolSchema {
-            name: "list_skills".to_string(),
-            description: "List all discovered skills across workspace and user skill directories.".to_string(),
-            parameters: json!({
-                "type": "object",
-                "properties": {}
-            }),
-        },
-        ToolSchema {
-            name: "inspect_skill".to_string(),
-            description: "Inspect and read full markdown instructions and execution rules for a specific skill by name.".to_string(),
-            parameters: json!({
-                "type": "object",
-                "properties": {
-                    "name": {
-                        "type": "string",
-                        "description": "Name of the skill to inspect"
-                    }
-                },
-                "required": ["name"]
-            }),
-        },
     ]
 }
 

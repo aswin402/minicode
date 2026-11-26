@@ -620,55 +620,9 @@ impl CodeOwnersMatcher {
         }
     }
 
-    /// $O(|P| \cdot |T|)$ dynamic-programming path glob matcher supporting `*` (single segment),
-    /// `**` (cross-segment), and `?` (single non-`/` char) without regexes or exponential backtracking.
+    /// Delegates to the shared zero-regex $O(|P| \cdot |T|)$ DP path glob matcher.
     fn glob_match_dp(pattern: &str, text: &str) -> bool {
-        let p: Vec<char> = pattern.chars().collect();
-        let t: Vec<char> = text.chars().collect();
-        let pn = p.len();
-        let tn = t.len();
-
-        let mut dp = vec![vec![false; tn + 1]; pn + 1];
-        dp[0][0] = true;
-
-        for i in 1..=pn {
-            if p[i - 1] == '*' {
-                dp[i][0] = dp[i - 1][0];
-            } else if i >= 3 && p[i - 1] == '/' && p[i - 2] == '*' && p[i - 3] == '*' {
-                // Leading `**/` can match zero directory prefixes
-                dp[i][0] = dp[i - 3][0];
-            }
-        }
-
-        for i in 1..=pn {
-            let is_double_star =
-                p[i - 1] == '*' && ((i >= 2 && p[i - 2] == '*') || (i < pn && p[i] == '*'));
-            for j in 1..=tn {
-                if p[i - 1] == '*' {
-                    // Zero characters matched OR consume current char (crossing `/` only for `**`)
-                    let zero = dp[i - 1][j];
-                    let more = if is_double_star || t[j - 1] != '/' {
-                        dp[i][j - 1]
-                    } else {
-                        false
-                    };
-                    dp[i][j] = zero || more;
-                } else if p[i - 1] == '?' {
-                    dp[i][j] = t[j - 1] != '/' && dp[i - 1][j - 1];
-                } else {
-                    let exact = p[i - 1] == t[j - 1] && dp[i - 1][j - 1];
-                    // Allow `**/` to match empty directory prefix mid-pattern
-                    let skip_globstar_slash = i >= 3
-                        && p[i - 1] == '/'
-                        && p[i - 2] == '*'
-                        && p[i - 3] == '*'
-                        && dp[i - 3][j];
-                    dp[i][j] = exact || skip_globstar_slash;
-                }
-            }
-        }
-
-        dp[pn][tn]
+        crate::utils::strings::glob_match_dp(pattern, text)
     }
 }
 

@@ -7,20 +7,6 @@ use std::path::Path;
 pub fn get_schemas() -> Vec<ToolSchema> {
     vec![
         ToolSchema {
-            name: "impact_analysis".to_string(),
-            description: "Analyze the architectural blast radius and downstream dependencies of modifying a symbol or file.".to_string(),
-            parameters: json!({
-                "type": "object",
-                "properties": {
-                    "target": {
-                        "type": "string",
-                        "description": "Symbol name (e.g. 'verify_token') or relative file path (e.g. 'src/auth.rs') to analyze"
-                    }
-                },
-                "required": ["target"]
-            }),
-        },
-        ToolSchema {
             name: "repo_map".to_string(),
             description: "Generate a compact AST repository skeleton map of symbols ranked by PageRank importance, automatically indexing or incrementally syncing per-file AST shards on unindexed or multi-file projects (pass mode='reuse' for a lean 1-line-per-directory reusable symbol map).".to_string(),
             parameters: json!({
@@ -36,29 +22,6 @@ pub fn get_schemas() -> Vec<ToolSchema> {
                         "description": "Maximum tokens to spend on repomap output (default: 1024)"
                     }
                 }
-            }),
-        },
-        ToolSchema {
-            name: "graph_visualize".to_string(),
-            description: "Render visual ASCII and Unicode call-graph trees, upstream callers, downstream callees, and architectural box summaries for a symbol or file.".to_string(),
-            parameters: json!({
-                "type": "object",
-                "properties": {
-                    "target": {
-                        "type": "string",
-                        "description": "Symbol name (e.g. 'CodeGraph', 'execute_turn') or file path (e.g. 'src/agent/loop.rs')"
-                    },
-                    "mode": {
-                        "type": "string",
-                        "enum": ["both", "upstream", "downstream", "box"],
-                        "description": "Visualization mode: 'both' (callers + callees), 'upstream' (callers only), 'downstream' (callees only), 'box' (architectural card only). Default: 'both'"
-                    },
-                    "max_depth": {
-                        "type": "integer",
-                        "description": "Maximum tree depth to traverse (default: 3, max: 6)"
-                    }
-                },
-                "required": ["target"]
             }),
         },
         ToolSchema {
@@ -143,37 +106,6 @@ pub fn get_schemas() -> Vec<ToolSchema> {
                     }
                 },
                 "required": ["action"]
-            }),
-        },
-        ToolSchema {
-            name: "semantic_code_search".to_string(),
-            description: "Execute two-stage semantic code search (BM25 + FTS Anchors + Prefer-Symbol Route + Dense Vectors + PageRank + Cross-Encoder Intent Reranker) for precision code retrieval.".to_string(),
-            parameters: json!({
-                "type": "object",
-                "properties": {
-                    "query": {
-                        "type": "string",
-                        "description": "Natural language or technical code search query (e.g. 'where is session history flushed to disk?')"
-                    },
-                    "limit": {
-                        "type": "integer",
-                        "description": "Maximum number of reranked results to return (default: 5, max: 20)"
-                    },
-                    "target_layer": {
-                        "type": "string",
-                        "description": "Optional architectural layer to boost/filter by (e.g. 'UI', 'Service', 'Data', 'API')"
-                    },
-                    "fts": {
-                        "type": "array",
-                        "items": { "type": "string" },
-                        "description": "Optional exact lexical identifiers or phrases to fuse as dedicated FTS anchor routes alongside the semantic query"
-                    },
-                    "file_pattern": {
-                        "type": "string",
-                        "description": "Optional glob filter for file names or paths (e.g. '*.rs', 'src/context/*')"
-                    }
-                },
-                "required": ["query"]
             }),
         },
         ToolSchema {

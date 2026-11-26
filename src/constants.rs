@@ -674,7 +674,6 @@ pub const APPROVAL_REQUIRED_TOOLS: &[&str] = &[
     "sandbox_exec",
     "git_push",
     "git_pull",
-    "create_pr",
     "github_pr_create",
     "github_issue_create",
 ];
@@ -1129,7 +1128,7 @@ pub const MAX_CALLERS: usize = 8;
 pub const MAX_CALLEES: usize = 8;
 
 /// Total number of built-in and extended tool schemas in registry
-pub const TOTAL_TOOL_COUNT: usize = 216;
+pub const TOTAL_TOOL_COUNT: usize = 208;
 
 // === Hierarchical Fault Localization (Phase 92) ===
 /// Default candidate files to evaluate in hierarchical fault localization

@@ -268,6 +268,36 @@ impl<'a> GitCommitService<'a> {
                 || f.ends_with(".yaml")
         });
 
+        const COMMIT_HEADLINE_RULES: &[(&str, &[&str])] = &[
+            (
+                "feat",
+                &[
+                    "create",
+                    "build",
+                    "implement",
+                    "add",
+                    "scaffold",
+                    "design",
+                    "develop",
+                    "introduce",
+                    "ship",
+                ],
+            ),
+            (
+                "fix",
+                &[
+                    "fix", "bug", "bugfix", "hotfix", "repair", "resolve", "patch", "crash",
+                    "error", "broken",
+                ],
+            ),
+            (
+                "refactor",
+                &["refactor", "restructure", "simplify", "clean", "cleanup"],
+            ),
+            ("test", &["test", "tests", "testing", "spec", "coverage"]),
+            ("docs", &["doc", "docs", "document", "readme", "changelog"]),
+        ];
+
         let prefix = if let Some(ref head) = headline {
             let lead_tokens: Vec<String> = head
                 .split(|c: char| !c.is_alphanumeric())
@@ -276,49 +306,27 @@ impl<'a> GitCommitService<'a> {
                 .map(|w| w.to_ascii_lowercase())
                 .collect();
 
-            let has_lead =
-                |candidates: &[&str]| lead_tokens.iter().any(|t| candidates.contains(&t.as_str()));
-
-            if has_lead(&[
-                "create",
-                "build",
-                "implement",
-                "add",
-                "scaffold",
-                "design",
-                "develop",
-                "introduce",
-                "ship",
-            ]) {
-                "feat"
-            } else if has_lead(&[
-                "fix", "bug", "bugfix", "hotfix", "repair", "resolve", "patch", "crash", "error",
-                "broken",
-            ]) {
-                "fix"
-            } else if has_lead(&["refactor", "restructure", "simplify", "clean", "cleanup"]) {
-                "refactor"
-            } else if has_lead(&["test", "tests", "testing", "spec", "coverage"]) {
-                "test"
-            } else if has_lead(&["doc", "docs", "document", "readme", "changelog"]) {
-                "docs"
-            } else if has_src {
-                "feat"
-            } else if has_tests {
-                "test"
-            } else if has_docs {
-                "docs"
-            } else {
-                "chore"
-            }
-        } else if has_tests && !has_src {
-            "test"
-        } else if has_docs && !has_src {
-            "docs"
-        } else if has_config && !has_src {
-            "chore"
+            COMMIT_HEADLINE_RULES
+                .iter()
+                .find(|(_, keywords)| {
+                    lead_tokens
+                        .iter()
+                        .any(|tok| keywords.contains(&tok.as_str()))
+                })
+                .map(|(commit_type, _)| *commit_type)
+                .unwrap_or(match (has_src, has_tests, has_docs) {
+                    (true, _, _) => "feat",
+                    (false, true, _) => "test",
+                    (false, false, true) => "docs",
+                    (false, false, false) => "chore",
+                })
         } else {
-            "feat"
+            match (has_src, has_tests, has_docs, has_config) {
+                (false, true, _, _) => "test",
+                (false, false, true, _) => "docs",
+                (false, false, false, true) => "chore",
+                _ => "feat",
+            }
         };
 
         // Determine concise summary (clean word/clause boundary, never slicing mid-word)

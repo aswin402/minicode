@@ -876,50 +876,9 @@ fn collect_yagni_bloat_dfs(
     }
 }
 
-/// Splits source/comment text into lowercase content tokens, splitting camelCase & snake_case
-/// identifiers and excluding tiny grammar stop-words so lexical containment measures real meaning.
+/// Splits source/comment text into lowercase deduplicated content tokens via the shared tokenizer.
 fn split_identifier_content_tokens(text: &str) -> Vec<String> {
-    const STOP_WORDS: &[&str] = &[
-        "the", "and", "for", "with", "from", "into", "this", "that", "its", "are", "was", "has",
-        "have", "will", "can", "all", "new", "var", "let", "const", "pub", "def", "return",
-    ];
-    let mut out = Vec::new();
-    let mut seen = std::collections::HashSet::new();
-
-    for raw in text.split(|c: char| !c.is_ascii_alphanumeric()) {
-        if raw.is_empty() {
-            continue;
-        }
-        // Split camelCase / PascalCase runs into sub-words
-        let mut word = String::new();
-        let chars: Vec<char> = raw.chars().collect();
-        for (i, &ch) in chars.iter().enumerate() {
-            let split_here = i > 0
-                && ch.is_ascii_uppercase()
-                && (chars[i - 1].is_ascii_lowercase()
-                    || chars.get(i + 1).is_some_and(|n| n.is_ascii_lowercase()));
-            if split_here && !word.is_empty() {
-                push_content_token(&word, STOP_WORDS, &mut seen, &mut out);
-                word.clear();
-            }
-            word.push(ch.to_ascii_lowercase());
-        }
-        if !word.is_empty() {
-            push_content_token(&word, STOP_WORDS, &mut seen, &mut out);
-        }
-    }
-    out
-}
-
-fn push_content_token(
-    word: &str,
-    stop_words: &[&str],
-    seen: &mut std::collections::HashSet<String>,
-    out: &mut Vec<String>,
-) {
-    if word.len() >= 3 && !stop_words.contains(&word) && seen.insert(word.to_string()) {
-        out.push(word.to_string());
-    }
+    crate::utils::strings::tokenize_identifier_content_terms(text, 3, false, true)
 }
 
 /// Returns `Some((fn_name, callee_name))` when a Tree-sitter function node's body consists solely

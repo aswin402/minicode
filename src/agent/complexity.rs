@@ -48,11 +48,15 @@ impl TaskComplexityScore {
 
 pub struct TaskComplexityScorer;
 
-const QUERY_STOPWORDS: &[&str] = &[
-    "the", "and", "for", "with", "from", "into", "that", "this", "these", "those", "all", "any",
-    "some", "fix", "add", "update", "change", "make", "use", "using", "file", "files", "code",
-    "typo", "docs", "doc", "readme", "please", "can", "you", "how", "what", "where", "when",
+/// Task-prompt boilerplate terms excluded on top of `crate::utils::strings::SHARED_CONTENT_STOPWORDS`.
+const TASK_QUERY_STOPWORDS: &[&str] = &[
+    "fix", "add", "update", "change", "make", "file", "files", "code", "typo", "docs", "doc",
+    "readme", "please", "you",
 ];
+
+fn is_task_query_stopword(word: &str) -> bool {
+    crate::utils::strings::is_content_stopword(word) || TASK_QUERY_STOPWORDS.contains(&word)
+}
 
 /// Cross-cutting architectural transformation stems (matched as discrete tokens, never substrings).
 const ARCHITECTURAL_SCOPE_STEMS: &[&str] = &[
@@ -91,17 +95,17 @@ impl TaskComplexityScorer {
         let mut query_stems: std::collections::HashSet<String> = std::collections::HashSet::new();
         for &tok in &raw_tokens {
             let trimmed = tok.trim_matches('.');
-            if trimmed.len() < 3 || QUERY_STOPWORDS.contains(&trimmed) {
+            if trimmed.len() < 3 || is_task_query_stopword(trimmed) {
                 continue;
             }
             query_words.insert(trimmed.to_string());
             let stem = crate::vault::models::VaultSkill::normalize_stem(trimmed);
-            if stem.len() >= 3 && !QUERY_STOPWORDS.contains(&stem) {
+            if stem.len() >= 3 && !is_task_query_stopword(stem) {
                 query_stems.insert(stem.to_string());
             }
             if trimmed.contains('_') {
                 for part in trimmed.split('_').filter(|p| p.len() >= 3) {
-                    if !QUERY_STOPWORDS.contains(&part) {
+                    if !is_task_query_stopword(part) {
                         query_words.insert(part.to_string());
                         query_stems.insert(
                             crate::vault::models::VaultSkill::normalize_stem(part).to_string(),

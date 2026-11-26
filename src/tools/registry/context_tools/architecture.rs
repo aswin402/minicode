@@ -7,14 +7,6 @@ use std::path::Path;
 pub fn get_schemas() -> Vec<ToolSchema> {
     vec![
         ToolSchema {
-            name: "check_architecture".to_string(),
-            description: "Run architectural governance sensor across the codebase to validate DAG acyclicity, detect circular dependency cycles, check layer boundaries, and compute modularity score.".to_string(),
-            parameters: json!({
-                "type": "object",
-                "properties": {}
-            }),
-        },
-        ToolSchema {
             name: "audit_architecture".to_string(),
             description: "Audits codebase software architecture boundaries, detects circular dependency cycles with Tarjan's SCC, checks layered isolation (UI > Service > Data > Utility), and computes module coupling & instability metrics (Ca, Ce, I).".to_string(),
             parameters: json!({

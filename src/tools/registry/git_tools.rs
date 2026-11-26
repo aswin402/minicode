@@ -145,28 +145,6 @@ pub fn get_schemas() -> Vec<ToolSchema> {
             }),
         },
         ToolSchema {
-            name: "create_pr".to_string(),
-            description: "Create a GitHub pull request using the system's gh CLI with title, description, and base branch.".to_string(),
-            parameters: json!({
-                "type": "object",
-                "properties": {
-                    "title": {
-                        "type": "string",
-                        "description": "Pull request title"
-                    },
-                    "body": {
-                        "type": "string",
-                        "description": "Markdown formatted description of the pull request changes"
-                    },
-                    "draft": {
-                        "type": "boolean",
-                        "description": "If true, creates the pull request as a draft"
-                    }
-                },
-                "required": ["title", "body"]
-            }),
-        },
-        ToolSchema {
             name: "github_issue_view".to_string(),
             description: "View a GitHub issue's title, body, state, author, labels, and discussion comments.".to_string(),
             parameters: json!({

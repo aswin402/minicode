@@ -23,61 +23,100 @@ enum ToolCategory {
     Generic,
 }
 
+/// Fallback substring rules used only for unregistered external/MCP tool names.
+const FALLBACK_TOOL_CATEGORY_RULES: &[(&[&str], ToolCategory)] = &[
+    (&["bash", "exec", "shell", "terminal"], ToolCategory::Shell),
+    (&["browser", "web", "fetch", "http"], ToolCategory::Browser),
+    (&["doctor"], ToolCategory::Doctor),
+    (
+        &["subagent", "swarm", "delegate", "worker"],
+        ToolCategory::Subagent,
+    ),
+    (&["vault", "skill"], ToolCategory::Skill),
+    (&["git"], ToolCategory::Git),
+    (&["plan", "todo", "progress"], ToolCategory::Plan),
+    (
+        &["patch", "edit", "replace", "refactor"],
+        ToolCategory::Edit,
+    ),
+    (&["write", "create"], ToolCategory::Write),
+    (&["read", "view"], ToolCategory::Read),
+    (&["search", "find", "grep", "graph"], ToolCategory::Search),
+];
+
 fn classify_tool_category(raw_name: &str) -> ToolCategory {
     let lower = raw_name.trim().to_ascii_lowercase();
-    if matches!(
-        lower.as_str(),
-        "exec_cmd" | "bash" | "sandbox_exec" | "run_command" | "execute_command"
-    ) || lower.contains("bash")
-        || lower.contains("exec")
-        || lower.contains("shell")
-        || lower.contains("terminal")
-    {
-        ToolCategory::Shell
-    } else if lower.starts_with("browser")
-        || lower.contains("web")
-        || lower.contains("fetch")
-        || lower.contains("http")
-    {
-        ToolCategory::Browser
-    } else if matches!(lower.as_str(), "write_file" | "create_file") || lower.contains("write") {
-        ToolCategory::Write
-    } else if matches!(
-        lower.as_str(),
-        "patch_file" | "edit_file" | "replace_file_content" | "ast_replace_node"
-    ) || lower.contains("patch")
-        || lower.contains("edit")
-    {
-        ToolCategory::Edit
-    } else if matches!(lower.as_str(), "read_file" | "view_file") || lower.contains("read") {
-        ToolCategory::Read
-    } else if matches!(
-        lower.as_str(),
-        "grep_search"
-            | "find_files"
-            | "code_graph"
-            | "semantic_search"
-            | "repomap"
-            | "explore_codebase"
-    ) || lower.contains("search")
-        || lower.contains("find")
-        || lower.contains("grep")
-        || lower.contains("graph")
-    {
-        ToolCategory::Search
-    } else if lower.contains("git") {
-        ToolCategory::Git
-    } else if lower.contains("plan") || lower.contains("todo") || lower.contains("progress") {
-        ToolCategory::Plan
-    } else if lower.contains("subagent") || lower.contains("swarm") || lower.contains("delegate") {
-        ToolCategory::Subagent
-    } else if lower.contains("vault") || lower.contains("skill") {
-        ToolCategory::Skill
-    } else if lower.contains("doctor") {
-        ToolCategory::Doctor
-    } else {
-        ToolCategory::Generic
+    let canonical = crate::tools::meta::canonical_name(lower.as_str());
+
+    if let Some(reg_cat) = crate::tools::meta::category_of(canonical) {
+        use crate::tools::category::ToolCategory as RegCat;
+        return match reg_cat {
+            RegCat::Exec | RegCat::Dev => ToolCategory::Shell,
+            RegCat::Web => ToolCategory::Browser,
+            RegCat::Git => ToolCategory::Git,
+            RegCat::Agent => ToolCategory::Subagent,
+            RegCat::Vault | RegCat::MiniKit => {
+                if canonical.contains("doctor") {
+                    ToolCategory::Doctor
+                } else {
+                    ToolCategory::Skill
+                }
+            }
+            RegCat::MiniPower => {
+                if canonical.contains("doctor") {
+                    ToolCategory::Doctor
+                } else {
+                    ToolCategory::Plan
+                }
+            }
+            RegCat::Blocks => ToolCategory::Write,
+            RegCat::Memory => {
+                if canonical.contains("refactor") {
+                    ToolCategory::Edit
+                } else if canonical.contains("skill") {
+                    ToolCategory::Skill
+                } else if canonical.contains("graph")
+                    || canonical.contains("map")
+                    || canonical.contains("audit")
+                    || canonical.contains("smell")
+                {
+                    ToolCategory::Search
+                } else {
+                    ToolCategory::Plan
+                }
+            }
+            RegCat::Search | RegCat::Codegraph => {
+                if canonical.contains("rewrite") || canonical.contains("replace") {
+                    ToolCategory::Edit
+                } else {
+                    ToolCategory::Search
+                }
+            }
+            RegCat::Files => {
+                if matches!(canonical, "patch_file" | "replace_in_files" | "multi_edit")
+                    || canonical.contains("patch")
+                    || canonical.contains("edit")
+                    || canonical.contains("replace")
+                {
+                    ToolCategory::Edit
+                } else if crate::tools::meta::is_file_mutation(canonical)
+                    || matches!(
+                        canonical,
+                        "write_file" | "make_directory" | "remove_file" | "move_file" | "copy_file"
+                    )
+                {
+                    ToolCategory::Write
+                } else {
+                    ToolCategory::Read
+                }
+            }
+        };
     }
+
+    FALLBACK_TOOL_CATEGORY_RULES
+        .iter()
+        .find(|(tokens, _)| tokens.iter().any(|t| canonical.contains(t)))
+        .map_or(ToolCategory::Generic, |(_, cat)| *cat)
 }
 
 /// Resolves the semantic leading icon for a tool call under the active `ToolIconStyle`.
@@ -1025,4 +1064,38 @@ pub fn render_tool_card_preview(
         theme,
     ));
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_classify_tool_category_uses_canonical_registry_metadata() {
+        assert_eq!(classify_tool_category("exec_cmd"), ToolCategory::Shell);
+        assert_eq!(classify_tool_category("bash"), ToolCategory::Shell);
+        assert_eq!(classify_tool_category("patch_file"), ToolCategory::Edit);
+        assert_eq!(classify_tool_category("edit_file"), ToolCategory::Edit);
+        assert_eq!(
+            classify_tool_category("replace_in_files"),
+            ToolCategory::Edit
+        );
+        assert_eq!(classify_tool_category("write_file"), ToolCategory::Write);
+        assert_eq!(classify_tool_category("read_file"), ToolCategory::Read);
+        assert_eq!(classify_tool_category("view_file"), ToolCategory::Read);
+        assert_eq!(
+            classify_tool_category("read_worker_messages"),
+            ToolCategory::Subagent
+        );
+        assert_eq!(
+            classify_tool_category("project_doctor"),
+            ToolCategory::Doctor
+        );
+        assert_eq!(classify_tool_category("vault_load"), ToolCategory::Skill);
+        assert_eq!(classify_tool_category("git_status"), ToolCategory::Git);
+        assert_eq!(
+            classify_tool_category("mcp_external_http_fetch"),
+            ToolCategory::Browser
+        );
+    }
 }
