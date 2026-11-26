@@ -1448,7 +1448,12 @@ fn write_file_inner(
     ConfinedRoot::open(workspace_root)?
         .atomic_write_bytes(Path::new(relative_path), effective_content.as_bytes())?;
 
-    crate::context::index::SymbolIndex::invalidate_cache();
+    let mut_op = if file_existed {
+        crate::context::search::trigram::FileMutationOp::Modify
+    } else {
+        crate::context::search::trigram::FileMutationOp::Create
+    };
+    crate::context::index::SymbolIndex::on_file_mutated(workspace_root, relative_path, mut_op);
     crate::context::graph::CodeGraph::invalidate_cache();
     crate::context::governance::dox::DoxEngine::sync_and_harvest_rules(
         workspace_root,
@@ -2188,12 +2193,88 @@ fn try_fuzzy_replace_with_diagnostic(
     ))
 }
 
+/// Options for `replace_in_files_with_options` (`chmln/sd`-style literal-first / word-boundary /
+/// capture-group regex replacement + `dry_run` unified-diff preview).
+#[derive(Debug, Clone, Copy, Default)]
+pub struct ReplaceInFilesOptions {
+    pub dry_run: bool,
+    pub word_boundary: bool,
+    pub regex_mode: bool,
+}
+
+/// Replaces occurrences of literal `needle` with `replacement` only when surrounded by non-identifier
+/// boundaries (pure ASCII/Unicode identifier boundary check — zero regexes).
+fn replace_literal_word_boundary(
+    content: &str,
+    needle: &str,
+    replacement: &str,
+) -> (String, usize) {
+    if needle.is_empty() {
+        return (content.to_string(), 0);
+    }
+    let is_ident = |c: char| c.is_alphanumeric() || c == '_';
+    let mut out = String::with_capacity(content.len());
+    let mut count = 0usize;
+    let mut cursor = 0usize;
+
+    while let Some(rel_idx) = content[cursor..].find(needle) {
+        let start = cursor + rel_idx;
+        let end = start + needle.len();
+        let left_ok = content[..start]
+            .chars()
+            .next_back()
+            .is_none_or(|c| !is_ident(c));
+        let right_ok = content[end..].chars().next().is_none_or(|c| !is_ident(c));
+
+        if left_ok && right_ok {
+            out.push_str(&content[cursor..start]);
+            out.push_str(replacement);
+            count += 1;
+            cursor = end;
+        } else {
+            // Advance past one character so overlapping candidates aren't skipped
+            let next_step = content[start..]
+                .chars()
+                .next()
+                .map(|c| c.len_utf8())
+                .unwrap_or(1);
+            out.push_str(&content[cursor..start + next_step]);
+            cursor = start + next_step;
+        }
+    }
+    out.push_str(&content[cursor..]);
+    (out, count)
+}
+
 /// Batch refactoring: Atomically find and replace a pattern across multiple workspace files matching a glob pattern.
 pub fn replace_in_files(
     workspace_root: &Path,
     glob_pattern: &str,
     search_block: &str,
     replace_block: &str,
+    backup_manager: Option<&BackupManager>,
+    turn_id: usize,
+) -> Result<String> {
+    replace_in_files_with_options(
+        workspace_root,
+        glob_pattern,
+        search_block,
+        replace_block,
+        ReplaceInFilesOptions::default(),
+        backup_manager,
+        turn_id,
+    )
+}
+
+/// Trigram-accelerated batch find-and-replace supporting `dry_run` preview, pure-Rust `word_boundary`
+/// matching, and opt-in `$1`/`$name` capture-group `regex_mode` (literal-first default like `sd -F`),
+/// validated atomically by `SyntaxGuard` and committed via `ConfinedRoot`.
+pub fn replace_in_files_with_options(
+    workspace_root: &Path,
+    glob_pattern: &str,
+    search_block: &str,
+    replace_block: &str,
+    options: ReplaceInFilesOptions,
     backup_manager: Option<&BackupManager>,
     turn_id: usize,
 ) -> Result<String> {
@@ -2204,6 +2285,22 @@ pub fn replace_in_files(
         }
         .into());
     }
+
+    let compiled_regex = if options.regex_mode {
+        let pat = if options.word_boundary {
+            format!(r"\b(?:{search_block})\b")
+        } else {
+            search_block.to_string()
+        };
+        Some(
+            regex::Regex::new(&pat).map_err(|e| ToolError::InvalidArguments {
+                name: "replace_in_files".to_string(),
+                reason: format!("Invalid regex pattern '{}': {}", search_block, e),
+            })?,
+        )
+    } else {
+        None
+    };
 
     let norm_pattern = glob_pattern.trim();
     let mut override_builder = ignore::overrides::OverrideBuilder::new(workspace_root);
@@ -2225,6 +2322,25 @@ pub fn replace_in_files(
             ),
         })?;
 
+    // Trigram candidate pre-filter (`microsoft/tgrep` acceleration): skip files that cannot
+    // contain the required trigrams before reading them from disk.
+    let trigram_candidates: Option<std::collections::HashSet<String>> = {
+        let plan =
+            crate::context::search::trigram::build_query_plan(search_block, options.regex_mode);
+        if plan.is_match_all() {
+            None
+        } else {
+            crate::context::search::trigram::TrigramIndex::get_or_build_cached(workspace_root)
+                .ok()
+                .map(|idx| {
+                    idx.query_candidate_files(&plan, None)
+                        .into_iter()
+                        .map(|p| p.replace('\\', "/"))
+                        .collect()
+                })
+        }
+    };
+
     let walker = ignore::WalkBuilder::new(workspace_root)
         .overrides(overrides)
         .hidden(true)
@@ -2233,7 +2349,8 @@ pub fn replace_in_files(
         .git_exclude(true)
         .build();
 
-    let mut matched_files: Vec<(PathBuf, String, String)> = Vec::new();
+    let confined = ConfinedRoot::open(workspace_root)?;
+    let mut matched_files: Vec<(PathBuf, String, String, usize)> = Vec::new();
     let mut skipped_files: Vec<String> = Vec::new();
     let mut files_scanned = 0;
 
@@ -2249,15 +2366,38 @@ pub fn replace_in_files(
 
         files_scanned += 1;
         let file_path = entry.path().to_path_buf();
-        let content = match std::fs::read_to_string(&file_path) {
+        let rel_path = file_path.strip_prefix(workspace_root).unwrap_or(&file_path);
+        let rel_norm = rel_path.to_string_lossy().replace('\\', "/");
+
+        if let Some(ref candidates) = trigram_candidates {
+            if !candidates.contains(&rel_norm) {
+                skipped_files.push(format!("  • {}", rel_norm));
+                continue;
+            }
+        }
+
+        let content = match confined.read_to_string(Path::new(&rel_norm)) {
             Ok(c) => c,
             Err(_) => continue, // Skip binary or unreadable files
         };
 
-        let rel_path = file_path.strip_prefix(workspace_root).unwrap_or(&file_path);
-        if content.contains(search_block) {
-            let new_content = content.replace(search_block, replace_block);
+        let (new_content, match_count) = if let Some(ref re) = compiled_regex {
+            let cnt = re.find_iter(&content).count();
+            if cnt == 0 {
+                (String::new(), 0)
+            } else {
+                (re.replace_all(&content, replace_block).into_owned(), cnt)
+            }
+        } else if options.word_boundary {
+            replace_literal_word_boundary(&content, search_block, replace_block)
+        } else if content.contains(search_block) {
+            let cnt = content.matches(search_block).count();
+            (content.replace(search_block, replace_block), cnt)
+        } else {
+            (String::new(), 0)
+        };
 
+        if match_count > 0 && new_content != content {
             // Pre-Write AST Syntax Barrier: verify that tentative content does not introduce syntax errors
             crate::context::syntax_guard::SyntaxGuard::check_syntax_barrier(
                 &file_path,
@@ -2265,13 +2405,13 @@ pub fn replace_in_files(
                 &new_content,
             )
             .map_err(|reason| ToolError::PatchFailed {
-                path: rel_path.display().to_string(),
+                path: rel_norm.clone(),
                 reason: format!("Batch replacement rejected: {}", reason),
             })?;
 
-            matched_files.push((file_path, content, new_content));
+            matched_files.push((file_path, content, new_content, match_count));
         } else {
-            skipped_files.push(format!("  • {}", rel_path.display()));
+            skipped_files.push(format!("  • {}", rel_norm));
         }
     }
 
@@ -2290,6 +2430,33 @@ pub fn replace_in_files(
         ));
     }
 
+    if options.dry_run {
+        let total_replacements: usize = matched_files.iter().map(|(_, _, _, c)| *c).sum();
+        let mut preview = format!(
+            "[DRY RUN — no files modified on disk] Would apply {} replacement(s) across {} of {} file(s) matching '{}':\n\n```diff\n",
+            total_replacements,
+            matched_files.len(),
+            files_scanned,
+            norm_pattern
+        );
+        for (file_path, orig, updated, _) in matched_files.iter().take(12) {
+            let rel = file_path
+                .strip_prefix(workspace_root)
+                .unwrap_or(file_path)
+                .to_string_lossy();
+            let diff = TextDiff::from_lines(orig.as_str(), updated.as_str());
+            preview.push_str(
+                &diff
+                    .unified_diff()
+                    .context_radius(2)
+                    .header(&format!("a/{rel}"), &format!("b/{rel}"))
+                    .to_string(),
+            );
+        }
+        preview.push_str("```");
+        return Ok(preview);
+    }
+
     // Apply all edits atomically with safety backups
     let mut modified_summaries = Vec::new();
     let first_modified_rel = matched_files[0]
@@ -2299,7 +2466,7 @@ pub fn replace_in_files(
         .display()
         .to_string();
 
-    for (file_path, _orig_content, new_content) in &matched_files {
+    for (file_path, _orig_content, new_content, _cnt) in &matched_files {
         let rel_path = file_path.strip_prefix(workspace_root).unwrap_or(file_path);
         let rel_str = rel_path.display().to_string();
 
@@ -3120,6 +3287,87 @@ mod tests {
         assert!(out.contains("src/beta.rs"));
         assert!(out.contains("verify_oauth_jwt_signature"));
         assert!(!out.contains("compute_tax"));
+
+        std::fs::remove_dir_all(&temp_dir).ok();
+    }
+
+    #[test]
+    fn test_replace_in_files_word_boundary_regex_and_dry_run() {
+        let temp_dir =
+            std::env::temp_dir().join(format!("minicode_sd_replace_{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(temp_dir.join("src")).unwrap();
+
+        write_file(
+            &temp_dir,
+            "src/a.rs",
+            "pub fn run() {\n    let foo = 1;\n    let foobar = foo + 2;\n    let _ = foobar;\n}\n",
+        )
+        .unwrap();
+        write_file(
+            &temp_dir,
+            "src/b.rs",
+            "pub fn other() -> &'static str {\n    \"v1_alpha\"\n}\n",
+        )
+        .unwrap();
+
+        // 1. Word-boundary dry_run: matches `foo` only, leaves `foobar` untouched, does NOT modify disk
+        let dry_out = replace_in_files_with_options(
+            &temp_dir,
+            "src/*.rs",
+            "foo",
+            "bar",
+            ReplaceInFilesOptions {
+                dry_run: true,
+                word_boundary: true,
+                regex_mode: false,
+            },
+            None,
+            1,
+        )
+        .expect("dry_run word_boundary succeeds");
+        assert!(dry_out.contains("DRY RUN"));
+        assert!(dry_out.contains("let bar = 1;"));
+        assert!(dry_out.contains("let foobar = bar + 2;"));
+        // Disk remains untouched
+        let on_disk = std::fs::read_to_string(temp_dir.join("src/a.rs")).unwrap();
+        assert!(on_disk.contains("let foo = 1;"));
+
+        // 2. Apply word_boundary replacement to disk
+        replace_in_files_with_options(
+            &temp_dir,
+            "src/*.rs",
+            "foo",
+            "bar",
+            ReplaceInFilesOptions {
+                dry_run: false,
+                word_boundary: true,
+                regex_mode: false,
+            },
+            None,
+            2,
+        )
+        .expect("apply word_boundary succeeds");
+        let after_wb = std::fs::read_to_string(temp_dir.join("src/a.rs")).unwrap();
+        assert!(after_wb.contains("let bar = 1;"));
+        assert!(after_wb.contains("let foobar = bar + 2;"));
+
+        // 3. Opt-in regex_mode with `$1` capture expansion (sd-style)
+        replace_in_files_with_options(
+            &temp_dir,
+            "src/*.rs",
+            r"v1_([a-z]+)",
+            "v2_$1",
+            ReplaceInFilesOptions {
+                dry_run: false,
+                word_boundary: false,
+                regex_mode: true,
+            },
+            None,
+            3,
+        )
+        .expect("regex capture replace succeeds");
+        let after_re = std::fs::read_to_string(temp_dir.join("src/b.rs")).unwrap();
+        assert!(after_re.contains("\"v2_alpha\""));
 
         std::fs::remove_dir_all(&temp_dir).ok();
     }

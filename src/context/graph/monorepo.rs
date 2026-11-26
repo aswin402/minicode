@@ -29,6 +29,9 @@ pub struct MonorepoReport {
     pub packages: Vec<PackageInfo>,
     pub topological_order: Vec<String>,
     pub cross_package_cycles: Vec<Vec<String>>,
+    /// Per-language Code / Comments / Blanks LOC breakdown computed via byte-level FSM (`tokei` model).
+    #[serde(default)]
+    pub code_stats: Option<crate::context::workspace_profile::CodeStatsReport>,
 }
 
 impl MonorepoReport {
@@ -106,6 +109,10 @@ impl MonorepoReport {
                 }
             }
             out.push_str("```\n\n");
+        }
+
+        if let Some(ref stats) = self.code_stats {
+            out.push_str(&stats.format_markdown());
         }
 
         out
@@ -240,11 +247,16 @@ impl MonorepoOrchestrator {
             packages.retain(|p| p.name == target || p.root_path == target);
         }
 
+        let code_stats = Some(
+            crate::context::workspace_profile::WorkspaceProfile::compute_code_stats(workspace_root),
+        );
+
         Ok(MonorepoReport {
             workspace_type,
             packages,
             topological_order,
             cross_package_cycles,
+            code_stats,
         })
     }
 

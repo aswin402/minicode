@@ -599,10 +599,86 @@ fn simplify_plan(plan: QueryPlan) -> QueryPlan {
     }
 }
 
+/// Workspace file mutation event fed into [`DirtyPathCoalescer`] (`watchexec` event-coalescing model).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FileMutationOp {
+    Create,
+    Modify,
+    Delete,
+}
+
+/// Pure algebraic event-lattice coalescer (`watchexec` pattern) collapsing rapid bursts of
+/// `Create`/`Modify`/`Delete` mutations on the same workspace path into minimal net deltas.
+#[derive(Debug, Default, Clone)]
+pub struct DirtyPathCoalescer {
+    pending: HashMap<String, FileMutationOp>,
+}
+
+impl DirtyPathCoalescer {
+    /// Algebraic state-lattice merge:
+    /// - `Create + Modify -> Create`, `Create + Delete -> None` (net no-op)
+    /// - `Modify + Delete -> Delete`, `Delete + Create/Modify -> Modify`
+    #[inline]
+    pub fn coalesce_op(
+        prev: Option<FileMutationOp>,
+        next: FileMutationOp,
+    ) -> Option<FileMutationOp> {
+        match (prev, next) {
+            (None, op) => Some(op),
+            (Some(FileMutationOp::Create), FileMutationOp::Create | FileMutationOp::Modify) => {
+                Some(FileMutationOp::Create)
+            }
+            (Some(FileMutationOp::Create), FileMutationOp::Delete) => None,
+            (Some(FileMutationOp::Modify), FileMutationOp::Delete) => Some(FileMutationOp::Delete),
+            (Some(FileMutationOp::Modify), FileMutationOp::Create | FileMutationOp::Modify) => {
+                Some(FileMutationOp::Modify)
+            }
+            (Some(FileMutationOp::Delete), FileMutationOp::Create | FileMutationOp::Modify) => {
+                Some(FileMutationOp::Modify)
+            }
+            (Some(FileMutationOp::Delete), FileMutationOp::Delete) => Some(FileMutationOp::Delete),
+        }
+    }
+
+    pub fn record(&mut self, rel_path: &str, op: FileMutationOp) {
+        let norm = rel_path.trim_start_matches("./").replace('\\', "/");
+        if norm.is_empty() {
+            return;
+        }
+        let prev = self.pending.get(&norm).copied();
+        match Self::coalesce_op(prev, op) {
+            Some(merged) => {
+                self.pending.insert(norm, merged);
+            }
+            None => {
+                self.pending.remove(&norm);
+            }
+        }
+    }
+
+    pub fn drain(&mut self) -> Vec<(String, FileMutationOp)> {
+        self.pending.drain().collect()
+    }
+
+    #[allow(dead_code)]
+    pub fn is_empty(&self) -> bool {
+        self.pending.is_empty()
+    }
+}
+
+static GLOBAL_DIRTY_COALESCER: OnceLock<RwLock<HashMap<PathBuf, DirtyPathCoalescer>>> =
+    OnceLock::new();
+
 /// Workspace Trigram & File Path Index for instant candidate narrowing and file discovery.
+#[derive(Clone)]
 pub struct TrigramIndex {
     /// All non-ignored relative file paths in the workspace (indexed by `file_id: u32`).
+    /// Tombstoned slots cleared during incremental delta updates hold an empty string.
     all_files: Vec<String>,
+    /// Fast `rel_path -> live file_id` map for $O(1)$ incremental overlay tombstoning.
+    path_to_id: HashMap<String, u32>,
+    /// Superseded or deleted `file_id`s masked out in $O(1)$ until the next compaction rebuild.
+    tombstoned_files: std::collections::HashSet<u32>,
     /// Subset of `file_id`s that are searchable text files (excludes binary files).
     searchable_text_files: Vec<u32>,
     /// Text files > `MAX_INDEXED_FILE_BYTES` (4 MiB) that bypass trigram postings and are always included as candidates.
@@ -624,40 +700,173 @@ impl TrigramIndex {
     pub fn new() -> Self {
         Self {
             all_files: Vec::new(),
+            path_to_id: HashMap::new(),
+            tombstoned_files: std::collections::HashSet::new(),
             searchable_text_files: Vec::new(),
             passthrough_large_files: Vec::new(),
             postings: HashMap::with_hasher(BuildTrigramHasher::default()),
         }
     }
 
-    /// Invalidates the shared in-memory `TrigramIndex` cache when workspace files are modified.
+    /// Records a single mutated/created/deleted file into the coalesced dirty-path lattice
+    /// so the next [`Self::get_or_build_cached`] call applies an $O(\text{dirty files})$
+    /// incremental overlay patch instead of rebuilding the entire workspace index.
+    pub fn record_dirty_file(workspace_root: &Path, rel_path: &str, op: FileMutationOp) {
+        let key =
+            std::fs::canonicalize(workspace_root).unwrap_or_else(|_| workspace_root.to_path_buf());
+        let map = GLOBAL_DIRTY_COALESCER.get_or_init(|| RwLock::new(HashMap::new()));
+        if let Ok(mut guard) = map.write() {
+            guard.entry(key).or_default().record(rel_path, op);
+        }
+    }
+
+    fn drain_dirty_files(workspace_root: &Path) -> Vec<(String, FileMutationOp)> {
+        let key =
+            std::fs::canonicalize(workspace_root).unwrap_or_else(|_| workspace_root.to_path_buf());
+        let Some(map) = GLOBAL_DIRTY_COALESCER.get() else {
+            return Vec::new();
+        };
+        if let Ok(mut guard) = map.write() {
+            guard.get_mut(&key).map(|c| c.drain()).unwrap_or_default()
+        } else {
+            Vec::new()
+        }
+    }
+
+    /// Invalidates the shared in-memory `TrigramIndex` cache when workspace files are bulk-changed
+    /// (e.g. git checkout or worktree merge).
     pub fn invalidate_cache() {
         if let Some(cache) = GLOBAL_TRIGRAM_INDEX_CACHE.get() {
             if let Ok(mut guard) = cache.write() {
                 *guard = None;
             }
         }
+        if let Some(map) = GLOBAL_DIRTY_COALESCER.get() {
+            if let Ok(mut guard) = map.write() {
+                guard.clear();
+            }
+        }
+    }
+
+    /// Applies an incremental LSM-overlay delta (`microsoft/tgrep` WAL pattern) for modified,
+    /// created, or deleted files in $O(\text{dirty\_file\_bytes})$ without re-walking the repo.
+    ///
+    /// Superseded `file_id`s are tombstoned in $O(1)$ and updated files receive strictly monotonic
+    /// `file_id`s appended to sorted posting lists in $O(1)$ amortized time.
+    pub fn apply_incremental_delta(
+        &mut self,
+        workspace_root: &Path,
+        deltas: &[(String, FileMutationOp)],
+    ) {
+        for (rel_path, op) in deltas {
+            let norm = rel_path.trim_start_matches("./").replace('\\', "/");
+            if norm.is_empty() {
+                continue;
+            }
+
+            // 1. Tombstone any prior file_id for this path in O(1)
+            if let Some(old_fid) = self.path_to_id.remove(&norm) {
+                self.tombstoned_files.insert(old_fid);
+                if let Some(slot) = self.all_files.get_mut(old_fid as usize) {
+                    slot.clear();
+                }
+            }
+
+            if *op == FileMutationOp::Delete {
+                continue;
+            }
+
+            let abs_path = workspace_root.join(&norm);
+            let Ok(meta) = fs::metadata(&abs_path) else {
+                continue;
+            };
+            if !meta.is_file() {
+                continue;
+            }
+            let Ok(new_fid) = u32::try_from(self.all_files.len()) else {
+                continue;
+            };
+            self.all_files.push(norm.clone());
+            self.path_to_id.insert(norm, new_fid);
+
+            if meta.len() > MAX_INDEXED_FILE_BYTES {
+                if let Ok(mut f) = fs::File::open(&abs_path) {
+                    let mut buf = [0u8; BINARY_SNIFF_LEN];
+                    if let Ok(n) = f.read(&mut buf) {
+                        if !buf[..n].contains(&0) {
+                            self.searchable_text_files.push(new_fid);
+                            self.passthrough_large_files.push(new_fid);
+                        }
+                    }
+                }
+                continue;
+            }
+
+            let Ok(bytes) = fs::read(&abs_path) else {
+                continue;
+            };
+            let Some(file_trigrams) = extract_file_trigrams(&bytes) else {
+                continue;
+            };
+
+            self.searchable_text_files.push(new_fid);
+            for (trigram_hash, masks) in file_trigrams {
+                // `new_fid` is strictly greater than every existing `file_id`, preserving sorted order!
+                self.postings
+                    .entry(trigram_hash)
+                    .or_default()
+                    .push(PostingEntry {
+                        file_id: new_fid,
+                        loc_mask: masks.loc_mask,
+                        next_mask: masks.next_mask,
+                    });
+            }
+        }
     }
 
     /// Returns a shared `Arc<TrigramIndex>` for `workspace_root`, reusing the in-memory index
-    /// (30s TTL or matching workspace FNV-1a fingerprint) or loading `.minicode/cache/trigram_index.bin`.
+    /// (applying $O(\text{dirty files})$ incremental delta overlays when available) or loading
+    /// `.minicode/cache/trigram_index.bin`.
     pub fn get_or_build_cached(workspace_root: &Path) -> Result<Arc<Self>> {
+        const MAX_INCREMENTAL_DELTAS: usize = 64;
         let cache = GLOBAL_TRIGRAM_INDEX_CACHE.get_or_init(|| RwLock::new(None));
-        if let Ok(guard) = cache.read() {
-            if let Some((ref cached_root, built_at, _fp, ref arc_idx)) = *guard {
-                if cached_root == workspace_root && built_at.elapsed() < Duration::from_secs(30) {
-                    return Ok(Arc::clone(arc_idx));
+        let dirty = Self::drain_dirty_files(workspace_root);
+
+        if dirty.is_empty() {
+            if let Ok(guard) = cache.read() {
+                if let Some((ref cached_root, built_at, _fp, ref arc_idx)) = *guard {
+                    if cached_root == workspace_root && built_at.elapsed() < Duration::from_secs(30)
+                    {
+                        return Ok(Arc::clone(arc_idx));
+                    }
+                }
+            }
+        } else if dirty.len() <= MAX_INCREMENTAL_DELTAS {
+            if let Ok(mut guard) = cache.write() {
+                if let Some((ref cached_root, ref mut built_at, _fp, ref mut arc_idx)) = *guard {
+                    if cached_root == workspace_root
+                        && arc_idx.tombstoned_files.len() + dirty.len() <= MAX_INCREMENTAL_DELTAS
+                    {
+                        let mut patched = (**arc_idx).clone();
+                        patched.apply_incremental_delta(workspace_root, &dirty);
+                        let arc_patched = Arc::new(patched);
+                        *arc_idx = Arc::clone(&arc_patched);
+                        *built_at = Instant::now();
+                        return Ok(arc_patched);
+                    }
                 }
             }
         }
 
         let (abs_files, rel_files, fingerprint) = Self::collect_workspace_files(workspace_root);
 
-        if let Ok(mut guard) = cache.write() {
-            if let Some((ref cached_root, ref mut built_at, cached_fp, ref arc_idx)) = *guard {
-                if cached_root == workspace_root && cached_fp == fingerprint {
-                    *built_at = Instant::now();
-                    return Ok(Arc::clone(arc_idx));
+        if dirty.is_empty() {
+            if let Ok(mut guard) = cache.write() {
+                if let Some((ref cached_root, ref mut built_at, cached_fp, ref arc_idx)) = *guard {
+                    if cached_root == workspace_root && cached_fp == fingerprint {
+                        *built_at = Instant::now();
+                        return Ok(Arc::clone(arc_idx));
+                    }
                 }
             }
         }
@@ -761,6 +970,13 @@ impl TrigramIndex {
     /// Builds the trigram index from a sorted list of `(abs_files, rel_files)`.
     pub fn build_from_file_list(&mut self, abs_files: &[PathBuf], rel_files: Vec<String>) {
         self.all_files = rel_files;
+        self.path_to_id.clear();
+        self.tombstoned_files.clear();
+        for (idx, rel) in self.all_files.iter().enumerate() {
+            if let Ok(fid) = u32::try_from(idx) {
+                self.path_to_id.insert(rel.clone(), fid);
+            }
+        }
         self.searchable_text_files.clear();
         self.passthrough_large_files.clear();
         self.postings.clear();
@@ -831,9 +1047,15 @@ impl TrigramIndex {
 
         let mut out = Vec::with_capacity(candidate_ids.len());
         for fid in candidate_ids {
+            if self.tombstoned_files.contains(&fid) {
+                continue;
+            }
             let Some(rel_path) = self.all_files.get(fid as usize) else {
                 continue;
             };
+            if rel_path.is_empty() {
+                continue;
+            }
             if let Some(pat) = file_pattern {
                 if !crate::utils::strings::matches_file_pattern(rel_path, pat) {
                     continue;
@@ -1079,8 +1301,19 @@ impl TrigramIndex {
             postings.insert(tri, list);
         }
 
+        let mut path_to_id = HashMap::with_capacity(all_files.len());
+        for (idx, rel) in all_files.iter().enumerate() {
+            if !rel.is_empty() {
+                if let Ok(fid) = u32::try_from(idx) {
+                    path_to_id.insert(rel.clone(), fid);
+                }
+            }
+        }
+
         Some(Self {
             all_files,
+            path_to_id,
+            tombstoned_files: std::collections::HashSet::new(),
             searchable_text_files,
             passthrough_large_files,
             postings,
@@ -1160,6 +1393,89 @@ mod tests {
         assert_eq!(
             loaded.query_candidate_files(&plan_lit, None),
             vec!["src/alpha.rs"]
+        );
+    }
+
+    #[test]
+    fn test_dirty_path_coalescer_event_lattice_algebra() {
+        let mut coalescer = DirtyPathCoalescer::default();
+        // Create + Modify => Create
+        coalescer.record("src/new.rs", FileMutationOp::Create);
+        coalescer.record("src/new.rs", FileMutationOp::Modify);
+        // Create + Delete => NoOp (cancelled out completely)
+        coalescer.record("src/ephemeral.rs", FileMutationOp::Create);
+        coalescer.record("src/ephemeral.rs", FileMutationOp::Delete);
+        // Modify + Delete => Delete
+        coalescer.record("src/removed.rs", FileMutationOp::Modify);
+        coalescer.record("src/removed.rs", FileMutationOp::Delete);
+        // Delete + Create => Modify (replaced on disk)
+        coalescer.record("src/replaced.rs", FileMutationOp::Delete);
+        coalescer.record("src/replaced.rs", FileMutationOp::Create);
+
+        let drained: HashMap<String, FileMutationOp> = coalescer.drain().into_iter().collect();
+        assert_eq!(drained.get("src/new.rs"), Some(&FileMutationOp::Create));
+        assert!(!drained.contains_key("src/ephemeral.rs"));
+        assert_eq!(drained.get("src/removed.rs"), Some(&FileMutationOp::Delete));
+        assert_eq!(
+            drained.get("src/replaced.rs"),
+            Some(&FileMutationOp::Modify)
+        );
+        assert!(coalescer.is_empty());
+    }
+
+    #[test]
+    fn test_trigram_incremental_delta_updates_modified_created_and_deleted_files() {
+        let ws = tempfile::tempdir().expect("tempdir");
+        fs::create_dir_all(ws.path().join("src")).unwrap();
+        fs::write(
+            ws.path().join("src/a.rs"),
+            "pub fn legacy_symbol_alpha() {}\n",
+        )
+        .unwrap();
+        fs::write(ws.path().join("src/b.rs"), "pub fn keep_symbol_beta() {}\n").unwrap();
+
+        let (abs, rel, _) = TrigramIndex::collect_workspace_files(ws.path());
+        let mut idx = TrigramIndex::new();
+        idx.build_from_file_list(&abs, rel);
+
+        // Modify `src/a.rs`, delete `src/b.rs`, create `src/c.rs`
+        fs::write(
+            ws.path().join("src/a.rs"),
+            "pub fn upgraded_symbol_gamma() {}\n",
+        )
+        .unwrap();
+        fs::remove_file(ws.path().join("src/b.rs")).unwrap();
+        fs::write(
+            ws.path().join("src/c.rs"),
+            "pub fn freshly_created_delta() {}\n",
+        )
+        .unwrap();
+
+        idx.apply_incremental_delta(
+            ws.path(),
+            &[
+                ("src/a.rs".to_string(), FileMutationOp::Modify),
+                ("src/b.rs".to_string(), FileMutationOp::Delete),
+                ("src/c.rs".to_string(), FileMutationOp::Create),
+            ],
+        );
+
+        let old_plan = build_query_plan("legacy_symbol_alpha", false);
+        assert!(
+            idx.query_candidate_files(&old_plan, None).is_empty(),
+            "Tombstoned old version of src/a.rs must not match stale symbol"
+        );
+        let new_a_plan = build_query_plan("upgraded_symbol_gamma", false);
+        assert_eq!(
+            idx.query_candidate_files(&new_a_plan, None),
+            vec!["src/a.rs"]
+        );
+        let deleted_b_plan = build_query_plan("keep_symbol_beta", false);
+        assert!(idx.query_candidate_files(&deleted_b_plan, None).is_empty());
+        let created_c_plan = build_query_plan("freshly_created_delta", false);
+        assert_eq!(
+            idx.query_candidate_files(&created_c_plan, None),
+            vec!["src/c.rs"]
         );
     }
 }

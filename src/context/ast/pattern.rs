@@ -457,10 +457,21 @@ impl CompiledPattern {
         candidate: Node<'tree>,
         source: &str,
     ) -> Option<MetaVarEnv<'tree>> {
+        self.matches_node_with_env(candidate, source, &MetaVarEnv::new())
+    }
+
+    /// Attempts to match this pattern against `candidate` while threading an existing [`MetaVarEnv`],
+    /// enforcing structural equality for any `$VAR` / `$$$ARGS` already bound by the outer pattern.
+    pub fn matches_node_with_env<'tree>(
+        &self,
+        candidate: Node<'tree>,
+        source: &str,
+        base_env: &MetaVarEnv<'tree>,
+    ) -> Option<MetaVarEnv<'tree>> {
         if is_comment_node(candidate) {
             return None;
         }
-        let mut env = MetaVarEnv::new();
+        let mut env = base_env.clone();
         if match_one_node(&self.root, candidate, source, &mut env) {
             Some(env)
         } else {
@@ -706,6 +717,12 @@ pub struct AstGrepFilter {
     pub not_inside: Option<String>,
     /// Require matched node to contain a descendant matching this AST kind or pattern.
     pub has: Option<String>,
+    /// Exclude matches containing a descendant matching this AST kind or pattern.
+    pub not_has: Option<String>,
+    /// Require a preceding sibling statement/node matching this AST kind or pattern (shares `MetaVarEnv`).
+    pub follows: Option<String>,
+    /// Require a subsequent sibling statement/node matching this AST kind or pattern (shares `MetaVarEnv`).
+    pub precedes: Option<String>,
     /// Optional glob or relative file path filter.
     pub file_pattern: Option<String>,
 }
@@ -764,22 +781,63 @@ impl AstGrepRewriteReport {
     }
 }
 
-fn node_matches_relational_selector(
-    node: Node<'_>,
+struct CompiledRelationalRules {
+    inside: Option<CompiledPattern>,
+    not_inside: Option<CompiledPattern>,
+    has: Option<CompiledPattern>,
+    not_has: Option<CompiledPattern>,
+    follows: Option<CompiledPattern>,
+    precedes: Option<CompiledPattern>,
+}
+
+impl CompiledRelationalRules {
+    fn compile(filter: &AstGrepFilter, ext: &str) -> Self {
+        Self {
+            inside: filter
+                .inside
+                .as_deref()
+                .and_then(|s| CompiledPattern::compile(s, ext).ok()),
+            not_inside: filter
+                .not_inside
+                .as_deref()
+                .and_then(|s| CompiledPattern::compile(s, ext).ok()),
+            has: filter
+                .has
+                .as_deref()
+                .and_then(|s| CompiledPattern::compile(s, ext).ok()),
+            not_has: filter
+                .not_has
+                .as_deref()
+                .and_then(|s| CompiledPattern::compile(s, ext).ok()),
+            follows: filter
+                .follows
+                .as_deref()
+                .and_then(|s| CompiledPattern::compile(s, ext).ok()),
+            precedes: filter
+                .precedes
+                .as_deref()
+                .and_then(|s| CompiledPattern::compile(s, ext).ok()),
+        }
+    }
+}
+
+fn node_matches_relational_selector<'tree>(
+    node: Node<'tree>,
     selector: &str,
     compiled_opt: Option<&CompiledPattern>,
     source: &str,
-) -> bool {
+    base_env: &MetaVarEnv<'tree>,
+) -> Option<MetaVarEnv<'tree>> {
     let sel = selector.trim();
     if sel.is_empty() {
-        return true;
+        return Some(base_env.clone());
     }
     if node.kind().eq_ignore_ascii_case(sel) {
-        return true;
+        return Some(base_env.clone());
     }
     if let Some(compiled) = compiled_opt {
-        if compiled.matches_node(node, source).is_some() {
-            return true;
+        if let Some(merged) = compiled.matches_node_with_env(node, source, base_env) {
+            return Some(merged);
         }
     }
     // Check declaration header line (e.g. `mod tests`, `#[cfg(test)]`, `impl Foo`)
@@ -800,38 +858,54 @@ fn node_matches_relational_selector(
             | "method_definition"
     ) && first_line.contains(sel)
     {
-        return true;
+        return Some(base_env.clone());
     }
-    false
+    None
 }
 
-fn check_relational_constraints(
-    node: Node<'_>,
+/// Evaluates all relational AST rules (`inside`, `not_inside`, `has`, `not_has`, `follows`, `precedes`)
+/// while threading the shared `MetaVarEnv` so `$VAR` bindings stay structurally consistent across nodes.
+fn check_relational_constraints<'tree>(
+    node: Node<'tree>,
     source: &str,
     filter: &AstGrepFilter,
-    inside_compiled: Option<&CompiledPattern>,
-    not_inside_compiled: Option<&CompiledPattern>,
-    has_compiled: Option<&CompiledPattern>,
+    rules: &CompiledRelationalRules,
+    env: &mut MetaVarEnv<'tree>,
 ) -> bool {
     if let Some(ref inside_sel) = filter.inside {
         let mut curr = node.parent();
-        let mut found = false;
+        let mut matched_env = None;
         while let Some(anc) = curr {
-            if node_matches_relational_selector(anc, inside_sel, inside_compiled, source) {
-                found = true;
+            if let Some(next_env) = node_matches_relational_selector(
+                anc,
+                inside_sel,
+                rules.inside.as_ref(),
+                source,
+                env,
+            ) {
+                matched_env = Some(next_env);
                 break;
             }
             curr = anc.parent();
         }
-        if !found {
+        let Some(merged) = matched_env else {
             return false;
-        }
+        };
+        *env = merged;
     }
 
     if let Some(ref not_inside_sel) = filter.not_inside {
         let mut curr = node.parent();
         while let Some(anc) = curr {
-            if node_matches_relational_selector(anc, not_inside_sel, not_inside_compiled, source) {
+            if node_matches_relational_selector(
+                anc,
+                not_inside_sel,
+                rules.not_inside.as_ref(),
+                source,
+                env,
+            )
+            .is_some()
+            {
                 return false;
             }
             curr = anc.parent();
@@ -839,31 +913,121 @@ fn check_relational_constraints(
     }
 
     if let Some(ref has_sel) = filter.has {
-        if !subtree_has_descendant(node, has_sel, has_compiled, source, true) {
+        let Some(merged) =
+            subtree_has_descendant(node, has_sel, rules.has.as_ref(), source, env, true)
+        else {
+            return false;
+        };
+        *env = merged;
+    }
+
+    if let Some(ref not_has_sel) = filter.not_has {
+        if subtree_has_descendant(node, not_has_sel, rules.not_has.as_ref(), source, env, true)
+            .is_some()
+        {
             return false;
         }
+    }
+
+    if let Some(ref follows_sel) = filter.follows {
+        let Some(merged) =
+            check_sibling_relation(node, follows_sel, rules.follows.as_ref(), source, env, true)
+        else {
+            return false;
+        };
+        *env = merged;
+    }
+
+    if let Some(ref precedes_sel) = filter.precedes {
+        let Some(merged) = check_sibling_relation(
+            node,
+            precedes_sel,
+            rules.precedes.as_ref(),
+            source,
+            env,
+            false,
+        ) else {
+            return false;
+        };
+        *env = merged;
     }
 
     true
 }
 
-fn subtree_has_descendant(
-    node: Node<'_>,
+/// Checks sequential sibling ordering (`follows` when `look_back == true`, `precedes` when `false`).
+/// Also steps out of single-expression statement wrappers (e.g. `expression_statement`) so
+/// statement-level patterns like `release($X)` following `acquire($X)` unify seamlessly.
+fn check_sibling_relation<'tree>(
+    node: Node<'tree>,
     selector: &str,
     compiled_opt: Option<&CompiledPattern>,
     source: &str,
+    base_env: &MetaVarEnv<'tree>,
+    look_back: bool,
+) -> Option<MetaVarEnv<'tree>> {
+    let mut anchors = vec![node];
+    if let Some(parent) = node.parent() {
+        if matches!(
+            parent.kind(),
+            "expression_statement" | "let_declaration" | "lexical_declaration" | "return_statement"
+        ) {
+            anchors.push(parent);
+        }
+    }
+
+    for anchor in anchors {
+        let mut cursor = if look_back {
+            anchor.prev_named_sibling()
+        } else {
+            anchor.next_named_sibling()
+        };
+        while let Some(sib) = cursor {
+            if let Some(merged) =
+                node_matches_relational_selector(sib, selector, compiled_opt, source, base_env)
+            {
+                return Some(merged);
+            }
+            // Match pattern directly inside a sibling statement wrapper (e.g. `expression_statement` -> `call_expression`)
+            if let Some(merged) =
+                subtree_has_descendant(sib, selector, compiled_opt, source, base_env, true)
+            {
+                return Some(merged);
+            }
+            cursor = if look_back {
+                sib.prev_named_sibling()
+            } else {
+                sib.next_named_sibling()
+            };
+        }
+    }
+    None
+}
+
+fn subtree_has_descendant<'tree>(
+    node: Node<'tree>,
+    selector: &str,
+    compiled_opt: Option<&CompiledPattern>,
+    source: &str,
+    base_env: &MetaVarEnv<'tree>,
     is_root: bool,
-) -> bool {
-    if !is_root && node_matches_relational_selector(node, selector, compiled_opt, source) {
-        return true;
+) -> Option<MetaVarEnv<'tree>> {
+    if !is_root {
+        if let Some(merged) =
+            node_matches_relational_selector(node, selector, compiled_opt, source, base_env)
+        {
+            return Some(merged);
+        }
     }
     let mut cursor = node.walk();
     for child in node.children(&mut cursor) {
-        if subtree_has_descendant(child, selector, compiled_opt, source, false) {
-            return true;
+        if let Some(merged) =
+            subtree_has_descendant(child, selector, compiled_opt, source, base_env, false)
+        {
+            return Some(merged);
         }
     }
-    false
+    None
 }
 
 fn find_enclosing_symbol_label(node: Node<'_>, source: &str) -> Option<String> {
@@ -929,18 +1093,7 @@ pub fn find_matches_in_source(
         return Ok(Vec::new());
     };
 
-    let inside_compiled = filter
-        .inside
-        .as_deref()
-        .and_then(|s| CompiledPattern::compile(s, ext).ok());
-    let not_inside_compiled = filter
-        .not_inside
-        .as_deref()
-        .and_then(|s| CompiledPattern::compile(s, ext).ok());
-    let has_compiled = filter
-        .has
-        .as_deref()
-        .and_then(|s| CompiledPattern::compile(s, ext).ok());
+    let rules = CompiledRelationalRules::compile(filter, ext);
 
     let mut matches = Vec::new();
     collect_matches_dfs(
@@ -949,9 +1102,7 @@ pub fn find_matches_in_source(
         source,
         &compiled,
         filter,
-        inside_compiled.as_ref(),
-        not_inside_compiled.as_ref(),
-        has_compiled.as_ref(),
+        &rules,
         max_matches,
         &mut matches,
     );
@@ -965,9 +1116,7 @@ fn collect_matches_dfs<'tree>(
     source: &str,
     compiled: &CompiledPattern,
     filter: &AstGrepFilter,
-    inside_compiled: Option<&CompiledPattern>,
-    not_inside_compiled: Option<&CompiledPattern>,
-    has_compiled: Option<&CompiledPattern>,
+    rules: &CompiledRelationalRules,
     max_matches: usize,
     out: &mut Vec<AstGrepMatch>,
 ) {
@@ -975,15 +1124,8 @@ fn collect_matches_dfs<'tree>(
         return;
     }
 
-    if let Some(env) = compiled.matches_node(node, source) {
-        if check_relational_constraints(
-            node,
-            source,
-            filter,
-            inside_compiled,
-            not_inside_compiled,
-            has_compiled,
-        ) {
+    if let Some(mut env) = compiled.matches_node(node, source) {
+        if check_relational_constraints(node, source, filter, rules, &mut env) {
             let start_b = node.start_byte();
             let end_b = node.end_byte();
             let matched_text = source.get(start_b..end_b).unwrap_or("").to_string();
@@ -1017,9 +1159,7 @@ fn collect_matches_dfs<'tree>(
             source,
             compiled,
             filter,
-            inside_compiled,
-            not_inside_compiled,
-            has_compiled,
+            rules,
             max_matches,
             out,
         );
@@ -1411,8 +1551,13 @@ pub fn ast_grep_rewrite(
 
     if !dry_run && !files_modified.is_empty() {
         crate::context::graph::CodeGraph::invalidate_cache();
-        crate::context::index::SymbolIndex::invalidate_cache();
-        crate::context::search::trigram::TrigramIndex::invalidate_cache();
+        for rel in &files_modified {
+            crate::context::index::SymbolIndex::on_file_mutated(
+                workspace_root,
+                rel,
+                crate::context::search::trigram::FileMutationOp::Modify,
+            );
+        }
     }
 
     Ok(AstGrepRewriteReport {
@@ -2126,6 +2271,7 @@ mod tests {
             not_inside: Some("mod tests".to_string()),
             has: None,
             file_pattern: Some("*.rs".to_string()),
+            ..Default::default()
         };
 
         let report = ast_grep_rewrite(ws, "$EXPR.unwrap()", "$EXPR?", &filter, false).unwrap();
@@ -2184,5 +2330,86 @@ export function FeatureTabs({ initialTab = 'tui' }: { initialTab?: string }) {
 
         let state_occs = classify_symbol_occurrences_ast("tsx", tsx, "setActiveTab").unwrap();
         assert_eq!(state_occs[0].role, AstOccurrenceRole::Declaration);
+    }
+
+    #[test]
+    fn test_relational_follows_precedes_not_has_with_shared_metavar_env() {
+        let rs_code = r#"
+fn safe_cleanup(handle: u32, other: u32) {
+    acquire(handle);
+    release(handle);
+    release(other);
+}
+
+async fn risky_fetch(url: &str) {
+    let _ = fetch(url).await;
+}
+
+async fn guarded_fetch(url: &str) {
+    match fetch(url).await {
+        Ok(_) => {}
+        Err(_) => {}
+    }
+}
+"#;
+
+        // 1. `follows` with shared `$X` MetaVarEnv: matches `release(handle)` (preceded by `acquire(handle)`)
+        //    and MUST reject `release(other)` because `acquire(other)` never preceded it!
+        let filter_follows = AstGrepFilter {
+            follows: Some("acquire($X)".to_string()),
+            ..Default::default()
+        };
+        let follows_matches = find_matches_in_source(
+            "cleanup.rs",
+            "rs",
+            rs_code,
+            "release($X)",
+            &filter_follows,
+            10,
+        )
+        .unwrap();
+        assert_eq!(
+            follows_matches.len(),
+            1,
+            "Only `release(handle)` has matching preceding `acquire(handle)`, got: {:?}",
+            follows_matches
+        );
+        assert_eq!(follows_matches[0].metavars["X"].text, "handle");
+
+        // 2. `precedes` with shared `$X`: matches `acquire(handle)` followed by `release(handle)`
+        let filter_precedes = AstGrepFilter {
+            precedes: Some("release($X)".to_string()),
+            ..Default::default()
+        };
+        let precedes_matches = find_matches_in_source(
+            "cleanup.rs",
+            "rs",
+            rs_code,
+            "acquire($X)",
+            &filter_precedes,
+            10,
+        )
+        .unwrap();
+        assert_eq!(precedes_matches.len(), 1);
+        assert_eq!(precedes_matches[0].metavars["X"].text, "handle");
+
+        // 3. `has` + `not_has`: find functions that contain `.await` (`await_expression`)
+        //    but do NOT contain a `match_expression`
+        let filter_not_has = AstGrepFilter {
+            has: Some("await_expression".to_string()),
+            not_has: Some("match_expression".to_string()),
+            ..Default::default()
+        };
+        let unguarded = find_matches_in_source(
+            "cleanup.rs",
+            "rs",
+            rs_code,
+            "async fn $NAME($$$PARAMS) { $$$BODY }",
+            &filter_not_has,
+            10,
+        )
+        .unwrap();
+        assert_eq!(unguarded.len(), 1);
+        assert_eq!(unguarded[0].metavars["NAME"].text, "risky_fetch");
     }
 }

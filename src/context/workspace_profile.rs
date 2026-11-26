@@ -824,6 +824,390 @@ impl WorkspaceProfile {
 
         lines.join("\n")
     }
+
+    /// Resolves the declarative [`CommentSyntax`] profile for `path` (used by the `tokei`-inspired
+    /// byte-level FSM line counter without regexes or ad-hoc extension checks).
+    #[must_use]
+    pub fn comment_syntax_for_path(path: &Path) -> CommentSyntax {
+        let label = Self::language_label_for_path(path);
+        const SYNTAX_BY_LABEL: &[(&[&str], CommentSyntax)] = &[
+            (
+                &["Rust", "Swift", "Kotlin", "Scala", "Zig"],
+                SYNTAX_NESTED_C,
+            ),
+            (
+                &[
+                    "TypeScript/React",
+                    "JavaScript/React",
+                    "TypeScript",
+                    "JavaScript",
+                    "Go",
+                    "C",
+                    "C++",
+                    "C#",
+                    "Java",
+                    "Dart",
+                    "PHP",
+                    "CSS",
+                    "CSS/Stylesheet",
+                    "Solidity",
+                    "Protobuf",
+                    "Shader",
+                    "Groovy",
+                    "Prisma",
+                    "Gleam",
+                ],
+                SYNTAX_C_STYLE,
+            ),
+            (
+                &[
+                    "Python",
+                    "Ruby",
+                    "Shell",
+                    "YAML",
+                    "TOML",
+                    "Makefile",
+                    "CMake",
+                    "Dockerfile",
+                    "Nix",
+                    "Perl",
+                    "Nim",
+                    "Elixir",
+                    "GraphQL",
+                    "Terraform",
+                    "PowerShell",
+                ],
+                SYNTAX_HASH,
+            ),
+            (&["SQL", "Lua", "Haskell"], SYNTAX_DASH_LINE),
+            (&["HTML", "Vue", "Svelte", "Astro", "XML"], SYNTAX_HTML),
+            (&["OCaml", "F#"], SYNTAX_OCAML),
+        ];
+
+        for &(labels, syntax) in SYNTAX_BY_LABEL {
+            if labels.contains(&label.as_str()) {
+                return syntax;
+            }
+        }
+        SYNTAX_NONE
+    }
+
+    /// Computes exact per-language Code / Comments / Blanks LOC metrics across `workspace_root`
+    /// using a pure byte-level finite state machine (`XAMPPRocky/tokei` algorithm, zero regexes).
+    #[must_use]
+    pub fn compute_code_stats(workspace_root: &Path) -> CodeStatsReport {
+        use std::collections::HashMap;
+        let rel_files =
+            crate::context::walker::WorkspaceWalker::new(workspace_root).collect_relative_files();
+        let mut by_lang: HashMap<String, LanguageLocStats> = HashMap::new();
+
+        for rel in rel_files {
+            let full = workspace_root.join(&rel);
+            let label = Self::language_label_for_path(&full);
+            if matches!(label.as_str(), "General" | "Config") && !Self::is_code_path(&full) {
+                continue;
+            }
+            let Ok(meta) = fs::metadata(&full) else {
+                continue;
+            };
+            if !meta.is_file() || meta.len() > 4 * 1024 * 1024 {
+                continue;
+            }
+            let Ok(bytes) = fs::read(&full) else {
+                continue;
+            };
+            // Skip binary files quickly via leading NUL-byte sniff
+            if bytes[..bytes.len().min(4096)].contains(&0) {
+                continue;
+            }
+            let syntax = Self::comment_syntax_for_path(&full);
+            let stats = count_bytes_tokei_fsm(&bytes, syntax);
+            let entry = by_lang
+                .entry(label.clone())
+                .or_insert_with(|| LanguageLocStats {
+                    language: label,
+                    files: 0,
+                    code: 0,
+                    comments: 0,
+                    blanks: 0,
+                });
+            entry.files += 1;
+            entry.code += stats.code;
+            entry.comments += stats.comments;
+            entry.blanks += stats.blanks;
+        }
+
+        let mut languages: Vec<LanguageLocStats> = by_lang.into_values().collect();
+        languages.sort_by(|a, b| {
+            b.code
+                .cmp(&a.code)
+                .then_with(|| a.language.cmp(&b.language))
+        });
+
+        let total_files = languages.iter().map(|l| l.files).sum();
+        let total_code = languages.iter().map(|l| l.code).sum();
+        let total_comments = languages.iter().map(|l| l.comments).sum();
+        let total_blanks = languages.iter().map(|l| l.blanks).sum();
+
+        CodeStatsReport {
+            languages,
+            total_files,
+            total_code,
+            total_comments,
+            total_blanks,
+        }
+    }
+}
+
+/// Declarative lexical comment & string syntax specification for the byte-level LOC FSM.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CommentSyntax {
+    pub line_comment: &'static str,
+    pub block_open: &'static str,
+    pub block_close: &'static str,
+    pub nested_blocks: bool,
+    pub string_quotes: &'static [u8],
+    pub has_backslash_escape: bool,
+}
+
+const SYNTAX_NESTED_C: CommentSyntax = CommentSyntax {
+    line_comment: "//",
+    block_open: "/*",
+    block_close: "*/",
+    nested_blocks: true,
+    string_quotes: b"\"",
+    has_backslash_escape: true,
+};
+
+const SYNTAX_C_STYLE: CommentSyntax = CommentSyntax {
+    line_comment: "//",
+    block_open: "/*",
+    block_close: "*/",
+    nested_blocks: false,
+    string_quotes: b"\"'`",
+    has_backslash_escape: true,
+};
+
+const SYNTAX_HASH: CommentSyntax = CommentSyntax {
+    line_comment: "#",
+    block_open: "",
+    block_close: "",
+    nested_blocks: false,
+    string_quotes: b"\"'",
+    has_backslash_escape: true,
+};
+
+const SYNTAX_DASH_LINE: CommentSyntax = CommentSyntax {
+    line_comment: "--",
+    block_open: "/*",
+    block_close: "*/",
+    nested_blocks: false,
+    string_quotes: b"'\"",
+    has_backslash_escape: true,
+};
+
+const SYNTAX_HTML: CommentSyntax = CommentSyntax {
+    line_comment: "",
+    block_open: "<!--",
+    block_close: "-->",
+    nested_blocks: false,
+    string_quotes: b"\"'",
+    has_backslash_escape: false,
+};
+
+const SYNTAX_OCAML: CommentSyntax = CommentSyntax {
+    line_comment: "",
+    block_open: "(*",
+    block_close: "*)",
+    nested_blocks: true,
+    string_quotes: b"\"",
+    has_backslash_escape: true,
+};
+
+const SYNTAX_NONE: CommentSyntax = CommentSyntax {
+    line_comment: "",
+    block_open: "",
+    block_close: "",
+    nested_blocks: false,
+    string_quotes: b"",
+    has_backslash_escape: false,
+};
+
+/// Exact per-file line counts produced by [`count_bytes_tokei_fsm`].
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct FileLineStats {
+    pub code: usize,
+    pub comments: usize,
+    pub blanks: usize,
+}
+
+/// Aggregated per-language LOC breakdown (`XAMPPRocky/tokei` format).
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct LanguageLocStats {
+    pub language: String,
+    pub files: usize,
+    pub code: usize,
+    pub comments: usize,
+    pub blanks: usize,
+}
+
+/// Full workspace code/comment/blank line-count report.
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct CodeStatsReport {
+    pub languages: Vec<LanguageLocStats>,
+    pub total_files: usize,
+    pub total_code: usize,
+    pub total_comments: usize,
+    pub total_blanks: usize,
+}
+
+impl CodeStatsReport {
+    pub fn format_markdown(&self) -> String {
+        if self.languages.is_empty() {
+            return String::new();
+        }
+        let mut out = String::from(
+            "### 📏 Codebase Language & LOC Breakdown (Byte-FSM)\n\n\
+             | Language | Files | Code | Comments | Blanks | Comment % |\n\
+             | :--- | ---: | ---: | ---: | ---: | ---: |\n",
+        );
+        for lang in self.languages.iter().take(15) {
+            let denom = lang.code + lang.comments;
+            let pct = if denom > 0 {
+                (lang.comments as f64 / denom as f64) * 100.0
+            } else {
+                0.0
+            };
+            out.push_str(&format!(
+                "| {} | {} | {} | {} | {} | {:.1}% |\n",
+                lang.language, lang.files, lang.code, lang.comments, lang.blanks, pct
+            ));
+        }
+        let total_denom = self.total_code + self.total_comments;
+        let total_pct = if total_denom > 0 {
+            (self.total_comments as f64 / total_denom as f64) * 100.0
+        } else {
+            0.0
+        };
+        out.push_str(&format!(
+            "| **Total** | **{}** | **{}** | **{}** | **{}** | **{:.1}%** |\n\n",
+            self.total_files, self.total_code, self.total_comments, self.total_blanks, total_pct
+        ));
+        out
+    }
+}
+
+/// Deterministic single-pass byte-level finite state machine for counting Code, Comment, and
+/// Blank lines (`XAMPPRocky/tokei` algorithm, zero regexes).
+///
+/// Correctly handles nested block comments (e.g. Rust `/* /* */ */`), comment markers inside
+/// string literals (`"https://..."`), escaped quotes (`\"`), and mixed code + trailing comments.
+#[must_use]
+pub fn count_bytes_tokei_fsm(bytes: &[u8], syntax: CommentSyntax) -> FileLineStats {
+    if bytes.is_empty() {
+        return FileLineStats::default();
+    }
+
+    let line_c = syntax.line_comment.as_bytes();
+    let blk_open = syntax.block_open.as_bytes();
+    let blk_close = syntax.block_close.as_bytes();
+
+    let mut stats = FileLineStats::default();
+    let mut block_depth: usize = 0;
+    let mut in_string: Option<u8> = None;
+
+    for raw_line in bytes.split(|&b| b == b'\n') {
+        let line = raw_line.strip_suffix(b"\r").unwrap_or(raw_line);
+        let len = line.len();
+        let mut i = 0usize;
+        let mut has_code = false;
+        let mut has_comment = false;
+
+        // Skip leading whitespace
+        while i < len && line[i].is_ascii_whitespace() {
+            i += 1;
+        }
+        if i == len {
+            stats.blanks += 1;
+            continue;
+        }
+
+        while i < len {
+            let b = line[i];
+
+            // Inside string literal
+            if let Some(quote) = in_string {
+                has_code = true;
+                if syntax.has_backslash_escape && b == b'\\' && i + 1 < len {
+                    i += 2;
+                    continue;
+                }
+                if b == quote {
+                    in_string = None;
+                }
+                i += 1;
+                continue;
+            }
+
+            // Inside block comment
+            if block_depth > 0 {
+                has_comment = true;
+                if syntax.nested_blocks && !blk_open.is_empty() && line[i..].starts_with(blk_open) {
+                    block_depth += 1;
+                    i += blk_open.len();
+                    continue;
+                }
+                if !blk_close.is_empty() && line[i..].starts_with(blk_close) {
+                    block_depth -= 1;
+                    i += blk_close.len();
+                    continue;
+                }
+                i += 1;
+                continue;
+            }
+
+            // Normal code state
+            if b.is_ascii_whitespace() {
+                i += 1;
+                continue;
+            }
+            if !line_c.is_empty() && line[i..].starts_with(line_c) {
+                has_comment = true;
+                break; // Remainder of line is a line comment
+            }
+            if !blk_open.is_empty() && line[i..].starts_with(blk_open) {
+                has_comment = true;
+                block_depth = 1;
+                i += blk_open.len();
+                continue;
+            }
+            if syntax.string_quotes.contains(&b) {
+                has_code = true;
+                in_string = Some(b);
+                i += 1;
+                continue;
+            }
+
+            has_code = true;
+            i += 1;
+        }
+
+        // Standard `tokei` classification rule: a line with ANY code counts as code (even with trailing comment)
+        if has_code {
+            stats.code += 1;
+        } else if has_comment {
+            stats.comments += 1;
+        } else {
+            stats.blanks += 1;
+        }
+    }
+
+    // Avoid counting a phantom blank line caused by a trailing `\n` at EOF
+    if bytes.ends_with(b"\n") && stats.blanks > 0 {
+        stats.blanks -= 1;
+    }
+
+    stats
 }
 
 pub(crate) fn insert_package_specifier_tokens(tokens: &mut HashSet<String>, raw_spec: &str) {
@@ -933,5 +1317,27 @@ mod tests {
             WorkspaceProfile::language_label_for_path(Path::new("notes.txt")),
             "General"
         );
+    }
+
+    #[test]
+    fn test_tokei_fsm_handles_nested_block_comments_strings_and_mixed_lines() {
+        let rust_src = br#"// Leading line comment
+/* Outer comment
+   /* Nested Rust block comment */
+   still inside outer comment!
+*/
+pub fn fetch() -> &'static str {
+    let url = "https://example.com /* not a comment */"; // trailing comment on code line
+
+    url
+}
+"#;
+        let stats = count_bytes_tokei_fsm(rust_src, SYNTAX_NESTED_C);
+        assert_eq!(stats.comments, 5, "1 line comment + 4 block comment lines");
+        assert_eq!(
+            stats.code, 4,
+            "fn signature, url literal with // and /*, url expr, closing brace"
+        );
+        assert_eq!(stats.blanks, 1, "single blank line inside function");
     }
 }

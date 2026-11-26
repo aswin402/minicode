@@ -172,7 +172,7 @@ pub fn get_schemas() -> Vec<ToolSchema> {
         },
         ToolSchema {
             name: "replace_in_files".to_string(),
-            description: "Batch refactoring: Atomically find and replace text across multiple workspace files matching a glob pattern (e.g. 'src/components/*.tsx'). Use ONLY when the EXACT same search_block exists across 2 or more files (e.g. renaming a shared import or token). For single-file edits, always use patch_file.".to_string(),
+            description: "Batch refactoring: Trigram-accelerated atomic find-and-replace across workspace files matching a glob pattern (e.g. 'src/components/*.tsx'). Literal-first by default; supports optional `dry_run` diff preview, `word_boundary` whole-identifier matching, and opt-in `regex_mode` with `$1`/`$name` captures. For single-file edits, always use patch_file.".to_string(),
             parameters: json!({
                 "type": "object",
                 "properties": {
@@ -182,11 +182,23 @@ pub fn get_schemas() -> Vec<ToolSchema> {
                     },
                     "search_block": {
                         "type": "string",
-                        "description": "The exact unique code block or pattern to find in matching files"
+                        "description": "The exact literal block or regex pattern (when regex_mode=true) to find in matching files"
                     },
                     "updated_code": {
                         "type": "string",
-                        "description": "The replacement code block (MUST differ from search_block)"
+                        "description": "The replacement code block (supports $1/$name captures when regex_mode=true; MUST differ from search_block)"
+                    },
+                    "dry_run": {
+                        "type": "boolean",
+                        "description": "Optional: when true, validates syntax and previews unified diffs without modifying files on disk (default: false)"
+                    },
+                    "word_boundary": {
+                        "type": "boolean",
+                        "description": "Optional: when true, only replaces matches bounded by non-identifier characters so partial identifiers are untouched (default: false)"
+                    },
+                    "regex_mode": {
+                        "type": "boolean",
+                        "description": "Optional: when true, interprets search_block as a Rust regex and expands $1/${name} captures in updated_code (default: false, literal-first)"
                     }
                 },
                 "required": ["glob", "search_block", "updated_code"]
@@ -890,6 +902,11 @@ pub async fn dispatch(
                 )?;
                 let search = param::require_search_block(args, "replace_in_files")?;
                 let replace = param::require_replace_block(args, "replace_in_files")?;
+                let options = fs::ReplaceInFilesOptions {
+                    dry_run: param::opt_bool(args, "dry_run", false),
+                    word_boundary: param::opt_bool(args, "word_boundary", false),
+                    regex_mode: param::opt_bool(args, "regex_mode", false),
+                };
                 let root_buf = workspace_root.to_path_buf();
                 let glob_str = glob_pattern.to_string();
                 let search_str = search.to_string();
@@ -897,11 +914,12 @@ pub async fn dispatch(
                 let has_backup = backup_manager.is_some();
                 tokio::task::spawn_blocking(move || {
                     let local_bm = has_backup.then(|| BackupManager::new(&root_buf));
-                    fs::replace_in_files(
+                    fs::replace_in_files_with_options(
                         &root_buf,
                         &glob_str,
                         &search_str,
                         &replace_str,
+                        options,
                         local_bm.as_ref(),
                         turn_id,
                     )

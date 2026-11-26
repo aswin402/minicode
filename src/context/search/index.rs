@@ -255,6 +255,25 @@ impl SymbolIndex {
         crate::context::search::trigram::TrigramIndex::invalidate_cache();
     }
 
+    /// Targeted per-file invalidation: clears `SymbolIndex` and records an $O(1)$ coalesced dirty
+    /// event into `TrigramIndex` so search indexes update incrementally instead of re-walking disk.
+    pub fn on_file_mutated(
+        workspace_root: &Path,
+        rel_path: &str,
+        op: crate::context::search::trigram::FileMutationOp,
+    ) {
+        if let Some(cache) = GLOBAL_SYMBOL_INDEX_CACHE.get() {
+            if let Ok(mut guard) = cache.write() {
+                *guard = None;
+            }
+        }
+        crate::context::search::trigram::TrigramIndex::record_dirty_file(
+            workspace_root,
+            rel_path,
+            op,
+        );
+    }
+
     /// Splits an identifier (`camelCase`, `PascalCase`, `HTMLParser`, `snake_case`, `SCREAMING_SNAKE`) into searchable tokens
     pub fn tokenize(text: &str) -> Vec<String> {
         let mut tokens = HashSet::new();

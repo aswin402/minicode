@@ -458,6 +458,9 @@ pub fn file_search(
         crate::context::search::trigram::TrigramIndex::get_or_build_cached(workspace_root)
     {
         for rel_path in trigram_idx.all_files() {
+            if rel_path.is_empty() {
+                continue;
+            }
             if matches.len() >= max_results {
                 break;
             }

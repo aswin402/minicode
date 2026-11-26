@@ -209,7 +209,7 @@ pub fn get_schemas() -> Vec<ToolSchema> {
         },
         ToolSchema {
             name: "ast_grep_search".to_string(),
-            description: "Search across workspace files using structural AST code patterns with metavariables ($VAR for single node, $_ for wildcard, $$$ARGS for variadic sequence) and optional relational constraints (inside, not_inside, has).".to_string(),
+            description: "Search across workspace files using structural AST code patterns with metavariables ($VAR for single node, $_ for wildcard, $$$ARGS for variadic sequence) and relational constraints (inside, not_inside, has, not_has, follows, precedes) sharing a unified MetaVarEnv.".to_string(),
             parameters: json!({
                 "type": "object",
                 "properties": {
@@ -233,6 +233,18 @@ pub fn get_schemas() -> Vec<ToolSchema> {
                         "type": "string",
                         "description": "Optional descendant AST node kind or pattern constraint (e.g. 'await_expression', '$X.await')"
                     },
+                    "not_has": {
+                        "type": "string",
+                        "description": "Optional descendant exclusion constraint (e.g. 'try_statement', 'match_expression')"
+                    },
+                    "follows": {
+                        "type": "string",
+                        "description": "Optional preceding sibling AST node kind or pattern constraint sharing MetaVarEnv (e.g. 'acquire($X)')"
+                    },
+                    "precedes": {
+                        "type": "string",
+                        "description": "Optional subsequent sibling AST node kind or pattern constraint sharing MetaVarEnv (e.g. 'release($X)')"
+                    },
                     "limit": {
                         "type": "integer",
                         "description": "Maximum number of structural matches to return (default: 20)"
@@ -243,7 +255,7 @@ pub fn get_schemas() -> Vec<ToolSchema> {
         },
         ToolSchema {
             name: "ast_grep_rewrite".to_string(),
-            description: "Perform structural AST search-and-replace codemods using metavariable templates ($VAR, $$$ARGS) with relative indentation preservation and pre-disk Tree-sitter SyntaxGuard verification.".to_string(),
+            description: "Perform structural AST search-and-replace codemods using metavariable templates ($VAR, $$$ARGS) and relational constraints (inside, not_inside, has, not_has, follows, precedes) with relative indentation preservation and pre-disk Tree-sitter SyntaxGuard verification.".to_string(),
             parameters: json!({
                 "type": "object",
                 "properties": {
@@ -270,6 +282,18 @@ pub fn get_schemas() -> Vec<ToolSchema> {
                     "has": {
                         "type": "string",
                         "description": "Optional descendant AST node kind or pattern constraint"
+                    },
+                    "not_has": {
+                        "type": "string",
+                        "description": "Optional descendant exclusion constraint"
+                    },
+                    "follows": {
+                        "type": "string",
+                        "description": "Optional preceding sibling AST constraint sharing MetaVarEnv"
+                    },
+                    "precedes": {
+                        "type": "string",
+                        "description": "Optional subsequent sibling AST constraint sharing MetaVarEnv"
                     },
                     "dry_run": {
                         "type": "boolean",
@@ -545,6 +569,9 @@ pub fn dispatch(
                 inside: opt_str(args, "inside").map(str::to_string),
                 not_inside: opt_str(args, "not_inside").map(str::to_string),
                 has: opt_str(args, "has").map(str::to_string),
+                not_has: opt_str(args, "not_has").map(str::to_string),
+                follows: opt_str(args, "follows").map(str::to_string),
+                precedes: opt_str(args, "precedes").map(str::to_string),
                 file_pattern: opt_str(args, "file_pattern")
                     .or_else(|| opt_str(args, "glob"))
                     .or_else(|| opt_path(args))
@@ -569,6 +596,9 @@ pub fn dispatch(
                 inside: opt_str(args, "inside").map(str::to_string),
                 not_inside: opt_str(args, "not_inside").map(str::to_string),
                 has: opt_str(args, "has").map(str::to_string),
+                not_has: opt_str(args, "not_has").map(str::to_string),
+                follows: opt_str(args, "follows").map(str::to_string),
+                precedes: opt_str(args, "precedes").map(str::to_string),
                 file_pattern: opt_str(args, "file_pattern")
                     .or_else(|| opt_str(args, "glob"))
                     .or_else(|| opt_path(args))
