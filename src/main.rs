@@ -265,6 +265,12 @@ enum Commands {
         json: bool,
     },
 
+    /// Convert structured data between JSON and TOON v3 (Token-Oriented Object Notation)
+    Toon {
+        #[command(subcommand)]
+        action: ToonCommands,
+    },
+
     /// Initialize a new MiniKit project or scaffold a stack
     Init {
         /// Project name (defaults to current directory name)
@@ -637,6 +643,41 @@ enum EconomyCommands {
 }
 
 #[derive(Subcommand, Debug)]
+enum ToonCommands {
+    /// Encode JSON (from a file or stdin) into lossless TOON v3
+    Encode {
+        /// Optional path to a JSON file (reads stdin when omitted)
+        file: Option<PathBuf>,
+
+        /// Delimiter policy: auto (default), comma, pipe, or tab
+        #[arg(short, long, default_value = "auto")]
+        delimiter: String,
+
+        /// Disable safe single-key path folding (e.g. a.b.c:)
+        #[arg(long)]
+        no_key_folding: bool,
+
+        /// Print byte and estimated token savings summary to stderr
+        #[arg(long)]
+        stats: bool,
+    },
+
+    /// Decode TOON v3 (from a file or stdin) back into JSON
+    Decode {
+        /// Optional path to a TOON file (reads stdin when omitted)
+        file: Option<PathBuf>,
+
+        /// Output minified single-line JSON instead of pretty-printed JSON
+        #[arg(long)]
+        compact: bool,
+
+        /// Keep dotted keys literal instead of expanding folded paths into nested objects
+        #[arg(long)]
+        no_expand_paths: bool,
+    },
+}
+
+#[derive(Subcommand, Debug)]
 enum KitCommands {
     /// Show real-time package metadata and latest version from upstream registries
     Info {
@@ -768,6 +809,10 @@ async fn main() -> anyhow::Result<()> {
         handle_economy_cli(&workspace_canonical, action, json)?;
         return Ok(());
     }
+    if let Some(Commands::Toon { action }) = cli.command {
+        handle_toon_cli(action)?;
+        return Ok(());
+    }
 
     // 3. Load configuration hierarchy
     let mut config = Config::load(Some(&workspace_canonical), cli.config.as_deref())?;
@@ -892,6 +937,7 @@ async fn main() -> anyhow::Result<()> {
             .await?;
         }
         Some(Commands::Economy { .. }) => unreachable!(), // Handled earlier
+        Some(Commands::Toon { .. }) => unreachable!(),    // Handled earlier
         Some(Commands::Doctor {
             env,
             diff,
@@ -2743,6 +2789,101 @@ fn handle_economy_cli(
                 );
             } else {
                 println!("Cleared all MiniEconomy data (.minicode/economy/) for this workspace.");
+            }
+        }
+    }
+    Ok(())
+}
+
+fn handle_toon_cli(action: ToonCommands) -> Result<()> {
+    use minicode::context::budget::compressor::ContextCompressor;
+    use minicode::context::budget::toon::{DelimiterMode, ToonCodec, ToonDelimiter, ToonOptions};
+    use std::io::Read;
+
+    let read_input = |file: Option<PathBuf>| -> Result<String> {
+        if let Some(path) = file {
+            std::fs::read_to_string(&path).map_err(|e| {
+                std::io::Error::new(e.kind(), format!("Failed to read {}: {e}", path.display()))
+                    .into()
+            })
+        } else {
+            let mut buf = String::new();
+            std::io::stdin().read_to_string(&mut buf)?;
+            Ok(buf)
+        }
+    };
+
+    match action {
+        ToonCommands::Encode {
+            file,
+            delimiter,
+            no_key_folding,
+            stats,
+        } => {
+            let raw = read_input(file)?;
+            let delim_mode = match delimiter.to_ascii_lowercase().as_str() {
+                "auto" => DelimiterMode::Auto,
+                "comma" | "," => DelimiterMode::Fixed(ToonDelimiter::Comma),
+                "pipe" | "|" => DelimiterMode::Fixed(ToonDelimiter::Pipe),
+                "tab" | "\\t" => DelimiterMode::Fixed(ToonDelimiter::Tab),
+                other => {
+                    return Err(std::io::Error::new(
+                        std::io::ErrorKind::InvalidInput,
+                        format!(
+                            "Unsupported delimiter '{other}' (expected: auto, comma, pipe, tab)"
+                        ),
+                    )
+                    .into());
+                }
+            };
+            let opts = ToonOptions {
+                delimiter: delim_mode,
+                key_folding: !no_key_folding,
+                ..ToonOptions::default()
+            };
+            let parsed: serde_json::Value = serde_json::from_str(raw.trim()).map_err(|e| {
+                std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    format!("Invalid JSON input: {e}"),
+                )
+            })?;
+            let encoded = ToonCodec::encode_value(&parsed, &opts);
+            println!("{encoded}");
+            if stats {
+                let raw_toks = ContextCompressor::count_tokens_fast(&raw);
+                let toon_toks = ContextCompressor::count_tokens_fast(&encoded);
+                let saved_pct = if raw_toks > 0 {
+                    (raw_toks.saturating_sub(toon_toks) as f64 / raw_toks as f64) * 100.0
+                } else {
+                    0.0
+                };
+                eprintln!(
+                    "TOON stats: {}B -> {}B | ~{} -> ~{} tokens ({:.1}% saved)",
+                    raw.len(),
+                    encoded.len(),
+                    raw_toks,
+                    toon_toks,
+                    saved_pct
+                );
+            }
+        }
+        ToonCommands::Decode {
+            file,
+            compact,
+            no_expand_paths,
+        } => {
+            let raw = read_input(file)?;
+            let decoded =
+                ToonCodec::decode_value_with_options(&raw, !no_expand_paths).map_err(|e| {
+                    std::io::Error::new(
+                        std::io::ErrorKind::InvalidData,
+                        format!("Invalid TOON input: {e}"),
+                    )
+                })?;
+            if compact {
+                println!("{}", serde_json::to_string(&decoded)?);
+            } else {
+                println!("{}", serde_json::to_string_pretty(&decoded)?);
             }
         }
     }

@@ -13,6 +13,7 @@ pub mod json_crusher;
 pub mod log_pruner;
 pub mod micro_compact;
 pub mod observation_pruner;
+pub mod toon;
 
 pub use budget::*;
 #[allow(unused_imports)]
@@ -24,3 +25,5 @@ pub use economy::{
 #[allow(unused_imports)]
 pub use micro_compact::{MicroCompactMetrics, MicroCompactor};
 pub use observation_pruner::ObservationPruner;
+#[allow(unused_imports)]
+pub use toon::{DelimiterMode, ToonCodec, ToonDelimiter, ToonOptions};

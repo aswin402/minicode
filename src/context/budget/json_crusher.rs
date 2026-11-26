@@ -1,5 +1,6 @@
 use crate::context::budget::ccr_cache::CcrCache;
-use crate::context::budget::headroom::{AdaptiveSizer, AnchorSelector, ToonCodec};
+use crate::context::budget::headroom::{AdaptiveSizer, AnchorSelector};
+use crate::context::budget::toon::{ToonCodec, ToonOptions};
 use serde_json::{Map, Value};
 
 pub struct JsonCrusher;
@@ -89,14 +90,14 @@ impl JsonCrusher {
             .collect();
 
         // 4. First attempt 100% lossless TOON table encoding (`omitted_count == 0`):
-        // If all stripped items form a uniform scalar table and the full TOON table fits within
-        // the observation token budget (`<= 450` tokens / `<= 1800` bytes, `total_count <= 64`),
-        // retain 100% of items losslessly instead of dropping rows!
+        // If all stripped items form a uniform scalar table and the full native TOON table fits
+        // within the observation token budget (`<= 2200` bytes, `total_count <= 64`), retain 100%
+        // of items losslessly instead of dropping rows.
         let can_retain_all_lossless_toon = if total_count <= 64 {
             if let Some(cols) = ToonCodec::is_eligible(&all_stripped) {
                 let full_rows = ToonCodec::encode_rows(&all_stripped, &cols);
-                let est_bytes: usize = full_rows.iter().map(|r| r.len() + 4).sum();
-                est_bytes <= 1800
+                let est_bytes: usize = full_rows.iter().map(|r| r.len() + 3).sum();
+                est_bytes <= 2200
             } else {
                 false
             }
@@ -161,33 +162,32 @@ impl JsonCrusher {
             envelope.insert("_numeric_stats".to_string(), Value::Object(numeric_stats));
         }
 
-        // Rock 2 (`juliusbrussee/caveman` TOON — Token-Oriented Object Notation):
-        // If retained items form a uniform scalar table, hoist column names once into `_toon_columns`
-        // and encode each object as a single TOON row in `items_toon` (~45-60% fewer tokens than repeated JSON keys).
-        if let Some(columns) = ToonCodec::is_eligible(&retained_items) {
-            let toon_rows = ToonCodec::encode_rows(&retained_items, &columns);
-            envelope.insert(
-                "_toon_columns".to_string(),
-                Value::Array(columns.into_iter().map(Value::String).collect()),
-            );
-            envelope.insert(
-                "items_toon".to_string(),
-                Value::Array(toon_rows.into_iter().map(Value::String).collect()),
-            );
+        // Native TOON v3 serialization (`toon-format/toon`):
+        // Encode the ENTIRE crushed envelope directly as pure TOON (eliminating JSON braces,
+        // repeated quotes, and double-escaped row strings). Uniform scalar arrays automatically
+        // render as `items_toon[N]{col1,col2,...}:` with optimal delimiter selection.
+        let items_key = if ToonCodec::is_eligible(&retained_items).is_some() {
+            "items_toon"
         } else {
-            envelope.insert("items".to_string(), Value::Array(retained_items));
-        }
+            "items"
+        };
+        envelope.insert(items_key.to_string(), Value::Array(retained_items));
 
-        let crushed_json = if raw_json.lines().count() <= 3 {
-            serde_json::to_string(&Value::Object(envelope)).ok()?
+        let envelope_val = Value::Object(envelope);
+        let native_toon = ToonCodec::encode_value(&envelope_val, &ToonOptions::default());
+        let compact_json = serde_json::to_string(&envelope_val).ok()?;
+
+        // Pick whichever representation is strictly smaller while preserving native TOON for tabular payloads
+        let crushed_out = if items_key == "items_toon" || native_toon.len() <= compact_json.len() {
+            native_toon
         } else {
-            serde_json::to_string_pretty(&Value::Object(envelope)).ok()?
+            compact_json
         };
 
-        if crushed_json.len() >= raw_json.len() {
+        if crushed_out.len() >= raw_json.len() {
             return None;
         }
 
-        Some((crushed_json, ccr_id))
+        Some((crushed_out, ccr_id))
     }
 }

@@ -5,6 +5,7 @@ use crate::context::budget::headroom::{
 };
 use crate::context::budget::json_crusher::JsonCrusher;
 use crate::context::budget::log_pruner::LogPruner;
+use crate::context::budget::toon::{ToonCodec, ToonOptions};
 
 /// Unified Headroom `ContentRouter` & `LiveZoneDispatcher` that transparently classifies
 /// and compresses structured JSON payloads (arrays + nested object arrays), unified `git diff`
@@ -25,18 +26,65 @@ impl ObservationPruner {
         let orig_tokens = ContextCompressor::count_tokens_fast(raw_output);
         let orig_bytes = raw_output.len();
 
-        // 1. Structured JSON compression (`SmartCrusher` + `AdaptiveSizer` + `AnchorSelector`)
-        if let Some((crushed, _)) = JsonCrusher::crush(raw_output) {
-            let comp_tokens = ContextCompressor::count_tokens_fast(&crushed);
-            if comp_tokens < orig_tokens || crushed.len() < orig_bytes {
-                CcrCache::record_compression(
-                    "json",
-                    orig_bytes,
-                    crushed.len(),
-                    orig_tokens,
-                    comp_tokens,
-                );
-                return crushed;
+        // 1. Structured JSON array crushing (`SmartCrusher` + `AdaptiveSizer` + `AnchorSelector` + native TOON)
+        // Guardrail: never rewrite verbatim source/config file reads (`read_file` on package.json, etc.)
+        // because patch/edit tools rely on exact original text and line numbers.
+        let is_source_file_read = matches!(
+            tool_name,
+            "read_file" | "read_files" | "view_file" | "read_file_outline" | "get_file_content"
+        );
+        if !is_source_file_read {
+            if let Some((crushed, _)) = JsonCrusher::crush(raw_output) {
+                let comp_tokens = ContextCompressor::count_tokens_fast(&crushed);
+                if comp_tokens < orig_tokens || crushed.len() < orig_bytes {
+                    CcrCache::record_compression(
+                        "json",
+                        orig_bytes,
+                        crushed.len(),
+                        orig_tokens,
+                        comp_tokens,
+                    );
+                    return crushed;
+                }
+            }
+
+            // 1a. Lossless Full-JSON -> TOON v3 conversion for nested API/MCP/CLI JSON payloads
+            // (GraphQL, GitHub CLI `--json`, `kubectl -o json`, `docker inspect`, MCP tools, `webfetch`)
+            // that `JsonCrusher` skipped because they lack a top-level flat array.
+            if orig_bytes >= 256 {
+                let trimmed = raw_output.trim();
+                let looks_json = (trimmed.starts_with('{') && trimmed.ends_with('}'))
+                    || (trimmed.starts_with('[') && trimmed.ends_with(']'));
+                if looks_json {
+                    if let Some(mut toon_out) =
+                        ToonCodec::encode_json_str(trimmed, &ToonOptions::default())
+                    {
+                        let base_tokens = ContextCompressor::count_tokens_fast(&toon_out);
+                        if base_tokens.saturating_mul(100) <= orig_tokens.saturating_mul(85)
+                            && toon_out.len() + 48 < orig_bytes
+                        {
+                            let ccr_id = CcrCache::store(raw_output);
+                            if orig_bytes >= 1500 {
+                                let with_footer = format!(
+                                    "{toon_out}\n[TOON lossless — raw JSON cached as {ccr_id}; use retrieve_observation(id=\"{ccr_id}\") if verbatim JSON is needed]"
+                                );
+                                if ContextCompressor::count_tokens_fast(&with_footer) < orig_tokens
+                                {
+                                    toon_out = with_footer;
+                                }
+                            }
+                            let comp_tokens = ContextCompressor::count_tokens_fast(&toon_out);
+                            CcrCache::record_compression(
+                                "toon",
+                                orig_bytes,
+                                toon_out.len(),
+                                orig_tokens,
+                                comp_tokens,
+                            );
+                            return toon_out;
+                        }
+                    }
+                }
             }
         }
 
@@ -508,5 +556,45 @@ mod tests {
         assert!(crushed_sections.contains("items_toon"));
         assert!(crushed_sections.contains("section-11,1444,1444"));
         assert!(!crushed_sections.contains("_omitted_count"));
+        // Verify pure native TOON (no outer JSON braces wrapping TOON rows!)
+        assert!(
+            !crushed_sections.trim_start().starts_with('{'),
+            "JsonCrusher should emit native TOON directly instead of JSON-wrapped TOON, got:\n{crushed_sections}"
+        );
+    }
+
+    #[test]
+    fn test_observation_pruner_lossless_nested_json_to_toon_and_read_file_guardrail() {
+        let graphql_payload = serde_json::json!({
+            "data": {
+                "repository": {
+                    "name": "minicode",
+                    "pullRequests": {
+                        "nodes": [
+                            {"number": 101, "title": "Add TOON v3 codec", "state": "OPEN", "author": "alice"},
+                            {"number": 102, "title": "Fix SimHash loop guard", "state": "MERGED", "author": "bob"},
+                            {"number": 103, "title": "Cache TOML regexes", "state": "MERGED", "author": "carol"},
+                            {"number": 104, "title": "Optimize RTK tables", "state": "OPEN", "author": "dave"}
+                        ]
+                    }
+                }
+            }
+        });
+        let raw_pretty = serde_json::to_string_pretty(&graphql_payload).unwrap();
+
+        // 1. MCP / API / exec_cmd JSON output -> automatically encoded losslessly to TOON v3!
+        let pruned_mcp = ObservationPruner::prune_for_llm("mcp__github__list_prs", &raw_pretty);
+        assert!(
+            pruned_mcp.contains("data.repository:"),
+            "expected key-folded TOON output for nested MCP JSON, got:\n{pruned_mcp}"
+        );
+        assert!(pruned_mcp.contains("pullRequests.nodes[4]{"));
+        assert!(pruned_mcp.len() < raw_pretty.len());
+        let roundtrip = ToonCodec::decode_value(&pruned_mcp).expect("lossless TOON decode");
+        assert_eq!(roundtrip, graphql_payload);
+
+        // 2. `read_file` on JSON source/config files must NEVER be rewritten to TOON (preserves exact lines for patch_file!)
+        let preserved_read = ObservationPruner::prune_for_llm("read_file", &raw_pretty);
+        assert_eq!(preserved_read, raw_pretty);
     }
 }
