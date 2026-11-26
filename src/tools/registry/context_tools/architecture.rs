@@ -60,7 +60,7 @@ pub fn get_schemas() -> Vec<ToolSchema> {
         },
         ToolSchema {
             name: "code_smells".to_string(),
-            description: "Run AST code smell and anti-pattern linter to detect god functions (>80 lines), excessive parameters, deep nesting, dead public exports, and complex boolean expressions.".to_string(),
+            description: "Run AST & Call-Graph code smell and YAGNI bloat auditor to detect god functions (>80 lines), excessive parameters, deep nesting, dead public exports, complex booleans, shortcut debt markers, redundant comments restating code, trivial single-caller pass-through wrappers, and speculative single-implementation abstractions.".to_string(),
             parameters: json!({
                 "type": "object",
                 "properties": {

@@ -21,6 +21,12 @@ pub enum SmellCategory {
     ComplexBoolean,
     /// Intentional YAGNI shortcut comment (`shortcut: <ceiling>, <upgrade trigger>`) harvested via Tree-sitter AST
     ShortcutDebt,
+    /// AST comment node that restates the adjacent code tokens instead of explaining *why*
+    RedundantComment,
+    /// Single-statement pass-through wrapper function with <=1 caller (indirection bloat)
+    TrivialWrapper,
+    /// Internal trait/interface with <=1 implementation across the repository graph (speculative abstraction)
+    SpeculativeAbstraction,
 }
 
 /// Structured entry in the Ponytail-inspired `shortcut:` technical debt ledger.
@@ -42,6 +48,9 @@ impl SmellCategory {
             Self::DeadExport => "🔍 Dead Public Export",
             Self::ComplexBoolean => "⚠️ Complex Boolean Logic",
             Self::ShortcutDebt => "📌 Shortcut Debt",
+            Self::RedundantComment => "💬 Redundant Comment",
+            Self::TrivialWrapper => "🪆 Trivial Pass-Through Wrapper",
+            Self::SpeculativeAbstraction => "🏗️ Speculative Abstraction",
         }
     }
 }
@@ -233,6 +242,47 @@ impl AstSmellDetector {
                     }
                 }
             }
+
+            // (c2) Speculative Abstraction Detection (internal trait/interface with <=1 impl/ref in CodeGraph)
+            if let Some(cg) = graph {
+                if matches!(sym.kind.as_str(), "trait" | "interface")
+                    && !sym.signature.starts_with("pub ")
+                    && !sym.signature.starts_with("export ")
+                    && !path_display.contains("test")
+                {
+                    if let Some(indices) = cg.name_to_nodes().get(&sym.name) {
+                        let ref_count: usize = indices
+                            .iter()
+                            .map(|&idx| {
+                                cg.graph()
+                                    .neighbors_directed(idx, petgraph::Direction::Incoming)
+                                    .filter(|&n| {
+                                        cg.graph().node_weight(n).is_some_and(|w| {
+                                            w.kind != crate::context::graph::SymbolKind::File
+                                        })
+                                    })
+                                    .count()
+                            })
+                            .sum();
+                        if ref_count <= 1 {
+                            smells.push(CodeSmell {
+                                id: format!("spec-abs-{}", uuid::Uuid::new_v4().simple()),
+                                category: SmellCategory::SpeculativeAbstraction,
+                                severity: "INFO".to_string(),
+                                symbol_name: Some(sym.name.clone()),
+                                file_path: path_display.clone(),
+                                start_line: sym.line_number,
+                                end_line: sym.end_line,
+                                message: format!(
+                                    "Internal {} `{}` has only {} reference(s) in the workspace graph (possible speculative YAGNI abstraction)",
+                                    sym.kind, sym.name, ref_count
+                                ),
+                                remediation: "Prefer a concrete type until a second implementation or mock boundary is genuinely required.".to_string(),
+                            });
+                        }
+                    }
+                }
+            }
         }
 
         // 2. Line-level inspections (Deep Nesting & Complex Boolean Logic)
@@ -353,7 +403,53 @@ impl AstSmellDetector {
             }
         }
 
+        // (g) Tree-sitter AST YAGNI/Bloat Detectors (redundant comment-restate-code & trivial
+        //     single-caller pass-through wrappers — purely structural, zero regexes)
+        Self::collect_ast_yagni_bloat_smells(file_path, content, &lines, graph, &mut smells);
+
         smells
+    }
+
+    /// Walks the Tree-sitter AST once to detect:
+    /// 1. Redundant comments whose normalized content-word containment against the adjacent code
+    ///    exceeds `0.72` (restating *what* the code already says instead of *why*).
+    /// 2. Trivial 1-statement pass-through wrapper functions with `<= 1` caller.
+    fn collect_ast_yagni_bloat_smells(
+        file_path: &Path,
+        code: &str,
+        lines: &[&str],
+        graph: Option<&CodeGraph>,
+        smells: &mut Vec<CodeSmell>,
+    ) {
+        let ext = file_path
+            .extension()
+            .and_then(|e| e.to_str())
+            .unwrap_or_default();
+        let Some(lang) = crate::context::syntax_guard::SyntaxGuard::language_for_extension(ext)
+        else {
+            return;
+        };
+        let mut parser = tree_sitter::Parser::new();
+        if parser.set_language(&lang).is_err() {
+            return;
+        }
+        let Some(tree) = parser.parse(code, None) else {
+            return;
+        };
+        let path_display = file_path.display().to_string();
+        let mut redundant_count = 0usize;
+        let mut wrapper_count = 0usize;
+
+        collect_yagni_bloat_dfs(
+            tree.root_node(),
+            code,
+            lines,
+            &path_display,
+            graph,
+            smells,
+            &mut redundant_count,
+            &mut wrapper_count,
+        );
     }
 
     /// Walks Tree-sitter AST comment nodes (`comment`, `line_comment`, `block_comment`) to harvest
@@ -628,6 +724,300 @@ fn find_inline_trigger_split(payload: &str) -> (&str, Option<String>) {
     (payload.trim(), None)
 }
 
+#[allow(clippy::too_many_arguments)]
+fn collect_yagni_bloat_dfs(
+    node: tree_sitter::Node<'_>,
+    source: &str,
+    lines: &[&str],
+    file_path: &str,
+    graph: Option<&CodeGraph>,
+    smells: &mut Vec<CodeSmell>,
+    redundant_count: &mut usize,
+    wrapper_count: &mut usize,
+) {
+    let kind = node.kind();
+
+    // 1. Redundant comment-to-code lexical containment check (purely token-set algorithmic)
+    if *redundant_count < 4 && (node.is_extra() || kind.contains("comment")) {
+        if let Some(raw_comment) = source.get(node.start_byte()..node.end_byte()) {
+            let trimmed = raw_comment.trim();
+            let is_doc_or_directive = trimmed.starts_with("///")
+                || trimmed.starts_with("//!")
+                || trimmed.starts_with("/**")
+                || {
+                    let lower = trimmed.to_ascii_lowercase();
+                    crate::constants::SHORTCUT_DEBT_MARKERS
+                        .iter()
+                        .any(|m| lower.contains(m))
+                        || lower.contains("todo")
+                        || lower.contains("fixme")
+                        || lower.contains("safety:")
+                        || lower.contains("note:")
+                        || lower.contains("hack:")
+                        || lower.contains("eslint")
+                        || lower.contains("noqa")
+                        || lower.contains("nolint")
+                        || lower.contains("type: ignore")
+                        || lower.contains("allow(")
+                };
+            if !is_doc_or_directive && !trimmed.contains('\n') {
+                let comment_line_idx = node.end_position().row;
+                // Find the immediately following non-empty non-comment code line (within 2 lines)
+                let next_code = (1..=2).find_map(|off| {
+                    lines.get(comment_line_idx + off).copied().filter(|l| {
+                        let t = l.trim();
+                        !t.is_empty()
+                            && !t.starts_with("//")
+                            && !t.starts_with('#')
+                            && !t.starts_with("/*")
+                    })
+                });
+                if let Some(code_line) = next_code {
+                    let c_tokens = split_identifier_content_tokens(trimmed);
+                    let code_tokens = split_identifier_content_tokens(code_line);
+                    if c_tokens.len() >= 3 && !code_tokens.is_empty() {
+                        let overlap = c_tokens
+                            .iter()
+                            .filter(|t| {
+                                code_tokens.iter().any(|ct| {
+                                    ct == *t
+                                        || (t.len() >= 4
+                                            && ct.len() >= 4
+                                            && (ct.starts_with(t.as_str())
+                                                || t.starts_with(ct.as_str())))
+                                })
+                            })
+                            .count();
+                        let containment = overlap as f64 / c_tokens.len() as f64;
+                        if containment >= 0.72 {
+                            *redundant_count += 1;
+                            let line_no = node.start_position().row + 1;
+                            smells.push(CodeSmell {
+                                id: format!("redundant-comment-{}", uuid::Uuid::new_v4().simple()),
+                                category: SmellCategory::RedundantComment,
+                                severity: "INFO".to_string(),
+                                symbol_name: None,
+                                file_path: file_path.to_string(),
+                                start_line: line_no,
+                                end_line: line_no,
+                                message: format!(
+                                    "Comment at line {} restates adjacent code tokens ({:.0}% lexical overlap) without adding rationale",
+                                    line_no,
+                                    containment * 100.0
+                                ),
+                                remediation: "Remove comments that merely echo identifier names; reserve comments for non-obvious invariants or *why*.".to_string(),
+                            });
+                        }
+                    }
+                }
+            }
+        }
+        return;
+    }
+
+    // 2. Trivial 1-statement pass-through wrapper function detector (AST body + caller degree)
+    if *wrapper_count < 4
+        && matches!(
+            kind,
+            "function_item" | "function_declaration" | "function_definition"
+        )
+    {
+        if let Some((fn_name, callee_name)) = detect_trivial_passthrough_wrapper(node, source) {
+            let is_entry_or_test = matches!(fn_name.as_str(), "main" | "new" | "default")
+                || fn_name.starts_with("test_");
+            let fn_sig = source
+                .get(node.start_byte()..node.end_byte())
+                .and_then(|s| s.lines().next())
+                .unwrap_or("")
+                .trim();
+            let is_public_api = fn_sig.starts_with("pub ") || fn_sig.starts_with("export ");
+            let in_trait_contract = node.parent().and_then(|p| p.parent()).is_some_and(|gp| {
+                gp.kind() == "trait_item"
+                    || (gp.kind() == "impl_item" && gp.child_by_field_name("trait").is_some())
+            });
+            if !is_entry_or_test && !is_public_api && !in_trait_contract {
+                let caller_count = count_function_callers(&fn_name, source, graph);
+                if caller_count <= 1 {
+                    *wrapper_count += 1;
+                    let start_line = node.start_position().row + 1;
+                    let end_line = node.end_position().row + 1;
+                    smells.push(CodeSmell {
+                        id: format!("trivial-wrapper-{}", uuid::Uuid::new_v4().simple()),
+                        category: SmellCategory::TrivialWrapper,
+                        severity: "INFO".to_string(),
+                        symbol_name: Some(fn_name.clone()),
+                        file_path: file_path.to_string(),
+                        start_line,
+                        end_line,
+                        message: format!(
+                            "Private function `{fn_name}` is a 1-statement pass-through wrapper to `{callee_name}` with {caller_count} caller(s)"
+                        ),
+                        remediation: format!(
+                            "Inline `{callee_name}` directly at the call site unless `{fn_name}` enforces a distinct domain boundary or invariant."
+                        ),
+                    });
+                }
+            }
+        }
+    }
+
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        collect_yagni_bloat_dfs(
+            child,
+            source,
+            lines,
+            file_path,
+            graph,
+            smells,
+            redundant_count,
+            wrapper_count,
+        );
+    }
+}
+
+/// Splits source/comment text into lowercase content tokens, splitting camelCase & snake_case
+/// identifiers and excluding tiny grammar stop-words so lexical containment measures real meaning.
+fn split_identifier_content_tokens(text: &str) -> Vec<String> {
+    const STOP_WORDS: &[&str] = &[
+        "the", "and", "for", "with", "from", "into", "this", "that", "its", "are", "was", "has",
+        "have", "will", "can", "all", "new", "var", "let", "const", "pub", "def", "return",
+    ];
+    let mut out = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+
+    for raw in text.split(|c: char| !c.is_ascii_alphanumeric()) {
+        if raw.is_empty() {
+            continue;
+        }
+        // Split camelCase / PascalCase runs into sub-words
+        let mut word = String::new();
+        let chars: Vec<char> = raw.chars().collect();
+        for (i, &ch) in chars.iter().enumerate() {
+            let split_here = i > 0
+                && ch.is_ascii_uppercase()
+                && (chars[i - 1].is_ascii_lowercase()
+                    || chars.get(i + 1).is_some_and(|n| n.is_ascii_lowercase()));
+            if split_here && !word.is_empty() {
+                push_content_token(&word, STOP_WORDS, &mut seen, &mut out);
+                word.clear();
+            }
+            word.push(ch.to_ascii_lowercase());
+        }
+        if !word.is_empty() {
+            push_content_token(&word, STOP_WORDS, &mut seen, &mut out);
+        }
+    }
+    out
+}
+
+fn push_content_token(
+    word: &str,
+    stop_words: &[&str],
+    seen: &mut std::collections::HashSet<String>,
+    out: &mut Vec<String>,
+) {
+    if word.len() >= 3 && !stop_words.contains(&word) && seen.insert(word.to_string()) {
+        out.push(word.to_string());
+    }
+}
+
+/// Returns `Some((fn_name, callee_name))` when a Tree-sitter function node's body consists solely
+/// of a single direct function call forwarding arguments without branching or transformation.
+fn detect_trivial_passthrough_wrapper(
+    fn_node: tree_sitter::Node<'_>,
+    source: &str,
+) -> Option<(String, String)> {
+    let name_node = fn_node.child_by_field_name("name")?;
+    let fn_name = source
+        .get(name_node.start_byte()..name_node.end_byte())?
+        .trim();
+    if fn_name.is_empty() {
+        return None;
+    }
+
+    let body = fn_node.child_by_field_name("body")?;
+    let mut cursor = body.walk();
+    let named_stmts: Vec<tree_sitter::Node<'_>> = body
+        .named_children(&mut cursor)
+        .filter(|n| !n.kind().contains("comment"))
+        .collect();
+    if named_stmts.len() != 1 {
+        return None;
+    }
+
+    let only_stmt = named_stmts[0];
+    let expr = match only_stmt.kind() {
+        "return_statement" | "return_expression" | "expression_statement" => {
+            let mut sc = only_stmt.walk();
+            let children: Vec<tree_sitter::Node<'_>> = only_stmt
+                .named_children(&mut sc)
+                .filter(|n| !n.kind().contains("comment"))
+                .collect();
+            if children.len() != 1 {
+                return None;
+            }
+            children[0]
+        }
+        _ => only_stmt,
+    };
+
+    if !matches!(expr.kind(), "call_expression" | "call") {
+        return None;
+    }
+
+    // Extract callee identifier/path (exclude chained transforms like `foo().map(...)`)
+    let callee_node = expr.child_by_field_name("function")?;
+    let callee_text = source
+        .get(callee_node.start_byte()..callee_node.end_byte())?
+        .trim();
+    if callee_text.is_empty() || callee_text.contains('(') || callee_text == fn_name {
+        return None;
+    }
+
+    // Verify all call arguments are bare identifiers/references (no transformation logic)
+    if let Some(args_node) = expr.child_by_field_name("arguments") {
+        let mut ac = args_node.walk();
+        for arg in args_node.named_children(&mut ac) {
+            let ok = matches!(
+                arg.kind(),
+                "identifier" | "reference_expression" | "self" | "field_expression" | "attribute"
+            );
+            if !ok {
+                return None;
+            }
+        }
+    }
+
+    Some((fn_name.to_string(), callee_text.to_string()))
+}
+
+fn count_function_callers(fn_name: &str, source: &str, graph: Option<&CodeGraph>) -> usize {
+    if let Some(cg) = graph {
+        if let Some(indices) = cg.name_to_nodes().get(fn_name) {
+            return indices
+                .iter()
+                .map(|&idx| {
+                    cg.graph()
+                        .neighbors_directed(idx, petgraph::Direction::Incoming)
+                        .filter(|&n| {
+                            cg.graph()
+                                .node_weight(n)
+                                .is_some_and(|w| w.kind != crate::context::graph::SymbolKind::File)
+                        })
+                        .count()
+                })
+                .sum();
+        }
+    }
+    // Single-file fallback: count identifier occurrences minus the declaration itself
+    let total_mentions = source
+        .split(|c: char| !c.is_ascii_alphanumeric() && c != '_')
+        .filter(|t| *t == fn_name)
+        .count();
+    total_mentions.saturating_sub(1)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -703,5 +1093,50 @@ export function Hero() {
             "Contiguous deeply nested control flow should coalesce into 1 finding"
         );
         assert_eq!(cf_smells[0].category, SmellCategory::DeepNesting);
+    }
+
+    #[test]
+    fn test_ast_yagni_bloat_detectors_flag_redundant_comments_and_trivial_wrappers_without_false_positives(
+    ) {
+        let rs_code = r#"
+fn compute_user_score(user_id: u64, base_score: i32) -> i32 {
+    // Prevent integer overflow under concurrent batch normalization
+    base_score.saturating_add((user_id % 10) as i32)
+}
+
+// Fetch user score by user id
+fn fetch_user_score(user_id: u64, base_score: i32) -> i32 {
+    compute_user_score(user_id, base_score)
+}
+
+pub fn run() -> i32 {
+    fetch_user_score(42, 100)
+}
+"#;
+        let smells = AstSmellDetector::scan_code(Path::new("score.rs"), rs_code, &[], None);
+
+        let redundant: Vec<_> = smells
+            .iter()
+            .filter(|s| s.category == SmellCategory::RedundantComment)
+            .collect();
+        assert_eq!(
+            redundant.len(),
+            1,
+            "Should flag ONLY the restating comment, not the rationale comment; got: {:?}",
+            redundant
+        );
+        assert_eq!(redundant[0].start_line, 7);
+
+        let wrappers: Vec<_> = smells
+            .iter()
+            .filter(|s| s.category == SmellCategory::TrivialWrapper)
+            .collect();
+        assert_eq!(
+            wrappers.len(),
+            1,
+            "Should flag single-caller trivial pass-through wrapper `fetch_user_score`; got: {:?}",
+            wrappers
+        );
+        assert_eq!(wrappers[0].symbol_name.as_deref(), Some("fetch_user_score"));
     }
 }

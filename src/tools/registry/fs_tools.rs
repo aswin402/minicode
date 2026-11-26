@@ -78,7 +78,7 @@ pub fn get_schemas() -> Vec<ToolSchema> {
         },
         ToolSchema {
             name: "patch_file".to_string(),
-            description: "Apply precise search-and-replace code edits OR a content-addressed Hashline range edit (`start_line`, `end_line`, optional `start_hash`/`end_hash`, and `updated_code`) to a file. For a single-hunk edit, pass top-level `path`, `search_block`, and `updated_code` (`updated_code` MUST differ from `search_block`); for 2+ hunks in the same file, pass `path` and `updates`.".to_string(),
+            description: "Apply precise code edits to a file via: (1) a compact unified diff (`path` + `unified_diff` with `@@ ... @@` hunks — lowest output tokens for multi-hunk edits), (2) search-and-replace (`path`, `search_block`, `updated_code`, or `updates` array for 2+ hunks), or (3) a content-addressed Hashline range (`start_line`, `end_line`, optional `start_hash`/`end_hash`, and `updated_code`).".to_string(),
             parameters: json!({
                 "type": "object",
                 "properties": {
@@ -93,6 +93,10 @@ pub fn get_schemas() -> Vec<ToolSchema> {
                     "updated_code": {
                         "type": "string",
                         "description": "New modified lines to substitute in place of search_block or Hashline range (MUST differ from search_block)"
+                    },
+                    "unified_diff": {
+                        "type": "string",
+                        "description": "Optional standard unified diff (`@@ -old,len +new,len @@` hunks with ' ', '-', '+' lines) applied atomically with 3-tier context relocation — preferred for multi-hunk edits to avoid repeating context lines twice"
                     },
                     "start_line": {
                         "type": "integer",
@@ -701,6 +705,53 @@ pub async fn dispatch(
         "patch_file" => Some(
             async {
                 let path = param::require_path(args, "patch_file")?;
+                // 0. Native O(diff) Unified Diff mode (`unified_diff` or `diff`)
+                if let Some(unified_diff) =
+                    param::opt_str(args, "unified_diff").or_else(|| param::opt_str(args, "diff"))
+                {
+                    let _file_lock =
+                        crate::tools::concurrency::acquire_file_mutation_lock(workspace_root, path)
+                            .await;
+                    let validated_path = prepare_file_mutation(
+                        workspace_root,
+                        path,
+                        backup_manager,
+                        turn_id,
+                        "patch_file",
+                    )?;
+                    let root_buf = workspace_root.to_path_buf();
+                    let path_str = path.to_string();
+                    let diff_owned = unified_diff.to_string();
+                    let added_only: String = unified_diff
+                        .lines()
+                        .filter_map(|l| {
+                            if l.starts_with("+++") {
+                                None
+                            } else {
+                                l.strip_prefix('+')
+                            }
+                        })
+                        .collect::<Vec<_>>()
+                        .join("\n");
+                    let mut res = tokio::task::spawn_blocking(move || -> Result<String> {
+                        fs::patch_file_unified_diff(&root_buf, &path_str, &diff_owned)
+                    })
+                    .await
+                    .map_err(|e| {
+                        crate::error::ToolError::invalid_args("patch_file", e.to_string())
+                    })?;
+                    if let Ok(ref mut out) = res {
+                        finalize_file_mutation_with_hygiene(
+                            workspace_root,
+                            &validated_path,
+                            path,
+                            &added_only,
+                            out,
+                        );
+                    }
+                    return res;
+                }
+
                 let mut hunks: Vec<(String, String)> = Vec::new();
                 if let Some(edits_arr) = args
                     .get("updates")

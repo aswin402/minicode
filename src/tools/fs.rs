@@ -1,9 +1,7 @@
 use crate::error::{Result, ToolError};
-use crate::sandbox::path::validate_path_in_workspace;
+use crate::sandbox::path::{validate_path_in_workspace, ConfinedRoot};
 use crate::session::backup::BackupManager;
 use similar::TextDiff;
-use std::fs::OpenOptions;
-use std::io::Write;
 use std::path::{Path, PathBuf};
 
 /// Reads a file from the workspace within the specified optional 1-indexed line range.
@@ -26,6 +24,7 @@ pub fn read_file_with_options(
     hashline: bool,
 ) -> Result<String> {
     let target_path = validate_path_in_workspace(workspace_root, Path::new(relative_path))?;
+    let confined = ConfinedRoot::open(workspace_root)?;
     crate::context::governance::dox::DoxEngine::sync_and_harvest_rules(
         workspace_root,
         &[relative_path],
@@ -37,10 +36,7 @@ pub fn read_file_with_options(
         let ext_lower = ext.to_ascii_lowercase();
         const IMAGE_EXTENSIONS: &[&str] = &["png", "jpg", "jpeg", "gif", "webp"];
         if IMAGE_EXTENSIONS.contains(&ext_lower.as_str()) {
-            let bytes = std::fs::read(&target_path).map_err(|e| ToolError::FileOp {
-                path: relative_path.to_string(),
-                source: e,
-            })?;
+            let bytes = confined.read_bytes(Path::new(relative_path))?;
             let dims = parse_image_dimensions(&bytes, &ext_lower)
                 .map(|(w, h)| format!("{}x{} px", w, h))
                 .unwrap_or_else(|| "unknown dimensions".to_string());
@@ -81,10 +77,7 @@ pub fn read_file_with_options(
         }
     }
 
-    let content = std::fs::read_to_string(&target_path).map_err(|e| ToolError::FileOp {
-        path: relative_path.to_string(),
-        source: e,
-    })?;
+    let content = confined.read_to_string(Path::new(relative_path))?;
 
     if content.is_empty() {
         return Ok(String::new());
@@ -482,10 +475,7 @@ pub fn look_at_with_options(
         return read_file(workspace_root, relative_path, None, None);
     }
 
-    let content = std::fs::read_to_string(&target_path).map_err(|e| ToolError::FileOp {
-        path: relative_path.to_string(),
-        source: e,
-    })?;
+    let content = ConfinedRoot::open(workspace_root)?.read_to_string(Path::new(relative_path))?;
 
     let lines: Vec<&str> = content.lines().collect();
     let total_lines = lines.len();
@@ -889,56 +879,9 @@ fn write_file_inner(
         }
     })?;
 
-    if let Some(parent) = target_path.parent() {
-        std::fs::create_dir_all(parent).map_err(|e| ToolError::FileOp {
-            path: relative_path.to_string(),
-            source: e,
-        })?;
-    }
-
-    let parent_dir = target_path.parent().unwrap_or(workspace_root);
-    let tmp_file_name = format!(
-        ".tmp_{}_{}",
-        std::process::id(),
-        uuid::Uuid::new_v4().simple()
-    );
-    let tmp_path = parent_dir.join(tmp_file_name);
-
-    let mut file = OpenOptions::new()
-        .create_new(true)
-        .write(true)
-        .open(&tmp_path)
-        .map_err(|e| ToolError::FileOp {
-            path: relative_path.to_string(),
-            source: e,
-        })?;
-
-    file.write_all(effective_content.as_bytes())
-        .map_err(|e| ToolError::FileOp {
-            path: relative_path.to_string(),
-            source: e,
-        })?;
-
-    file.flush().map_err(|e| ToolError::FileOp {
-        path: relative_path.to_string(),
-        source: e,
-    })?;
-
-    drop(file);
-
-    std::fs::rename(&tmp_path, &target_path).map_err(|e| {
-        if let Err(cleanup_err) = std::fs::remove_file(&tmp_path) {
-            tracing::warn!(
-                path = %tmp_path.display(),
-                error = %cleanup_err,
-                "Failed to clean up temporary file after rename failure"
-            );
-        }
-        ToolError::FileOp {
-            path: relative_path.to_string(),
-            source: e,
-        }
-    })?;
+    // Kernel-enforced atomic write (`openat` + `O_NOFOLLOW` + `renameat`) eliminating TOCTOU races
+    ConfinedRoot::open(workspace_root)?
+        .atomic_write_bytes(Path::new(relative_path), effective_content.as_bytes())?;
 
     crate::context::index::SymbolIndex::invalidate_cache();
     crate::context::graph::CodeGraph::invalidate_cache();
@@ -1254,11 +1197,8 @@ pub fn patch_file_hunks(
         return patch_file(workspace_root, relative_path, &hunks[0].0, &hunks[0].1);
     }
 
-    let target_path = validate_path_in_workspace(workspace_root, Path::new(relative_path))?;
-    let original = std::fs::read_to_string(&target_path).map_err(|e| ToolError::FileOp {
-        path: relative_path.to_string(),
-        source: e,
-    })?;
+    let _ = validate_path_in_workspace(workspace_root, Path::new(relative_path))?;
+    let original = ConfinedRoot::open(workspace_root)?.read_to_string(Path::new(relative_path))?;
     let mut current_content = original.clone();
     let mut applied_count = 0usize;
     let mut first_identical_block: Option<String> = None;
@@ -1345,11 +1285,9 @@ pub fn patch_file(
     let replace_block = stripped_replace.as_str();
 
     let target_path = validate_path_in_workspace(workspace_root, Path::new(relative_path))?;
+    let _ = &target_path;
 
-    let original = std::fs::read_to_string(&target_path).map_err(|e| ToolError::FileOp {
-        path: relative_path.to_string(),
-        source: e,
-    })?;
+    let original = ConfinedRoot::open(workspace_root)?.read_to_string(Path::new(relative_path))?;
 
     if search_block == replace_block {
         return Err(ToolError::PatchFailed {
@@ -1363,6 +1301,40 @@ pub fn patch_file(
         apply_patch_hunk_in_memory(&original, relative_path, search_block, replace_block)?;
     let write_res = write_file(workspace_root, relative_path, &new_content)?;
     Ok(format_patch_success(tier_label, relative_path, &write_res))
+}
+
+/// Applies a standard unified diff (`@@ -old,len +new,len @@`) atomically to `relative_path`
+/// under kernel-confined `ConfinedRoot` reads/writes, running the full AST syntax barrier,
+/// scoped compiler check, and MiniDoctor auto-guard.
+pub fn patch_file_unified_diff(
+    workspace_root: &Path,
+    relative_path: &str,
+    unified_diff: &str,
+) -> Result<String> {
+    let _ = validate_path_in_workspace(workspace_root, Path::new(relative_path))?;
+    let original = ConfinedRoot::open(workspace_root)?.read_to_string(Path::new(relative_path))?;
+
+    let (new_content, hunk_count, tier_label) =
+        crate::tools::diff::apply_unified_diff_in_memory(&original, unified_diff).map_err(
+            |reason| ToolError::PatchFailed {
+                path: relative_path.to_string(),
+                reason,
+            },
+        )?;
+
+    if new_content == original {
+        return Err(ToolError::PatchFailed {
+            path: relative_path.to_string(),
+            reason: "Unified diff produced no net change to the file.".to_string(),
+        }
+        .into());
+    }
+
+    let write_res = write_file(workspace_root, relative_path, &new_content)?;
+    Ok(format!(
+        "✔ Applied {} unified-diff hunk(s) ({}) to {}\n{}",
+        hunk_count, tier_label, relative_path, write_res
+    ))
 }
 
 fn splice_lines_with_replace(
@@ -2463,6 +2435,53 @@ mod tests {
         assert!(drill.contains("PageIndex Drilldown: `docs/architecture.md`"));
         assert!(drill.contains("Projects orthogonal error into 1-bit sign planes."));
         assert!(!drill.contains("Routes queries across 128-bit centroids."));
+
+        std::fs::remove_dir_all(&temp_dir).ok();
+    }
+
+    #[tokio::test]
+    async fn test_patch_file_unified_diff_end_to_end() {
+        let temp_dir = std::env::temp_dir().join(format!(
+            "minicode_unified_diff_e2e_{}",
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::create_dir_all(temp_dir.join("src")).unwrap();
+        write_file(
+            &temp_dir,
+            "src/math.rs",
+            "pub fn add(a: i32, b: i32) -> i32 {\n    a + b\n}\n\npub fn mul(a: i32, b: i32) -> i32 {\n    a * b\n}\n",
+        )
+        .unwrap();
+
+        // Dispatch through the registry `patch_file` tool using `unified_diff` (with shifted line numbers)
+        let args = serde_json::json!({
+            "path": "src/math.rs",
+            "unified_diff": "@@ -1,3 +1,3 @@\n pub fn add(a: i32, b: i32) -> i32 {\n-    a + b\n+    a.saturating_add(b)\n }\n@@ -5,3 +5,3 @@\n pub fn mul(a: i32, b: i32) -> i32 {\n-    a * b\n+    a.saturating_mul(b)\n }\n"
+        });
+        let res =
+            crate::tools::registry::fs_tools::dispatch("patch_file", &args, &temp_dir, None, 1)
+                .await
+                .expect("dispatched")
+                .expect("unified_diff patch succeeded");
+        assert!(res.contains("Applied 2 unified-diff hunk(s)"));
+
+        let updated = read_file(&temp_dir, "src/math.rs", None, None).unwrap();
+        assert!(updated.contains("a.saturating_add(b)"));
+        assert!(updated.contains("a.saturating_mul(b)"));
+
+        // Invalid syntax introduced via unified_diff must be rejected by the AST syntax barrier
+        let bad_args = serde_json::json!({
+            "path": "src/math.rs",
+            "unified_diff": "@@ -1,3 +1,3 @@\n pub fn add(a: i32, b: i32) -> i32 {\n-    a.saturating_add(b)\n+    a.saturating_add(b\n }\n"
+        });
+        let bad_res =
+            crate::tools::registry::fs_tools::dispatch("patch_file", &bad_args, &temp_dir, None, 2)
+                .await
+                .expect("dispatched");
+        assert!(
+            bad_res.is_err(),
+            "Broken Rust syntax via unified_diff must be blocked by AST syntax barrier"
+        );
 
         std::fs::remove_dir_all(&temp_dir).ok();
     }
