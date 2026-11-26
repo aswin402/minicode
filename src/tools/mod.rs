@@ -114,36 +114,56 @@ impl ToolRegistry {
 
         // Planning-phase discovery write-guard: single choke point for every caller
         // (agent loop, subagents, speculative executor, DAG executor, MCP server).
-        let result = match crate::agent::minipower::MiniPowerEngine::guard_tool_call(
+        if let Err(reason) = crate::agent::minipower::MiniPowerEngine::guard_tool_call(
             workspace_root,
             canonical_tool,
             args,
         ) {
-            Err(reason) => Err(ToolError::ExecutionFailed(reason).into()),
-            Ok(()) => {
-                let first =
-                    Self::dispatch_tool(workspace_root, tool_name, args, backup_manager, turn_id)
-                        .await;
-                if canonical_tool != tool_name
-                    && matches!(
-                        first,
-                        Err(crate::error::MinicodeError::Tool(
-                            ToolError::NotFound { .. }
-                        ))
-                    )
-                {
-                    Self::dispatch_tool(
-                        workspace_root,
-                        canonical_tool,
-                        args,
-                        backup_manager,
-                        turn_id,
-                    )
-                    .await
-                } else {
-                    first
-                }
-            }
+            let err: crate::error::MinicodeError = ToolError::ExecutionFailed(reason).into();
+            let display_output = Self::format_minimal_display_error(tool_name, &err);
+            return ToolResult {
+                tool_id: tool_id.to_string(),
+                tool_name: tool_name.to_string(),
+                success: false,
+                output: format!("Error executing {}: {}", tool_name, err),
+                display_output,
+                duration_ms: start.elapsed().as_millis() as u64,
+            };
+        }
+
+        // Pre-execution admission control (`ToolMiddleware::before()`): intercepts oversized
+        // unfiltered shell dumps before spawning a subprocess or flooding the transcript.
+        if let crate::tools::middleware::AdmissionDecision::ShortCircuit(mut short_res) =
+            crate::tools::middleware::ToolPipeline::default().run_before(
+                tool_id,
+                canonical_tool,
+                workspace_root,
+                args,
+            )
+        {
+            short_res.tool_name = tool_name.to_string();
+            return short_res;
+        }
+
+        let first =
+            Self::dispatch_tool(workspace_root, tool_name, args, backup_manager, turn_id).await;
+        let result = if canonical_tool != tool_name
+            && matches!(
+                first,
+                Err(crate::error::MinicodeError::Tool(
+                    ToolError::NotFound { .. }
+                ))
+            ) {
+            Self::dispatch_tool(
+                workspace_root,
+                canonical_tool,
+                args,
+                backup_manager,
+                turn_id,
+            )
+            .await
+        } else {
+            first
         };
 
         let duration_ms = start.elapsed().as_millis() as u64;

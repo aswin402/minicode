@@ -339,11 +339,63 @@ impl DynamicModelResolver {
             ("gemini" | "google", SemanticTier::Reasoning) => {
                 "gemini-2.0-flash-thinking-exp".to_string()
             }
+            ("gemini" | "google", SemanticTier::Fast) => "gemini-2.5-flash".to_string(),
             ("anthropic" | "claude", SemanticTier::Fast) => "claude-3-5-haiku-20241022".to_string(),
             ("openai", SemanticTier::Fast) => "gpt-4o-mini".to_string(),
             ("openai", SemanticTier::Reasoning) => "o3-mini".to_string(),
             ("deepseek", SemanticTier::Reasoning) => "deepseek-reasoner".to_string(),
             _ => crate::config::Config::static_default_model_for_provider(&norm).to_string(),
+        }
+    }
+
+    /// Resolves a verified, strictly cheaper `SemanticTier::Fast` worker model for `provider`
+    /// relative to `main_model` (economic shunting for read-only bulk exploration).
+    ///
+    /// Returns `None` if:
+    /// - `provider` is local/free (`ollama`, `lmstudio`, custom mock)
+    /// - `main_model` is already a fast/cheap tier or has zero marginal savings (< 35% input reduction)
+    /// - No fast model is known for `provider` (never invents arbitrary IDs on unknown endpoints)
+    pub fn resolve_verified_cheaper_fast_model(provider: &str, main_model: &str) -> Option<String> {
+        let norm = provider.trim().to_lowercase();
+        if norm.is_empty()
+            || norm.contains("ollama")
+            || norm.contains("local")
+            || norm.contains("lmstudio")
+            || norm.contains("mock")
+            || norm.contains("test")
+        {
+            return None;
+        }
+
+        let (main_in, _) =
+            crate::agent::pricing::ModelPricing::input_output_rates(&norm, main_model);
+        if main_in <= 0.0 {
+            return None;
+        }
+
+        let fetcher = ModelFetcher::new();
+        let candidate = if let Some(cached) = fetcher.get_cached_models(&norm) {
+            select_best_model_for_tier(&cached, SemanticTier::Fast)?
+        } else if matches!(
+            norm.as_str(),
+            "gemini" | "google" | "anthropic" | "claude" | "openai"
+        ) {
+            Self::canonical_fallback(&norm, SemanticTier::Fast)
+        } else {
+            return None;
+        };
+
+        if candidate.eq_ignore_ascii_case(main_model.trim()) {
+            return None;
+        }
+
+        let (fast_in, _) =
+            crate::agent::pricing::ModelPricing::input_output_rates(&norm, &candidate);
+        // Require a genuine >= 35% input-token cost reduction to justify routing off the main model
+        if fast_in < main_in * 0.65 {
+            Some(candidate)
+        } else {
+            None
         }
     }
 }
@@ -2464,5 +2516,35 @@ mod tests {
         assert!(!is_non_chat_utility_model("glm-4.5"));
         assert!(!is_non_chat_utility_model("kimi-k2.5"));
         assert!(!is_non_chat_utility_model("gemini-2.5-pro"));
+    }
+
+    #[test]
+    fn test_resolve_verified_cheaper_fast_model_economic_gate() {
+        // Expensive frontier models route cleanly to a strictly cheaper (>= 35% savings) fast tier
+        let openai_fast =
+            DynamicModelResolver::resolve_verified_cheaper_fast_model("openai", "gpt-4o")
+                .expect("openai gpt-4o should resolve a strictly cheaper fast tier");
+        assert_ne!(openai_fast, "gpt-4o");
+        let (main_in, _) =
+            crate::agent::pricing::ModelPricing::input_output_rates("openai", "gpt-4o");
+        let (fast_in, _) =
+            crate::agent::pricing::ModelPricing::input_output_rates("openai", &openai_fast);
+        assert!(fast_in < main_in * 0.65);
+
+        assert!(DynamicModelResolver::resolve_verified_cheaper_fast_model(
+            "anthropic",
+            "claude-3-7-sonnet-20250219"
+        )
+        .is_some());
+        // Already on fast/cheap tier or free local model -> must NOT needlessly shunt
+        assert!(
+            DynamicModelResolver::resolve_verified_cheaper_fast_model("openai", "gpt-4o-mini")
+                .is_none()
+        );
+        assert!(DynamicModelResolver::resolve_verified_cheaper_fast_model(
+            "ollama",
+            "qwen2.5-coder"
+        )
+        .is_none());
     }
 }

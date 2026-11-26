@@ -99,15 +99,132 @@ pub struct ToolContext<'a> {
     pub file_before: Option<&'a str>,
 }
 
+// ── Admission Control ────────────────────────────────────────────────────────
+
+/// Outcome of a pre-execution `ToolMiddleware::before` admission check.
+pub enum AdmissionDecision {
+    /// Proceed with normal tool execution.
+    Allow,
+    /// Short-circuit tool execution and return this result directly without invoking the tool.
+    ShortCircuit(ToolResult),
+}
+
+/// Closed-form economic + context-pressure admission policy (`shunt` principle, zero magic line counts).
+///
+/// Computes a dynamic byte ceiling from the active context window $W$, current utilization $U$,
+/// and marginal price ratio between the primary model and a verified `SemanticTier::Fast` worker
+/// model so oversized unbounded reads are intercepted *before* flooding the main transcript.
+pub struct EconomicAdmissionPolicy;
+
+impl EconomicAdmissionPolicy {
+    /// Expected amortized turn persistence factor before context compaction/caching discounts it.
+    const AMORTIZED_TURN_FACTOR: f64 = 4.0;
+    /// Expected concise summary/outline token footprint when shunted or clamped.
+    const EXPECTED_SUMMARY_TOKENS: f64 = 300.0;
+    /// Minimum admission token ceiling (prevents over-eager interception on tiny files).
+    const MIN_CEILING_TOKENS: usize = 1_500;
+    /// Maximum admission token ceiling even on huge 1M+ windows.
+    const MAX_CEILING_TOKENS: usize = 6_000;
+
+    /// Computes the dynamic admission ceiling in estimated tokens using pure closed-form math:
+    /// 1. Context-pressure ceiling $\tau_{\text{ctx}}(W, U) = \text{clamp}(\lfloor 0.04 \cdot W \cdot (1 - U)^2 \rfloor, 1500, 6000)$
+    /// 2. Cost-amortization break-even $N^*$ when a strictly cheaper `Fast` tier is available:
+    ///    $N \cdot c_{\text{in}}^{\text{main}} \cdot \gamma > N \cdot c_{\text{in}}^{\text{fast}} + K_{\text{out}} (c_{\text{out}}^{\text{fast}} + c_{\text{in}}^{\text{main}} \cdot \gamma)$
+    pub fn compute_admission_token_ceiling(
+        context_window: usize,
+        context_used: usize,
+        main_in_rate: f64,
+        fast_in_rate: Option<f64>,
+        fast_out_rate: Option<f64>,
+    ) -> usize {
+        let w = if context_window > 0 {
+            context_window
+        } else {
+            128_000
+        };
+        let u = (context_used as f64 / w as f64).clamp(0.0, 0.98);
+        let ctx_ceiling = ((w as f64) * 0.04 * (1.0 - u).powi(2)).floor() as usize;
+        let clamped_ctx = ctx_ceiling.clamp(Self::MIN_CEILING_TOKENS, Self::MAX_CEILING_TOKENS);
+
+        if let (Some(f_in), Some(f_out)) = (fast_in_rate, fast_out_rate) {
+            let main_amortized = main_in_rate * Self::AMORTIZED_TURN_FACTOR;
+            if main_in_rate > 0.0 && f_in < main_amortized {
+                let denom = main_amortized - f_in;
+                if denom > f64::EPSILON {
+                    let numer = Self::EXPECTED_SUMMARY_TOKENS * (f_out + main_amortized);
+                    let breakeven = (numer / denom).ceil() as usize;
+                    let bounded_be =
+                        breakeven.clamp(Self::MIN_CEILING_TOKENS, Self::MAX_CEILING_TOKENS);
+                    return clamped_ctx.min(bounded_be);
+                }
+            }
+        }
+
+        clamped_ctx
+    }
+
+    /// Resolves the live byte ceiling (`tokens * 4`) for the active workspace/session.
+    pub fn current_byte_ceiling(workspace_root: &Path) -> usize {
+        let ctx_window = crate::tools::exec::resolve_context_window(workspace_root);
+        let ctx_used = crate::context::budget::donut::get_active_context_used();
+
+        let (provider_name, main_model) = Self::resolve_active_provider_and_model(workspace_root);
+        let (main_in, _) =
+            crate::agent::pricing::ModelPricing::input_output_rates(&provider_name, &main_model);
+        let (fast_in, fast_out) =
+            crate::agent::models::DynamicModelResolver::resolve_verified_cheaper_fast_model(
+                &provider_name,
+                &main_model,
+            )
+            .map(|fm| {
+                let (fi, fo) =
+                    crate::agent::pricing::ModelPricing::input_output_rates(&provider_name, &fm);
+                (Some(fi), Some(fo))
+            })
+            .unwrap_or((None, None));
+
+        let token_ceiling =
+            Self::compute_admission_token_ceiling(ctx_window, ctx_used, main_in, fast_in, fast_out);
+        token_ceiling.saturating_mul(4)
+    }
+
+    fn resolve_active_provider_and_model(workspace_root: &Path) -> (String, String) {
+        let prov = std::env::var("MINICODE_PROVIDER")
+            .ok()
+            .filter(|s| !s.trim().is_empty())
+            .unwrap_or_else(|| {
+                crate::config::Config::load_for_workspace(workspace_root)
+                    .provider
+                    .default
+            });
+        let model = std::env::var("MINICODE_MODEL")
+            .ok()
+            .filter(|s| !s.trim().is_empty())
+            .or_else(|| crate::agent::subagent::get_live_orchestrator_model_for_provider(&prov))
+            .unwrap_or_else(|| {
+                crate::config::Config::load_for_workspace(workspace_root)
+                    .get_default_model_for_provider(&prov)
+            });
+        (prov, model)
+    }
+}
+
 // ── Trait ─────────────────────────────────────────────────────────────────────
 
-/// A composable hook applied to every completed tool execution.
+/// A composable hook applied before and/or after tool execution.
 ///
-/// Implementations receive a `ToolContext` plus the current `ToolResult` and
-/// return a (possibly mutated) `ToolResult`. Middlewares run in declaration
-/// order via `Iterator::fold`.
+/// Implementations may intercept calls in `before` for pre-execution admission control
+/// and transform completed outputs in `after`. Middlewares run in declaration order.
 pub trait ToolMiddleware: Send + Sync {
-    fn after(&self, ctx: &ToolContext<'_>, result: ToolResult) -> ToolResult;
+    /// Pre-execution admission check. Defaults to [`AdmissionDecision::Allow`].
+    fn before(&self, _ctx: &ToolContext<'_>) -> AdmissionDecision {
+        AdmissionDecision::Allow
+    }
+
+    /// Post-execution result transformation. Defaults to pass-through.
+    fn after(&self, _ctx: &ToolContext<'_>, result: ToolResult) -> ToolResult {
+        result
+    }
 }
 
 // ── Pipeline ──────────────────────────────────────────────────────────────────
@@ -118,10 +235,11 @@ pub struct ToolPipeline {
 }
 
 impl Default for ToolPipeline {
-    /// Default pipeline: `Timing → Checkpoint → Diff → Redact → Spillover`
+    /// Default pipeline: `ReadAdmission (before) → Timing → Checkpoint → Diff → Redact → Spillover`
     fn default() -> Self {
         Self {
             middlewares: vec![
+                Box::new(ReadAdmissionMiddleware),
                 Box::new(TimingMiddleware),
                 Box::new(CheckpointMiddleware),
                 Box::new(DiffMiddleware),
@@ -136,6 +254,31 @@ impl ToolPipeline {
     #[allow(dead_code)]
     pub fn new(middlewares: Vec<Box<dyn ToolMiddleware>>) -> Self {
         Self { middlewares }
+    }
+
+    /// Runs all middlewares' `before` admission hooks in order, short-circuiting on the first
+    /// [`AdmissionDecision::ShortCircuit`].
+    pub fn run_before(
+        &self,
+        tool_id: &str,
+        tool_name: &str,
+        workspace_root: &Path,
+        args: &serde_json::Value,
+    ) -> AdmissionDecision {
+        let ctx = ToolContext {
+            tool_name,
+            workspace_root,
+            args,
+            file_before: None,
+        };
+        for mw in &self.middlewares {
+            if let AdmissionDecision::ShortCircuit(mut res) = mw.before(&ctx) {
+                res.tool_id = tool_id.to_string();
+                res.tool_name = tool_name.to_string();
+                return AdmissionDecision::ShortCircuit(res);
+            }
+        }
+        AdmissionDecision::Allow
     }
 
     /// Run all middlewares' `after` hooks in order.
@@ -163,6 +306,351 @@ impl ToolPipeline {
 }
 
 // ── Built-in middlewares ───────────────────────────────────────────────────────
+
+/// Pre-tool admission gate preventing raw shell file-dump commands (`cat`, `nl`, `tac`,
+/// unbounded `head`/`tail`, `bat`, `more`, `less`) from bypassing `read_file`'s clamping +
+/// Tree-sitter AST outline when targeting workspace files larger than the dynamic economic ceiling.
+///
+/// Uses a pure state-machine shell tokenizer (zero regexes): piped/filtered commands (e.g.
+/// `cat foo.rs | grep bar`, `cat foo.rs | wc -l`) and explicitly bounded reads (`head -n 80`)
+/// pass through untouched. Oversized unfiltered dumps short-circuit immediately into clamped
+/// line-numbered output + AST symbol outline in 0 extra LLM turns.
+pub struct ReadAdmissionMiddleware;
+
+impl ReadAdmissionMiddleware {
+    const DUMP_UTILITIES: &'static [&'static str] =
+        &["cat", "nl", "tac", "head", "tail", "bat", "more", "less"];
+    const SHELL_WRAPPERS: &'static [&'static str] =
+        &["env", "command", "nohup", "nice", "timeout", "stdbuf"];
+
+    /// Tokenizes a single simple shell command respecting single/double quotes and backslash escapes.
+    /// Returns `None` if the command contains shell composition operators (`|`, `&&`, `||`, `;`,
+    /// `\n`, `>`, `<`, `$(`, `` ` ``) or unquoted glob wildcards (`*`, `?`, `[`) so targeted
+    /// pipelines and multi-step commands always pass straight through.
+    fn tokenize_simple_unfiltered_command(cmd: &str) -> Option<Vec<String>> {
+        let mut tokens = Vec::new();
+        let mut current = String::new();
+        let mut in_single = false;
+        let mut in_double = false;
+        let mut escaped = false;
+        let mut chars = cmd.chars().peekable();
+
+        while let Some(ch) = chars.next() {
+            if escaped {
+                current.push(ch);
+                escaped = false;
+                continue;
+            }
+            if in_single {
+                if ch == '\'' {
+                    in_single = false;
+                } else {
+                    current.push(ch);
+                }
+                continue;
+            }
+            if in_double {
+                match ch {
+                    '"' => in_double = false,
+                    '\\' => escaped = true,
+                    '`' => return None,
+                    '$' if chars.peek() == Some(&'(') => return None,
+                    _ => current.push(ch),
+                }
+                continue;
+            }
+
+            match ch {
+                '\'' => in_single = true,
+                '"' => in_double = true,
+                '\\' => escaped = true,
+                '|' | ';' | '\n' | '\r' | '&' | '>' | '<' | '`' => return None,
+                '$' if chars.peek() == Some(&'(') => return None,
+                '*' | '?' | '[' => return None,
+                c if c.is_ascii_whitespace() => {
+                    if !current.is_empty() {
+                        tokens.push(std::mem::take(&mut current));
+                    }
+                }
+                _ => current.push(ch),
+            }
+        }
+
+        if in_single || in_double || escaped {
+            return None;
+        }
+        if !current.is_empty() {
+            tokens.push(current);
+        }
+        if tokens.is_empty() {
+            None
+        } else {
+            Some(tokens)
+        }
+    }
+
+    /// Parses an unfiltered file-dump command into `(binary, explicit_small_bound, file_args)`.
+    fn inspect_dump_command(
+        tokens: &[String],
+        byte_ceiling: usize,
+    ) -> Option<(String, bool, Vec<String>)> {
+        let mut idx = 0usize;
+        while idx < tokens.len() {
+            let tok = tokens[idx].as_str();
+            if tok.contains('=') && !tok.starts_with('-') {
+                idx += 1;
+                continue;
+            }
+            if tok == "nice" {
+                idx += 1;
+                if idx < tokens.len() && tokens[idx] == "-n" {
+                    idx += 2;
+                }
+                continue;
+            }
+            if tok == "timeout" {
+                idx += 1;
+                while idx < tokens.len() && tokens[idx].starts_with('-') {
+                    idx += 1;
+                }
+                if idx < tokens.len() {
+                    idx += 1;
+                }
+                continue;
+            }
+            if Self::SHELL_WRAPPERS.contains(&tok) {
+                idx += 1;
+                continue;
+            }
+            break;
+        }
+
+        let bin_raw = tokens.get(idx)?;
+        let bin = bin_raw
+            .rsplit('/')
+            .next()
+            .unwrap_or(bin_raw)
+            .to_ascii_lowercase();
+        if !Self::DUMP_UTILITIES.contains(&bin.as_str()) {
+            return None;
+        }
+
+        let mut is_bounded_small = false;
+        let mut files = Vec::new();
+        let mut i = idx + 1;
+        let mut after_double_dash = false;
+        let is_head_or_tail = bin == "head" || bin == "tail";
+
+        while i < tokens.len() {
+            let arg = tokens[i].as_str();
+            if !after_double_dash && arg == "--" {
+                after_double_dash = true;
+                i += 1;
+                continue;
+            }
+            if !after_double_dash && arg.starts_with('-') && arg != "-" {
+                if is_head_or_tail {
+                    if arg == "-n" || arg == "--lines" {
+                        if let Some(val) = tokens.get(i + 1) {
+                            if Self::is_small_line_bound(val) {
+                                is_bounded_small = true;
+                            }
+                            i += 2;
+                            continue;
+                        }
+                    } else if let Some(val) = arg
+                        .strip_prefix("-n")
+                        .or_else(|| arg.strip_prefix("--lines="))
+                    {
+                        if Self::is_small_line_bound(val) {
+                            is_bounded_small = true;
+                        }
+                        i += 1;
+                        continue;
+                    } else if arg == "-c" || arg == "--bytes" {
+                        if let Some(val) = tokens.get(i + 1) {
+                            if Self::is_small_byte_bound(val, byte_ceiling) {
+                                is_bounded_small = true;
+                            }
+                            i += 2;
+                            continue;
+                        }
+                    } else if let Some(val) = arg
+                        .strip_prefix("-c")
+                        .or_else(|| arg.strip_prefix("--bytes="))
+                    {
+                        if Self::is_small_byte_bound(val, byte_ceiling) {
+                            is_bounded_small = true;
+                        }
+                        i += 1;
+                        continue;
+                    } else if arg.len() > 1 && arg[1..].chars().all(|c| c.is_ascii_digit()) {
+                        if Self::is_small_line_bound(&arg[1..]) {
+                            is_bounded_small = true;
+                        }
+                        i += 1;
+                        continue;
+                    }
+                }
+                i += 1;
+                continue;
+            }
+            if arg == "-" {
+                // Reading from stdin — do not intercept
+                return None;
+            }
+            files.push(arg.to_string());
+            i += 1;
+        }
+
+        // Plain `head file` or `tail file` without flags defaults to 10 lines in POSIX — always small!
+        if is_head_or_tail && tokens.len() == idx + 1 + files.len() {
+            is_bounded_small = true;
+        }
+
+        if files.is_empty() {
+            None
+        } else {
+            Some((bin, is_bounded_small, files))
+        }
+    }
+
+    fn is_small_line_bound(raw: &str) -> bool {
+        let trimmed = raw.trim();
+        // Leading `+N` in `tail -n +10` means "from line 10 to EOF" (unbounded!)
+        if trimmed.starts_with('+') {
+            return false;
+        }
+        trimmed
+            .trim_start_matches('-')
+            .parse::<usize>()
+            .is_ok_and(|n| n <= crate::constants::READ_FILE_UNBOUNDED_THRESHOLD)
+    }
+
+    fn is_small_byte_bound(raw: &str, byte_ceiling: usize) -> bool {
+        let trimmed = raw.trim();
+        if trimmed.starts_with('+') {
+            return false;
+        }
+        trimmed
+            .trim_start_matches('-')
+            .parse::<usize>()
+            .is_ok_and(|n| n <= byte_ceiling)
+    }
+
+    fn evaluate_with_ceiling(ctx: &ToolContext<'_>, byte_ceiling: usize) -> AdmissionDecision {
+        if !matches!(ctx.tool_name, "exec_cmd" | "sandbox_exec") {
+            return AdmissionDecision::Allow;
+        }
+        let Some(cmd) = crate::tools::param::get_str_with_aliases(ctx.args, &["command", "cmd"])
+        else {
+            return AdmissionDecision::Allow;
+        };
+        let Some(tokens) = Self::tokenize_simple_unfiltered_command(cmd) else {
+            return AdmissionDecision::Allow;
+        };
+        let Some((bin, is_bounded_small, files)) =
+            Self::inspect_dump_command(&tokens, byte_ceiling)
+        else {
+            return AdmissionDecision::Allow;
+        };
+        if is_bounded_small {
+            return AdmissionDecision::Allow;
+        }
+
+        // Resolve candidate file sizes in O(1) via metadata() BEFORE reading or spawning a shell
+        let base_dir = crate::tools::param::get_str_with_aliases(ctx.args, &["cwd", "working_dir"])
+            .map(str::trim)
+            .filter(|s| !s.is_empty() && *s != ".")
+            .map(|c| ctx.workspace_root.join(c))
+            .unwrap_or_else(|| ctx.workspace_root.to_path_buf());
+
+        let mut resolved_rel_paths: Vec<String> = Vec::with_capacity(files.len());
+        let mut total_bytes: u64 = 0;
+        let Ok(canon_root) = std::fs::canonicalize(ctx.workspace_root) else {
+            return AdmissionDecision::Allow;
+        };
+
+        for raw_file in &files {
+            let candidate = if Path::new(raw_file).is_absolute() {
+                std::path::PathBuf::from(raw_file)
+            } else {
+                base_dir.join(raw_file)
+            };
+            let Ok(validated) =
+                crate::sandbox::path::validate_path_in_workspace(ctx.workspace_root, &candidate)
+            else {
+                return AdmissionDecision::Allow;
+            };
+            let Ok(meta) = std::fs::metadata(&validated) else {
+                return AdmissionDecision::Allow;
+            };
+            if !meta.is_file() {
+                return AdmissionDecision::Allow;
+            }
+            total_bytes = total_bytes.saturating_add(meta.len());
+            let rel = validated
+                .strip_prefix(&canon_root)
+                .unwrap_or(Path::new(raw_file))
+                .to_string_lossy()
+                .replace('\\', "/");
+            resolved_rel_paths.push(rel);
+        }
+
+        if total_bytes <= byte_ceiling as u64 {
+            return AdmissionDecision::Allow;
+        }
+
+        let start = std::time::Instant::now();
+        let redirected = if resolved_rel_paths.len() == 1 {
+            crate::tools::fs::read_file_with_options(
+                ctx.workspace_root,
+                &resolved_rel_paths[0],
+                None,
+                None,
+                false,
+            )
+        } else {
+            crate::tools::fs::batch_read(ctx.workspace_root, &resolved_rel_paths, None)
+        };
+
+        let Ok(body) = redirected else {
+            return AdmissionDecision::Allow;
+        };
+
+        let header = format!(
+            "[Admission Control: Intercepted unfiltered shell `{bin}` dump (~{} tokens / {} bytes > dynamic ceiling {} tokens). Returned clamped view + AST symbol outline in 0 extra turns — use `read_file(path, start_line, end_line)` or `read_file(path, query)` for targeted spans.]\n\n",
+            total_bytes / 4,
+            total_bytes,
+            byte_ceiling / 4
+        );
+
+        tracing::info!(
+            tool = ctx.tool_name,
+            bin = %bin,
+            total_bytes,
+            byte_ceiling,
+            files = ?resolved_rel_paths,
+            "ReadAdmissionMiddleware short-circuited oversized unfiltered shell read"
+        );
+
+        AdmissionDecision::ShortCircuit(ToolResult {
+            tool_id: String::new(),
+            tool_name: ctx.tool_name.to_string(),
+            success: true,
+            output: format!("{header}{body}"),
+            display_output: String::new(),
+            duration_ms: start.elapsed().as_millis() as u64,
+        })
+    }
+}
+
+impl ToolMiddleware for ReadAdmissionMiddleware {
+    fn before(&self, ctx: &ToolContext<'_>) -> AdmissionDecision {
+        let byte_ceiling = EconomicAdmissionPolicy::current_byte_ceiling(ctx.workspace_root);
+        Self::evaluate_with_ceiling(ctx, byte_ceiling)
+    }
+}
 
 /// Emits a `tracing::debug!` span with tool name, success flag, and wall-clock
 /// duration so every execution appears in structured logs.
@@ -505,5 +993,107 @@ mod tests {
             CheckpointMiddleware::resolve_checkpoint_target(&empty_args),
             "<unknown>"
         );
+    }
+
+    #[test]
+    fn test_economic_admission_policy_scales_with_context_and_pricing() {
+        // High context pressure tightens ceiling quadratically
+        let fresh_ceiling =
+            EconomicAdmissionPolicy::compute_admission_token_ceiling(128_000, 0, 0.0, None, None);
+        let pressured_ceiling = EconomicAdmissionPolicy::compute_admission_token_ceiling(
+            128_000, 90_000, 0.0, None, None,
+        );
+        assert!(
+            pressured_ceiling < fresh_ceiling,
+            "High utilization must tighten admission ceiling ({pressured_ceiling} vs {fresh_ceiling})"
+        );
+        assert!(pressured_ceiling >= 1_500);
+
+        // Large main-to-fast price gap (e.g. Claude Sonnet vs Haiku or Gemini Pro vs Flash)
+        // lowers the break-even ceiling below raw context pressure
+        let with_fast_shunt = EconomicAdmissionPolicy::compute_admission_token_ceiling(
+            200_000,
+            0,
+            3.00,
+            Some(0.80),
+            Some(4.00),
+        );
+        let without_fast =
+            EconomicAdmissionPolicy::compute_admission_token_ceiling(200_000, 0, 3.00, None, None);
+        assert!(
+            with_fast_shunt < without_fast,
+            "Cheaper Fast tier should tighten break-even ceiling ({with_fast_shunt} vs {without_fast})"
+        );
+    }
+
+    #[test]
+    fn test_read_admission_middleware_intercepts_unbounded_cat_and_allows_piped_or_bounded() {
+        let ws = tempfile::tempdir().expect("tempdir");
+        let big_file = ws.path().join("big.rs");
+        let mut content = String::new();
+        for i in 0..400 {
+            content.push_str(&format!(
+                "pub fn symbol_fn_{i}(v: usize) -> usize {{ v + {i} }}\n"
+            ));
+        }
+        std::fs::write(&big_file, &content).expect("write big.rs");
+
+        // 1. Oversized unfiltered `cat big.rs` -> short-circuited in 0 extra turns with AST outline
+        let cat_args = json!({ "command": "cat big.rs" });
+        let ctx_cat = ToolContext {
+            tool_name: "exec_cmd",
+            workspace_root: ws.path(),
+            args: &cat_args,
+            file_before: None,
+        };
+        match ReadAdmissionMiddleware::evaluate_with_ceiling(&ctx_cat, 4096) {
+            AdmissionDecision::ShortCircuit(res) => {
+                assert!(res.success);
+                assert!(res.output.contains("Admission Control"));
+                assert!(res.output.contains("AST Outline"));
+            }
+            AdmissionDecision::Allow => {
+                panic!("Oversized unfiltered `cat big.rs` must be intercepted by ReadAdmissionMiddleware")
+            }
+        }
+
+        // 2. Piped targeted read (`cat big.rs | grep symbol_fn_399`) -> allowed straight through
+        let piped_args = json!({ "command": "cat big.rs | grep symbol_fn_399" });
+        let ctx_piped = ToolContext {
+            tool_name: "exec_cmd",
+            workspace_root: ws.path(),
+            args: &piped_args,
+            file_before: None,
+        };
+        assert!(matches!(
+            ReadAdmissionMiddleware::evaluate_with_ceiling(&ctx_piped, 4096),
+            AdmissionDecision::Allow
+        ));
+
+        // 3. Explicitly bounded `head -n 30 big.rs` -> allowed straight through
+        let bounded_args = json!({ "command": "head -n 30 big.rs" });
+        let ctx_bounded = ToolContext {
+            tool_name: "exec_cmd",
+            workspace_root: ws.path(),
+            args: &bounded_args,
+            file_before: None,
+        };
+        assert!(matches!(
+            ReadAdmissionMiddleware::evaluate_with_ceiling(&ctx_bounded, 4096),
+            AdmissionDecision::Allow
+        ));
+
+        // 4. Unbounded `tail -n +1 big.rs` -> intercepted!
+        let unbounded_tail = json!({ "command": "tail -n +1 big.rs" });
+        let ctx_tail = ToolContext {
+            tool_name: "exec_cmd",
+            workspace_root: ws.path(),
+            args: &unbounded_tail,
+            file_before: None,
+        };
+        assert!(matches!(
+            ReadAdmissionMiddleware::evaluate_with_ceiling(&ctx_tail, 4096),
+            AdmissionDecision::ShortCircuit(_)
+        ));
     }
 }

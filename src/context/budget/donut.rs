@@ -5,6 +5,7 @@ use crate::constants::{
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 static ACTIVE_CONTEXT_LIMIT: AtomicUsize = AtomicUsize::new(0);
+static ACTIVE_CONTEXT_USED: AtomicUsize = AtomicUsize::new(0);
 
 /// Sets the current active model context window limit globally for tool execution and compaction.
 pub fn set_active_context_limit(limit: usize) {
@@ -14,6 +15,17 @@ pub fn set_active_context_limit(limit: usize) {
 /// Returns the current active model context window limit in tokens (or 0 if unset).
 pub fn get_active_context_limit() -> usize {
     ACTIVE_CONTEXT_LIMIT.load(Ordering::Relaxed)
+}
+
+/// Updates the current estimated context tokens used so admission-control policies can tighten
+/// smoothly as context utilization increases.
+pub fn set_active_context_used(used: usize) {
+    ACTIVE_CONTEXT_USED.store(used, Ordering::Relaxed);
+}
+
+/// Returns the current estimated context tokens used in the active session (or 0 if unset).
+pub fn get_active_context_used() -> usize {
+    ACTIVE_CONTEXT_USED.load(Ordering::Relaxed)
 }
 
 /// Returns true if the active context window is large enough for extended truncation (>= 128k tokens).

@@ -2,6 +2,38 @@
 pub struct ModelPricing;
 
 impl ModelPricing {
+    /// Returns estimated `(input_usd_per_1m, output_usd_per_1m)` token rates for a provider/model pair.
+    pub fn input_output_rates(provider: &str, model: &str) -> (f64, f64) {
+        let prov_lower = provider.to_lowercase();
+        let model_lower = model.to_lowercase();
+
+        if prov_lower.contains("ollama") || prov_lower.contains("local") {
+            (0.0, 0.0)
+        } else if model_lower.contains("claude-3-5-haiku") || model_lower.contains("haiku") {
+            (0.80, 4.00)
+        } else if model_lower.contains("claude") {
+            (3.00, 15.00)
+        } else if model_lower.contains("gpt-4o-mini") || model_lower.contains("-mini") {
+            (0.15, 0.60)
+        } else if model_lower.contains("gpt-4o") {
+            (2.50, 10.00)
+        } else if model_lower.contains("o3-mini") || model_lower.contains("o1") {
+            (1.10, 4.40)
+        } else if model_lower.contains("gemini-2.5-flash")
+            || model_lower.contains("gemini-2.0-flash")
+            || model_lower.contains("flash")
+        {
+            (0.10, 0.40)
+        } else if model_lower.contains("gemini") {
+            (1.25, 5.00)
+        } else if model_lower.contains("deepseek") {
+            (0.14, 0.28)
+        } else {
+            // Default conservative fallback rate
+            (1.00, 3.00)
+        }
+    }
+
     /// Computes estimated dollar cost given provider, model, and token metrics
     pub fn calculate_cost(
         provider: &str,
@@ -9,36 +41,7 @@ impl ModelPricing {
         prompt_tokens: usize,
         completion_tokens: usize,
     ) -> f64 {
-        let prov_lower = provider.to_lowercase();
-        let model_lower = model.to_lowercase();
-
-        // Rates per 1,000,000 tokens (Input USD, Output USD)
-        let (input_rate, output_rate) =
-            if prov_lower.contains("ollama") || prov_lower.contains("local") {
-                (0.0, 0.0)
-            } else if model_lower.contains("claude-3-5-haiku") || model_lower.contains("haiku") {
-                (0.80, 4.00)
-            } else if model_lower.contains("claude") {
-                (3.00, 15.00)
-            } else if model_lower.contains("gpt-4o-mini") {
-                (0.15, 0.60)
-            } else if model_lower.contains("gpt-4o") {
-                (2.50, 10.00)
-            } else if model_lower.contains("o3-mini") || model_lower.contains("o1") {
-                (1.10, 4.40)
-            } else if model_lower.contains("gemini-2.5-flash")
-                || model_lower.contains("gemini-2.0-flash")
-                || model_lower.contains("flash")
-            {
-                (0.10, 0.40)
-            } else if model_lower.contains("gemini") {
-                (1.25, 5.00)
-            } else if model_lower.contains("deepseek") {
-                (0.14, 0.28)
-            } else {
-                // Default conservative fallback rate
-                (1.00, 3.00)
-            };
+        let (input_rate, output_rate) = Self::input_output_rates(provider, model);
 
         let prompt_cost = (prompt_tokens as f64 / 1_000_000.0) * input_rate;
         let completion_cost = (completion_tokens as f64 / 1_000_000.0) * output_rate;

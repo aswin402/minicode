@@ -10,7 +10,7 @@ pub fn get_schemas() -> Vec<ToolSchema> {
     vec![
         ToolSchema {
             name: "read_file".to_string(),
-            description: "Read the contents of a file in the workspace within an optional 1-indexed line range. Output format is 'line | code'. For files exceeding 250 lines without specified bounds, the first 200 lines are returned with a pagination notice.".to_string(),
+            description: "Read the contents of a file in the workspace within an optional 1-indexed line range. Output format is 'line | code'. For files exceeding 250 lines without specified bounds, the first 200 lines + AST symbol outline are returned. Pass optional `query` for AST-segmented BM25 bulk-reader mode to extract only the highest-relevance functions/sections with exact line spans.".to_string(),
             parameters: json!({
                 "type": "object",
                 "properties": {
@@ -29,6 +29,10 @@ pub fn get_schemas() -> Vec<ToolSchema> {
                     "hashline": {
                         "type": "boolean",
                         "description": "Optional: when true, prefixes each line with a 2-character content hash (`11#VK| code`) for hash-verified range edits in `patch_file`."
+                    },
+                    "query": {
+                        "type": "string",
+                        "description": "Optional natural-language or symbol query for bulk-reader mode: extracts only the highest-relevance Tree-sitter AST blocks/sections via BM25 with exact line numbers."
                     }
                 },
                 "required": ["path"]
@@ -36,7 +40,7 @@ pub fn get_schemas() -> Vec<ToolSchema> {
         },
         ToolSchema {
             name: "batch_read".to_string(),
-            description: "Read multiple workspace files in parallel in a single tool call. Much faster and more token-efficient than sequential read_file calls when inspecting several related files.".to_string(),
+            description: "Read multiple workspace files in parallel in a single tool call. Pass optional `query` for multi-file bulk-reader mode to rank Tree-sitter AST blocks across all requested files via global BM25 and return only the highest-relevance spans.".to_string(),
             parameters: json!({
                 "type": "object",
                 "properties": {
@@ -48,6 +52,10 @@ pub fn get_schemas() -> Vec<ToolSchema> {
                     "max_lines": {
                         "type": "integer",
                         "description": "Optional maximum lines to return per file (default: 200)"
+                    },
+                    "query": {
+                        "type": "string",
+                        "description": "Optional natural-language or symbol query for multi-file bulk-reader mode: returns only the top BM25-ranked AST blocks across all files."
                     }
                 },
                 "required": ["paths"]
@@ -631,7 +639,12 @@ pub async fn dispatch(
             let start_line = param::get_usize(args, "start_line");
             let end_line = param::get_usize(args, "end_line");
             let hashline = param::opt_bool(args, "hashline", false);
-            fs::read_file_with_options(workspace_root, path, start_line, end_line, hashline)
+            let query = param::opt_str(args, "query");
+            if let Some(q) = query.filter(|s| !s.trim().is_empty()) {
+                fs::read_file_with_query(workspace_root, path, q, hashline, None)
+            } else {
+                fs::read_file_with_options(workspace_root, path, start_line, end_line, hashline)
+            }
         })()),
         "batch_read" => Some((|| {
             let paths_val = args
@@ -648,7 +661,12 @@ pub async fn dispatch(
                 .filter_map(|v| v.as_str().map(|s| s.to_string()))
                 .collect();
             let max_lines = param::get_usize(args, "max_lines");
-            fs::batch_read(workspace_root, &paths, max_lines)
+            let query = param::opt_str(args, "query");
+            if let Some(q) = query.filter(|s| !s.trim().is_empty()) {
+                fs::batch_read_with_query(workspace_root, &paths, q, max_lines)
+            } else {
+                fs::batch_read(workspace_root, &paths, max_lines)
+            }
         })()),
         "look_at" => Some((|| {
             let path = param::require_path(args, "look_at")?;

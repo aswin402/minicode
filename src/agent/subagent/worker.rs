@@ -197,7 +197,7 @@ impl SubagentWorker {
             return (Arc::from(chain_prov), primary_model, label);
         }
 
-        let mdl = self
+        let mut mdl = self
             .config
             .model
             .clone()
@@ -217,7 +217,38 @@ impl SubagentWorker {
                     .map(|s| s.model.clone())
             })
             .unwrap_or_else(|| fallback_provider.default_model().to_string());
-        let lbl = format!("{}:{}", fallback_provider.name(), mdl);
+
+        // Automatic economic shunting (`shunt` pattern): for read-only bulk-exploration `Scout`
+        // workers with no explicit user model override, route automatically to a verified strictly
+        // cheaper `SemanticTier::Fast` model on the same provider when available (>= 35% cheaper).
+        let mut shunted_fast = false;
+        if info.role == crate::agent::subagent::types::SubagentRole::Scout
+            && !is_test_mock
+            && !has_custom_chain
+            && self.config.model.is_none()
+        {
+            if let Some(fast_mdl) =
+                crate::agent::models::DynamicModelResolver::resolve_verified_cheaper_fast_model(
+                    fallback_provider.name(),
+                    &mdl,
+                )
+            {
+                tracing::info!(
+                    provider = fallback_provider.name(),
+                    main_model = %mdl,
+                    fast_model = %fast_mdl,
+                    "Economic shunt: routed read-only Scout worker to cheaper Fast tier"
+                );
+                mdl = fast_mdl;
+                shunted_fast = true;
+            }
+        }
+
+        let lbl = if shunted_fast {
+            format!("{}:{} [fast-shunt]", fallback_provider.name(), mdl)
+        } else {
+            format!("{}:{}", fallback_provider.name(), mdl)
+        };
         (Arc::clone(fallback_provider), mdl, lbl)
     }
 

@@ -53,6 +53,7 @@ impl AgentLoop {
         turn_tool_results: &mut Vec<crate::agent::types::ToolResult>,
         inject_step_grounding: bool,
     ) -> Result<(bool, usize)> {
+        crate::context::budget::donut::set_active_context_used(used_tokens_est);
         let mut tool_result = self.tool_pipeline.run(
             tool_result,
             &tool_call.name,

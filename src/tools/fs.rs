@@ -317,7 +317,9 @@ pub fn batch_read(
                                 };
                             }
                         }
-                        let content = match std::fs::read_to_string(&target_path) {
+                        let content = match ConfinedRoot::open(workspace_root)
+                            .and_then(|c| c.read_to_string(Path::new(&rel)))
+                        {
                             Ok(c) => c,
                             Err(e) => return (rel, Err(e.to_string())),
                         };
@@ -393,6 +395,569 @@ pub fn batch_read(
     }
 
     Ok(report)
+}
+
+// ============================================================================
+// Algorithmic AST-Segmented Global Okapi BM25 Bulk-Reader (`read_file`/`batch_read` `query` mode)
+// ============================================================================
+
+/// A semantic code or documentation block anchored to exact 1-indexed source lines.
+#[derive(Debug, Clone)]
+struct StructuralBlock {
+    file_path: String,
+    start_line: usize,
+    end_line: usize,
+    heading: String,
+    text: String,
+}
+
+/// Tokenizes code or natural-language queries with camelCase/PascalCase + snake_case splitting
+/// and morphological stemming (zero regexes).
+fn tokenize_bulk_query_terms(text: &str) -> Vec<String> {
+    const STOPWORDS: &[&str] = &[
+        "the", "and", "for", "with", "from", "into", "that", "this", "these", "those", "are",
+        "was", "were", "has", "have", "had", "will", "can", "all", "any", "how", "what", "where",
+        "when", "why", "does", "use", "using", "pub", "let", "const", "var", "mut", "self",
+        "return", "true", "false", "none", "some",
+    ];
+    let mut out = Vec::new();
+    for raw in text.split(|c: char| !c.is_ascii_alphanumeric()) {
+        if raw.is_empty() {
+            continue;
+        }
+        let chars: Vec<char> = raw.chars().collect();
+        let mut word = String::new();
+        for (i, &ch) in chars.iter().enumerate() {
+            let split_here = i > 0
+                && ch.is_ascii_uppercase()
+                && (chars[i - 1].is_ascii_lowercase()
+                    || chars.get(i + 1).is_some_and(|n| n.is_ascii_lowercase()));
+            if split_here && !word.is_empty() {
+                push_stemmed_term(&word, STOPWORDS, &mut out);
+                word.clear();
+            }
+            word.push(ch.to_ascii_lowercase());
+        }
+        if !word.is_empty() {
+            push_stemmed_term(&word, STOPWORDS, &mut out);
+        }
+    }
+    out
+}
+
+fn push_stemmed_term(word: &str, stopwords: &[&str], out: &mut Vec<String>) {
+    if word.len() < 2 || stopwords.contains(&word) {
+        return;
+    }
+    let stem = crate::vault::models::VaultSkill::normalize_stem(word);
+    if stem.len() >= 2 && !stopwords.contains(&stem) {
+        out.push(stem.to_string());
+    } else {
+        out.push(word.to_string());
+    }
+}
+
+/// Partitions a source or Markdown file along structural boundaries (Tree-sitter AST declarations,
+/// Markdown ATX headings, or blank-line paragraph blocks) so BM25 ranks complete semantic units.
+fn extract_structural_blocks(
+    target_path: &Path,
+    relative_path: &str,
+    content: &str,
+    lines: &[&str],
+) -> Vec<StructuralBlock> {
+    if lines.is_empty() {
+        return Vec::new();
+    }
+
+    let ext_lower = target_path
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or("")
+        .to_ascii_lowercase();
+
+    // 1. Markdown documents: partition along ATX heading spans
+    if matches!(ext_lower.as_str(), "md" | "mdx" | "markdown") {
+        let mut heading_rows: Vec<(usize, String)> = Vec::new();
+        for (idx, line) in lines.iter().enumerate() {
+            if line.starts_with('#') {
+                heading_rows.push((idx + 1, line.trim().to_string()));
+            }
+        }
+        if !heading_rows.is_empty() {
+            let mut blocks = Vec::new();
+            if heading_rows[0].0 > 1 {
+                let end = heading_rows[0].0 - 1;
+                blocks.push(StructuralBlock {
+                    file_path: relative_path.to_string(),
+                    start_line: 1,
+                    end_line: end,
+                    heading: "preamble".to_string(),
+                    text: lines[..end].join("\n"),
+                });
+            }
+            for (i, (start, heading)) in heading_rows.iter().enumerate() {
+                let end = heading_rows
+                    .get(i + 1)
+                    .map(|(next_s, _)| next_s.saturating_sub(1))
+                    .unwrap_or(lines.len());
+                if *start <= end && end <= lines.len() {
+                    blocks.push(StructuralBlock {
+                        file_path: relative_path.to_string(),
+                        start_line: *start,
+                        end_line: end,
+                        heading: heading.clone(),
+                        text: lines[*start - 1..end].join("\n"),
+                    });
+                }
+            }
+            return blocks;
+        }
+    }
+
+    // 2. Source code: partition along Tree-sitter AST symbol boundaries
+    let extractor = crate::context::ast::repomap::RepoMapExtractor::new();
+    let ast_symbols = extractor
+        .extract_symbols_from_str(&ext_lower, content)
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|s| s.kind != "import" && s.line_number >= 1 && s.end_line >= s.line_number)
+        .collect::<Vec<_>>();
+
+    if !ast_symbols.is_empty() {
+        // Prefer innermost (leaf) symbols so an enclosing `impl` block does not shadow individual
+        // methods during BM25 length normalization.
+        let mut selected: Vec<(usize, usize, String)> = Vec::new();
+        for (i, sym) in ast_symbols.iter().enumerate() {
+            let s_start = sym.line_number.min(lines.len());
+            let s_end = sym.end_line.min(lines.len());
+            let contains_child = ast_symbols.iter().enumerate().any(|(j, other)| {
+                j != i
+                    && other.line_number >= s_start
+                    && other.end_line <= s_end
+                    && (other.line_number > s_start || other.end_line < s_end)
+            });
+            if !contains_child {
+                selected.push((
+                    s_start,
+                    s_end,
+                    format!("[{}] {}", sym.kind, sym.signature.trim()),
+                ));
+            }
+        }
+        selected.sort_by_key(|(s, e, _)| (*s, *e));
+        selected.dedup_by(|a, b| a.0 == b.0 && a.1 == b.1);
+
+        let mut blocks = Vec::new();
+        if let Some(&(first_start, _, _)) = selected.first() {
+            if first_start > 1 {
+                let end = (first_start - 1).min(80);
+                blocks.push(StructuralBlock {
+                    file_path: relative_path.to_string(),
+                    start_line: 1,
+                    end_line: end,
+                    heading: "imports / module header".to_string(),
+                    text: lines[..end].join("\n"),
+                });
+            }
+        }
+        for (s_start, s_end, heading) in selected {
+            blocks.push(StructuralBlock {
+                file_path: relative_path.to_string(),
+                start_line: s_start,
+                end_line: s_end,
+                heading,
+                text: lines[s_start - 1..s_end].join("\n"),
+            });
+        }
+        if !blocks.is_empty() {
+            return blocks;
+        }
+    }
+
+    // 3. Fallback for configs/logs/unsupported languages: blank-line segmented windows (<= 60 lines)
+    const MAX_WINDOW: usize = 60;
+    let mut blocks = Vec::new();
+    let mut start = 0usize;
+    while start < lines.len() {
+        let mut end = (start + MAX_WINDOW).min(lines.len());
+        if end < lines.len() {
+            // Prefer breaking on a blank line in the back half of the window
+            if let Some(rel_blank) = lines[start + MAX_WINDOW / 2..end]
+                .iter()
+                .rposition(|l| l.trim().is_empty())
+            {
+                end = start + MAX_WINDOW / 2 + rel_blank + 1;
+            }
+        }
+        let first_non_empty = lines[start..end]
+            .iter()
+            .find(|l| !l.trim().is_empty())
+            .map(|l| l.trim().chars().take(60).collect::<String>())
+            .unwrap_or_else(|| format!("lines {}-{}", start + 1, end));
+        blocks.push(StructuralBlock {
+            file_path: relative_path.to_string(),
+            start_line: start + 1,
+            end_line: end,
+            heading: first_non_empty,
+            text: lines[start..end].join("\n"),
+        });
+        start = end;
+    }
+    blocks
+}
+
+/// Scores a corpus of structural blocks against `query` using Okapi BM25 ($k_1 = 1.5, b = 0.75$)
+/// plus a heading/signature relevance boost, returning indices sorted by descending score.
+fn rank_structural_blocks_bm25(blocks: &[StructuralBlock], query: &str) -> Vec<(usize, f64)> {
+    let query_terms: Vec<String> = {
+        let mut seen = std::collections::HashSet::new();
+        tokenize_bulk_query_terms(query)
+            .into_iter()
+            .filter(|t| seen.insert(t.clone()))
+            .collect()
+    };
+    if blocks.is_empty() || query_terms.is_empty() {
+        return Vec::new();
+    }
+
+    let n_docs = blocks.len() as f64;
+    let mut doc_tf: Vec<std::collections::HashMap<String, usize>> =
+        Vec::with_capacity(blocks.len());
+    let mut doc_lens: Vec<usize> = Vec::with_capacity(blocks.len());
+    let mut heading_sets: Vec<std::collections::HashSet<String>> = Vec::with_capacity(blocks.len());
+    let mut df: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+
+    for block in blocks {
+        let terms = tokenize_bulk_query_terms(&block.text);
+        doc_lens.push(terms.len().max(1));
+        let mut tf_map: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+        for term in terms {
+            *tf_map.entry(term).or_insert(0) += 1;
+        }
+        for k in tf_map.keys() {
+            *df.entry(k.clone()).or_insert(0) += 1;
+        }
+        let h_set: std::collections::HashSet<String> = tokenize_bulk_query_terms(&block.heading)
+            .into_iter()
+            .collect();
+        doc_tf.push(tf_map);
+        heading_sets.push(h_set);
+    }
+
+    let avg_dl = (doc_lens.iter().sum::<usize>() as f64 / n_docs).max(1.0);
+    const K1: f64 = 1.5;
+    const B: f64 = 0.75;
+
+    let mut scored: Vec<(usize, f64)> = Vec::new();
+    for (idx, tf_map) in doc_tf.iter().enumerate() {
+        let dl = doc_lens[idx] as f64;
+        let mut score = 0.0f64;
+        let mut heading_hits = 0usize;
+
+        for q in &query_terms {
+            if heading_sets[idx].contains(q) {
+                heading_hits += 1;
+            }
+            let tf = *tf_map.get(q).unwrap_or(&0) as f64;
+            if tf <= 0.0 {
+                continue;
+            }
+            let df_t = *df.get(q).unwrap_or(&0) as f64;
+            let idf = ((n_docs - df_t + 0.5) / (df_t + 0.5) + 1.0).ln();
+            let numer = tf * (K1 + 1.0);
+            let denom = tf + K1 * (1.0 - B + B * (dl / avg_dl));
+            score += idf * (numer / denom);
+        }
+
+        if heading_hits > 0 {
+            // Boost blocks whose symbol signature or heading directly matches query terms
+            score = (score + 0.5 * heading_hits as f64) * 1.6;
+        }
+        if score > 0.0 {
+            scored.push((idx, score));
+        }
+    }
+
+    scored.sort_by(|a, b| {
+        b.1.partial_cmp(&a.1)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then_with(|| blocks[a.0].start_line.cmp(&blocks[b.0].start_line))
+    });
+    scored
+}
+
+/// Query-focused AST-segmented BM25 bulk-reader for a single workspace file.
+/// Returns only the highest-relevance AST declarations/sections with exact 1-indexed line spans.
+pub fn read_file_with_query(
+    workspace_root: &Path,
+    relative_path: &str,
+    query: &str,
+    hashline: bool,
+    max_lines: Option<usize>,
+) -> Result<String> {
+    let target_path = validate_path_in_workspace(workspace_root, Path::new(relative_path))?;
+    let confined = ConfinedRoot::open(workspace_root)?;
+    crate::context::governance::dox::DoxEngine::sync_and_harvest_rules(
+        workspace_root,
+        &[relative_path],
+    );
+    crate::context::governance::dox::DoxEngine::on_file_mutated(workspace_root, relative_path);
+
+    let content = confined.read_to_string(Path::new(relative_path))?;
+    let lines: Vec<&str> = content.lines().collect();
+    let total_lines = lines.len();
+    if total_lines == 0 {
+        return Ok(String::new());
+    }
+
+    let line_budget = max_lines
+        .unwrap_or(crate::constants::READ_FILE_DEFAULT_WINDOW)
+        .clamp(40, 600);
+
+    // Small file already fits comfortably inside the budget — return directly
+    if total_lines <= line_budget / 2 {
+        return read_file_with_options(workspace_root, relative_path, None, None, hashline);
+    }
+
+    let blocks = extract_structural_blocks(&target_path, relative_path, &content, &lines);
+    let ranked = rank_structural_blocks_bm25(&blocks, query);
+
+    if ranked.is_empty() {
+        let mut fallback = format!(
+            "[Bulk-Reader Query: `{}` — 0 lexical AST matches in `{}` ({} lines). Showing file outline + head:]\n\n",
+            query.trim(),
+            relative_path,
+            total_lines
+        );
+        fallback.push_str(&read_file_with_options(
+            workspace_root,
+            relative_path,
+            Some(1),
+            Some(total_lines.min(80)),
+            hashline,
+        )?);
+        if let Some(outline) = build_unbounded_read_ast_outline_hint(
+            &target_path,
+            relative_path,
+            &content,
+            &lines,
+            total_lines.min(80),
+            total_lines,
+        ) {
+            fallback.push('\n');
+            fallback.push_str(&outline);
+        }
+        return Ok(fallback);
+    }
+
+    // Greedily pack highest-scoring AST blocks up to `line_budget`
+    let mut chosen: Vec<(usize, f64)> = Vec::new();
+    let mut used_lines = 0usize;
+    for (block_idx, score) in ranked {
+        let blk = &blocks[block_idx];
+        let span = blk.end_line.saturating_sub(blk.start_line) + 1;
+        if used_lines > 0 && used_lines + span > line_budget {
+            continue;
+        }
+        chosen.push((block_idx, score));
+        used_lines += span.min(line_budget);
+        if used_lines >= line_budget || chosen.len() >= 8 {
+            break;
+        }
+    }
+
+    // Re-sort chosen blocks in natural top-to-bottom source order
+    chosen.sort_by_key(|(idx, _)| blocks[*idx].start_line);
+
+    let saved_pct = if total_lines > 0 {
+        100.0 * (1.0 - (used_lines.min(total_lines) as f64 / total_lines as f64))
+    } else {
+        0.0
+    };
+
+    let mut out = format!(
+        "# Bulk-Reader (`{}` | query: `{}` | {} block(s), {}/{} lines — {:.0}% context saved)\n",
+        relative_path,
+        query.trim(),
+        chosen.len(),
+        used_lines.min(total_lines),
+        total_lines,
+        saved_pct.max(0.0)
+    );
+
+    for (block_idx, score) in chosen {
+        let blk = &blocks[block_idx];
+        let clamped_end = blk.end_line.min(blk.start_line + line_budget - 1);
+        out.push_str(&format!(
+            "\n## L{}-L{} {} (bm25={:.2})\n",
+            blk.start_line, clamped_end, blk.heading, score
+        ));
+        for line_no in blk.start_line..=clamped_end {
+            if let Some(line_str) = lines.get(line_no - 1) {
+                if hashline {
+                    out.push_str(&crate::tools::hashline::format_hashline(line_no, line_str));
+                } else {
+                    out.push_str(&format!("{:>4} | {}\n", line_no, line_str));
+                }
+            }
+        }
+    }
+
+    if let Some(subdir_rules) =
+        crate::context::governance::dox::DoxEngine::inject_unseen_subdirectory_rules(
+            workspace_root,
+            relative_path,
+        )
+    {
+        out.push_str(&subdir_rules);
+    }
+
+    Ok(out)
+}
+
+/// Multi-file query-focused AST-segmented Global Okapi BM25 bulk-reader.
+/// Indexes structural blocks across all requested files concurrently and returns only the top
+/// globally ranked spans within the line budget.
+pub fn batch_read_with_query(
+    workspace_root: &Path,
+    paths: &[String],
+    query: &str,
+    max_lines: Option<usize>,
+) -> Result<String> {
+    if paths.is_empty() {
+        return Err(ToolError::InvalidArguments {
+            name: "batch_read".to_string(),
+            reason: "paths array cannot be empty".to_string(),
+        }
+        .into());
+    }
+
+    let capped_paths = if paths.len() > MAX_BATCH_READ_FILES {
+        &paths[..MAX_BATCH_READ_FILES]
+    } else {
+        paths
+    };
+    let rel_refs: Vec<&str> = capped_paths.iter().map(|s| s.as_str()).collect();
+    crate::context::governance::dox::DoxEngine::sync_and_harvest_rules(workspace_root, &rel_refs);
+
+    let per_file_blocks: Vec<_> = std::thread::scope(|s| {
+        let handles: Vec<_> = capped_paths
+            .iter()
+            .map(|rel_path| {
+                let rel = rel_path.clone();
+                s.spawn(move || {
+                    let target_path =
+                        match validate_path_in_workspace(workspace_root, Path::new(&rel)) {
+                            Ok(p) => p,
+                            Err(e) => return (rel, Err(e.to_string())),
+                        };
+                    let content = match ConfinedRoot::open(workspace_root)
+                        .and_then(|c| c.read_to_string(Path::new(&rel)))
+                    {
+                        Ok(c) => c,
+                        Err(e) => return (rel, Err(e.to_string())),
+                    };
+                    let lines: Vec<&str> = content.lines().collect();
+                    let total_lines = lines.len();
+                    let blocks = extract_structural_blocks(&target_path, &rel, &content, &lines);
+                    (rel, Ok((total_lines, blocks)))
+                })
+            })
+            .collect();
+
+        handles
+            .into_iter()
+            .map(|h| {
+                h.join().unwrap_or_else(|_| {
+                    (
+                        "<unknown>".to_string(),
+                        Err("Worker thread panicked during batch_read".to_string()),
+                    )
+                })
+            })
+            .collect()
+    });
+
+    let mut all_blocks: Vec<StructuralBlock> = Vec::new();
+    let mut total_corpus_lines = 0usize;
+    let mut errors: Vec<(String, String)> = Vec::new();
+
+    for (rel, outcome) in per_file_blocks {
+        match outcome {
+            Ok((line_cnt, blocks)) => {
+                total_corpus_lines += line_cnt;
+                all_blocks.extend(blocks);
+            }
+            Err(e) => errors.push((rel, e)),
+        }
+    }
+
+    let ranked = rank_structural_blocks_bm25(&all_blocks, query);
+    let total_budget = max_lines.unwrap_or(240).clamp(60, 800);
+
+    if ranked.is_empty() {
+        let mut out = format!(
+            "# Batch Bulk-Reader (query: `{}` | 0 AST matches across {} files, {} total lines)\n",
+            query.trim(),
+            capped_paths.len(),
+            total_corpus_lines
+        );
+        for (rel, err) in errors {
+            out.push_str(&format!("- `{rel}`: error: {err}\n"));
+        }
+        return Ok(out);
+    }
+
+    let mut chosen: Vec<(usize, f64)> = Vec::new();
+    let mut used_lines = 0usize;
+    for (idx, score) in ranked {
+        let blk = &all_blocks[idx];
+        let span = blk.end_line.saturating_sub(blk.start_line) + 1;
+        if used_lines > 0 && used_lines + span > total_budget {
+            continue;
+        }
+        chosen.push((idx, score));
+        used_lines += span.min(total_budget);
+        if used_lines >= total_budget || chosen.len() >= 12 {
+            break;
+        }
+    }
+
+    let saved_pct = if total_corpus_lines > 0 {
+        100.0 * (1.0 - (used_lines.min(total_corpus_lines) as f64 / total_corpus_lines as f64))
+    } else {
+        0.0
+    };
+
+    let mut out = format!(
+        "# Batch Bulk-Reader ({} files | query: `{}` | {} top AST block(s), {}/{} lines — {:.0}% context saved)\n",
+        capped_paths.len(),
+        query.trim(),
+        chosen.len(),
+        used_lines.min(total_corpus_lines),
+        total_corpus_lines,
+        saved_pct.max(0.0)
+    );
+
+    for (idx, score) in chosen {
+        let blk = &all_blocks[idx];
+        out.push_str(&format!(
+            "\n## `{}` L{}-L{} {} (bm25={:.2})\n",
+            blk.file_path, blk.start_line, blk.end_line, blk.heading, score
+        ));
+        for (offset, line_str) in blk.text.lines().take(total_budget).enumerate() {
+            out.push_str(&format!("{:>4} | {}\n", blk.start_line + offset, line_str));
+        }
+    }
+
+    if !errors.is_empty() {
+        out.push_str("\n### Unreadable Files\n");
+        for (rel, err) in errors {
+            out.push_str(&format!("- `{rel}`: {err}\n"));
+        }
+    }
+
+    Ok(out)
 }
 
 /// Threshold lines below which `look_at` returns full line-numbered content when `extract == "all"`.
@@ -2482,6 +3047,79 @@ mod tests {
             bad_res.is_err(),
             "Broken Rust syntax via unified_diff must be blocked by AST syntax barrier"
         );
+
+        std::fs::remove_dir_all(&temp_dir).ok();
+    }
+
+    #[test]
+    fn test_read_file_query_ast_bm25_extracts_relevant_function_only() {
+        let temp_dir = std::env::temp_dir().join(format!(
+            "minicode_bulk_query_single_{}",
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::create_dir_all(temp_dir.join("src")).unwrap();
+
+        let mut big_rs = String::new();
+        for i in 0..40 {
+            big_rs.push_str(&format!(
+                "pub fn filler_helper_{i}(x: i32) -> i32 {{\n    let a = x + {i};\n    let b = a * 2;\n    let c = b - 1;\n    c\n}}\n\n"
+            ));
+        }
+        big_rs.push_str(
+            "pub fn reconcile_kv_cache_watermark(prompt_tokens: usize, limit: usize) -> usize {\n    let ratio = prompt_tokens.saturating_mul(100) / limit.max(1);\n    if ratio > 80 { 0 } else { prompt_tokens }\n}\n",
+        );
+        write_file(&temp_dir, "src/big.rs", &big_rs).unwrap();
+
+        let out = read_file_with_query(
+            &temp_dir,
+            "src/big.rs",
+            "reconcile kv cache watermark",
+            false,
+            Some(80),
+        )
+        .expect("query read succeeds");
+        assert!(out.contains("Bulk-Reader"));
+        assert!(out.contains("reconcile_kv_cache_watermark"));
+        assert!(out.contains("context saved"));
+        assert!(
+            !out.contains("filler_helper_0"),
+            "Irrelevant filler functions should be excluded from query extraction"
+        );
+
+        std::fs::remove_dir_all(&temp_dir).ok();
+    }
+
+    #[test]
+    fn test_batch_read_query_ranks_ast_blocks_across_multiple_files() {
+        let temp_dir = std::env::temp_dir().join(format!(
+            "minicode_bulk_query_batch_{}",
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::create_dir_all(temp_dir.join("src")).unwrap();
+
+        write_file(
+            &temp_dir,
+            "src/alpha.rs",
+            "pub fn render_button() -> &'static str {\n    \"ok\"\n}\n\npub fn compute_tax(v: u64) -> u64 {\n    v / 10\n}\n",
+        )
+        .unwrap();
+        write_file(
+            &temp_dir,
+            "src/beta.rs",
+            "pub fn verify_oauth_jwt_signature(token: &str, secret: &[u8]) -> bool {\n    !token.is_empty() && !secret.is_empty()\n}\n",
+        )
+        .unwrap();
+
+        let out = batch_read_with_query(
+            &temp_dir,
+            &["src/alpha.rs".to_string(), "src/beta.rs".to_string()],
+            "oauth jwt signature verification",
+            Some(80),
+        )
+        .expect("batch query read succeeds");
+        assert!(out.contains("src/beta.rs"));
+        assert!(out.contains("verify_oauth_jwt_signature"));
+        assert!(!out.contains("compute_tax"));
 
         std::fs::remove_dir_all(&temp_dir).ok();
     }
