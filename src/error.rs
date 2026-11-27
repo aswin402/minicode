@@ -215,6 +215,9 @@ pub enum ContextError {
 
     #[error("Vector index error: {0}")]
     VectorIndex(String),
+
+    #[error("Document parse error: {0}")]
+    Parse(String),
 }
 
 #[derive(Error, Debug)]

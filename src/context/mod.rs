@@ -1,6 +1,7 @@
 pub mod ast;
 pub mod budget;
 pub mod decision_record;
+pub mod doc_convert;
 pub mod doc_tree;
 pub mod governance;
 pub mod graph;

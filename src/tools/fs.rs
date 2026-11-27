@@ -14,6 +14,80 @@ pub fn read_file(
     read_file_with_options(workspace_root, relative_path, start_line, end_line, false)
 }
 
+enum LoadedWorkspaceContent {
+    VisualImageBanner(String),
+    Text {
+        content: String,
+        converted_from: Option<&'static str>,
+    },
+}
+
+/// Reads a workspace file via magic-byte + structural container sniffing (`doc_convert`):
+/// - Raster images (`PNG`/`JPEG`/`GIF`/`WEBP`) return the multimodal visual asset banner.
+/// - Structured documents (PDF, DOCX, XLSX, PPTX, EPUB, IPYNB, RSS/Atom, ZIP — plus HTML/CSV
+///   under `StructuralOutline`) convert automatically to cached Markdown without extension walls.
+/// - Plain UTF-8 source files pass through verbatim with zero conversion overhead.
+fn load_workspace_content_or_converted(
+    confined: &ConfinedRoot,
+    target_path: &Path,
+    relative_path: &str,
+    policy: crate::context::doc_convert::ConversionPolicy,
+) -> Result<LoadedWorkspaceContent> {
+    let bytes = confined.read_bytes(Path::new(relative_path))?;
+    let info = crate::context::doc_convert::StreamInfo::sniff(&bytes, Some(relative_path), None);
+
+    if info.is_visual_image {
+        const MIME_TO_IMG_TAG: &[(&str, &str)] = &[
+            ("image/png", "png"),
+            ("image/jpeg", "jpg"),
+            ("image/gif", "gif"),
+            ("image/webp", "webp"),
+        ];
+        let img_tag = MIME_TO_IMG_TAG
+            .iter()
+            .find_map(|&(m, tag)| (m == info.mime_type).then_some(tag))
+            .unwrap_or("bin");
+        let dims = parse_image_dimensions(&bytes, img_tag)
+            .map(|(w, h)| format!("{}x{} px", w, h))
+            .unwrap_or_else(|| "unknown dimensions".to_string());
+        return Ok(LoadedWorkspaceContent::VisualImageBanner(format!(
+            "✔ [Visual Image Asset Loaded: `{}`]\n\
+             • **Format**: `{}` ({})\n\
+             • **Size**: {} bytes ({:.1} KB)\n\
+             • **Multimodal Vision**: Attached directly to your active multimodal context for pixel-level inspection (and supported in `Vision` MiniPub).",
+            relative_path,
+            info.mime_type,
+            dims,
+            bytes.len(),
+            bytes.len() as f64 / 1024.0
+        )));
+    }
+
+    if let Some(doc) = crate::context::doc_convert::convert_workspace_file_cached(
+        target_path,
+        relative_path,
+        &bytes,
+        policy,
+    )? {
+        return Ok(LoadedWorkspaceContent::Text {
+            content: doc.markdown,
+            converted_from: Some(doc.converter_name),
+        });
+    }
+
+    let text = String::from_utf8(bytes).map_err(|_| ToolError::InvalidArguments {
+        name: "read_file".to_string(),
+        reason: format!(
+            "Cannot read '{}' as UTF-8 text (detected MIME: {}).",
+            relative_path, info.mime_type
+        ),
+    })?;
+    Ok(LoadedWorkspaceContent::Text {
+        content: text,
+        converted_from: None,
+    })
+}
+
 /// Reads a file from the workspace within the specified optional 1-indexed line range,
 /// optionally formatting lines with content-addressed `Hashline` anchors (`11#VK| code`).
 pub fn read_file_with_options(
@@ -31,53 +105,15 @@ pub fn read_file_with_options(
     );
     crate::context::governance::dox::DoxEngine::on_file_mutated(workspace_root, relative_path);
 
-    // Handle visual image assets (.png, .jpg, .jpeg, .gif, .webp) with header inspection & multimodal attachment support
-    if let Some(ext) = target_path.extension().and_then(|e| e.to_str()) {
-        let ext_lower = ext.to_ascii_lowercase();
-        const IMAGE_EXTENSIONS: &[&str] = &["png", "jpg", "jpeg", "gif", "webp"];
-        if IMAGE_EXTENSIONS.contains(&ext_lower.as_str()) {
-            let bytes = confined.read_bytes(Path::new(relative_path))?;
-            let dims = parse_image_dimensions(&bytes, &ext_lower)
-                .map(|(w, h)| format!("{}x{} px", w, h))
-                .unwrap_or_else(|| "unknown dimensions".to_string());
-            let media_type = match ext_lower.as_str() {
-                "png" => "image/png",
-                "jpg" | "jpeg" => "image/jpeg",
-                "gif" => "image/gif",
-                "webp" => "image/webp",
-                _ => "application/octet-stream",
-            };
-            return Ok(format!(
-                "✔ [Visual Image Asset Loaded: `{}`]\n\
-                 • **Format**: `{}` ({})\n\
-                 • **Size**: {} bytes ({:.1} KB)\n\
-                 • **Multimodal Vision**: Attached directly to your active multimodal context for pixel-level inspection (and supported in `Vision` MiniPub).",
-                relative_path,
-                media_type,
-                dims,
-                bytes.len(),
-                bytes.len() as f64 / 1024.0
-            ));
-        }
-
-        const BINARY_EXTENSIONS: &[&str] = &[
-            "bmp", "ico", "tiff", "svgz", "pdf", "wasm", "zip", "tar", "gz", "tgz", "7z", "rar",
-            "bin", "exe", "so", "dylib", "dll", "mp4", "webm", "mp3", "wav", "ogg", "woff",
-            "woff2", "ttf", "eot", "otf",
-        ];
-        if BINARY_EXTENSIONS.contains(&ext_lower.as_str()) {
-            return Err(ToolError::InvalidArguments {
-                name: "read_file".to_string(),
-                reason: format!(
-                    "Cannot read binary asset file '{}' (.{}). Binary media/compiled files cannot be read as UTF-8 text.",
-                    relative_path, ext_lower
-                ),
-            }
-            .into());
-        }
-    }
-
-    let content = confined.read_to_string(Path::new(relative_path))?;
+    let content = match load_workspace_content_or_converted(
+        &confined,
+        &target_path,
+        relative_path,
+        crate::context::doc_convert::ConversionPolicy::LocalEditable,
+    )? {
+        LoadedWorkspaceContent::VisualImageBanner(banner) => return Ok(banner),
+        LoadedWorkspaceContent::Text { content, .. } => content,
+    };
 
     if content.is_empty() {
         return Ok(String::new());
@@ -662,7 +698,15 @@ pub fn read_file_with_query(
     );
     crate::context::governance::dox::DoxEngine::on_file_mutated(workspace_root, relative_path);
 
-    let content = confined.read_to_string(Path::new(relative_path))?;
+    let content = match load_workspace_content_or_converted(
+        &confined,
+        &target_path,
+        relative_path,
+        crate::context::doc_convert::ConversionPolicy::LocalEditable,
+    )? {
+        LoadedWorkspaceContent::VisualImageBanner(banner) => return Ok(banner),
+        LoadedWorkspaceContent::Text { content, .. } => content,
+    };
     let lines: Vec<&str> = content.lines().collect();
     let total_lines = lines.len();
     if total_lines == 0 {
@@ -991,15 +1035,19 @@ pub fn look_at_with_options(
         .unwrap_or("")
         .to_ascii_lowercase();
 
-    const IMAGE_OR_BINARY: &[&str] = &[
-        "png", "jpg", "jpeg", "gif", "webp", "bmp", "ico", "tiff", "svgz", "pdf", "wasm", "zip",
-        "tar", "gz", "tgz", "7z", "rar", "bin", "exe", "so", "dylib", "dll",
-    ];
-    if IMAGE_OR_BINARY.contains(&ext_lower.as_str()) {
-        return read_file(workspace_root, relative_path, None, None);
-    }
-
-    let content = ConfinedRoot::open(workspace_root)?.read_to_string(Path::new(relative_path))?;
+    let confined = ConfinedRoot::open(workspace_root)?;
+    let (content, converted_from) = match load_workspace_content_or_converted(
+        &confined,
+        &target_path,
+        relative_path,
+        crate::context::doc_convert::ConversionPolicy::StructuralOutline,
+    )? {
+        LoadedWorkspaceContent::VisualImageBanner(banner) => return Ok(banner),
+        LoadedWorkspaceContent::Text {
+            content,
+            converted_from,
+        } => (content, converted_from),
+    };
 
     let lines: Vec<&str> = content.lines().collect();
     let total_lines = lines.len();
@@ -1012,9 +1060,12 @@ pub fn look_at_with_options(
         && total_lines <= LOOK_AT_SMALL_FILE_LINES
         && byte_len <= LOOK_AT_SMALL_FILE_BYTES
     {
+        let conv_badge = converted_from
+            .map(|c| format!(" — converted via `{}`", c))
+            .unwrap_or_else(|| " — complete file".to_string());
         let mut out = format!(
-            "# `{}` ({} lines, {:.1} KB — complete file)\n\n",
-            relative_path, total_lines, size_kb
+            "# `{}` ({} lines, {:.1} KB{})\n\n",
+            relative_path, total_lines, size_kb, conv_badge
         );
         for (idx, line) in lines.iter().enumerate() {
             out.push_str(&format!("{:>4} | {}\n", idx + 1, line));
@@ -1022,7 +1073,7 @@ pub fn look_at_with_options(
         return Ok(out);
     }
 
-    if matches!(ext_lower.as_str(), "md" | "mdx" | "markdown") {
+    if converted_from.is_some() || matches!(ext_lower.as_str(), "md" | "mdx" | "markdown") {
         return Ok(crate::context::doc_tree::render_markdown_page_index(
             relative_path,
             &content,
@@ -3310,5 +3361,74 @@ mod tests {
         assert!(after_re.contains("\"v2_alpha\""));
 
         std::fs::remove_dir_all(&temp_dir).ok();
+    }
+
+    #[test]
+    fn test_read_file_and_look_at_automatic_doc_conversion_and_editable_passthrough() {
+        let dir = tempfile::tempdir().unwrap();
+        let ws = dir.path();
+
+        // 1. Real PDF file -> read_file extracts clean Markdown & look_at drills into heading
+        let pdf_bytes = b"%PDF-1.4\n\
+1 0 obj << /Title (Architecture RFC) >> endobj\n\
+2 0 obj << /Length 120 >>\n\
+stream\n\
+BT\n\
+/F1 18 Tf\n\
+72 720 Td\n\
+(Deployment Model) Tj\n\
+/F1 11 Tf\n\
+0 -22 Td\n\
+(Single static Rust binary with zero OpenSSL.) Tj\n\
+ET\n\
+endstream\n\
+endobj\n\
+%%EOF\n";
+        std::fs::write(ws.join("rfc.pdf"), pdf_bytes).unwrap();
+        let pdf_read = read_file(ws, "rfc.pdf", None, None).unwrap();
+        assert!(pdf_read.contains("# Architecture RFC"));
+        assert!(pdf_read.contains("Single static Rust binary"));
+
+        let pdf_section =
+            look_at_with_options(ws, "rfc.pdf", None, Some("Deployment Model")).unwrap();
+        assert!(pdf_section.contains("Deployment Model"));
+        assert!(pdf_section.contains("Single static Rust binary"));
+
+        // 2. Real DOCX archive -> read_file converts headings & tables cleanly
+        let docx_bytes = crate::context::doc_convert::deflate::build_test_zip(&[(
+            "word/document.xml",
+            br#"<w:document><w:body>
+              <w:p><w:pPr><w:pStyle w:val="Heading1"/></w:pPr><w:r><w:t>API Contract</w:t></w:r></w:p>
+              <w:p><w:r><w:t>Endpoint returns JSON payload.</w:t></w:r></w:p>
+            </w:body></w:document>"#,
+        )]);
+        std::fs::write(ws.join("contract.docx"), docx_bytes).unwrap();
+        let docx_read = read_file(ws, "contract.docx", None, None).unwrap();
+        assert!(docx_read.contains("# API Contract"));
+        assert!(docx_read.contains("Endpoint returns JSON payload."));
+
+        // 3. Editable HTML & CSV stay verbatim in `read_file` (preserving patch_file line accuracy),
+        //    while `look_at` converts them to structured Markdown!
+        std::fs::write(
+            ws.join("index.html"),
+            "<!DOCTYPE html><html><head><title>App</title></head><body><h1>Home</h1><p>Welcome</p></body></html>\n",
+        )
+        .unwrap();
+        let html_verbatim = read_file(ws, "index.html", None, None).unwrap();
+        assert!(html_verbatim.contains("<!DOCTYPE html>"));
+        let html_outline = look_at(ws, "index.html", None).unwrap();
+        assert!(html_outline.contains("converted via `html`"));
+        assert!(html_outline.contains("Welcome"));
+
+        std::fs::write(
+            ws.join("data.csv"),
+            "service,port,status\napi,8080,ok\nworker,9090,ok\n",
+        )
+        .unwrap();
+        let csv_verbatim = read_file(ws, "data.csv", None, None).unwrap();
+        assert!(csv_verbatim.contains("service,port,status"));
+        let csv_outline = look_at(ws, "data.csv", None).unwrap();
+        assert!(csv_outline.contains("converted via `delimited_table`"));
+        assert!(csv_outline.contains("| api | 8080 | ok |"));
     }
 }

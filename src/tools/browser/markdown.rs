@@ -32,6 +32,10 @@ fn probe_http_client() -> Option<&'static reqwest::Client> {
 enum NegotiatedContent {
     Markdown(String),
     Html(String),
+    Converted {
+        markdown: String,
+        source_label: String,
+    },
 }
 
 /// Pipeline for token-efficient documentation extraction and noise pruning
@@ -56,6 +60,21 @@ impl SmartMarkdownExtractor {
                     url,
                     "Content-Negotiation (text/markdown)",
                 ));
+            }
+            Some(NegotiatedContent::Converted {
+                markdown,
+                source_label,
+            }) => {
+                tracing::info!(
+                    url = %url,
+                    converter = %source_label,
+                    "Ingested non-HTML remote stream via DocumentConverterRegistry"
+                );
+                let filtered = match query {
+                    Some(q) => filter_markdown_by_query(&markdown, q),
+                    None => markdown,
+                };
+                return Ok(Self::postprocess_markdown(&filtered, url, &source_label));
             }
             Some(NegotiatedContent::Html(html)) => Some(html),
             None => None,
@@ -182,20 +201,56 @@ impl SmartMarkdownExtractor {
             .unwrap_or("")
             .to_lowercase();
 
-        let text = resp.text().await.ok()?;
-        if text.trim().is_empty() {
+        let raw_bytes = resp.bytes().await.ok()?;
+        if raw_bytes.is_empty() {
             return None;
         }
+        let bounded = &raw_bytes[..raw_bytes.len().min(WEB_MAX_BODY_BYTES)];
 
-        if content_type.contains("text/markdown")
-            || (content_type.contains("text/plain") && !url.ends_with(".html"))
-        {
-            Some(NegotiatedContent::Markdown(text))
-        } else if content_type.contains("text/html") {
-            Some(NegotiatedContent::Html(text))
-        } else {
-            None
+        if content_type.contains("text/html") || content_type.contains("application/xhtml") {
+            let text = String::from_utf8_lossy(bounded).into_owned();
+            if text.trim().is_empty() {
+                return None;
+            }
+            return Some(NegotiatedContent::Html(text));
         }
+
+        if content_type.contains("text/markdown") {
+            let text = String::from_utf8_lossy(bounded).into_owned();
+            if text.trim().is_empty() {
+                return None;
+            }
+            return Some(NegotiatedContent::Markdown(text));
+        }
+
+        // Route non-HTML HTTP responses (PDF, DOCX, XLSX, PPTX, EPUB, IPYNB, RSS/Atom, CSV, ZIP)
+        // through the priority-ordered DocumentConverterRegistry before falling back to plain text.
+        if let Ok(Some(converted)) =
+            crate::context::doc_convert::DocumentConverterRegistry::global().convert_bytes(
+                bounded,
+                Some(url),
+                (!content_type.is_empty()).then_some(content_type.as_str()),
+                crate::context::doc_convert::ConversionPolicy::WebOrStream,
+            )
+        {
+            if converted.converter_name == "html" {
+                let text = String::from_utf8_lossy(bounded).into_owned();
+                return Some(NegotiatedContent::Html(text));
+            }
+            return Some(NegotiatedContent::Converted {
+                markdown: converted.markdown,
+                source_label: format!("DocumentConverter ({})", converted.converter_name),
+            });
+        }
+
+        if content_type.contains("text/plain") && !url.ends_with(".html") {
+            let text = String::from_utf8_lossy(bounded).into_owned();
+            if !text.trim().is_empty() {
+                return Some(NegotiatedContent::Markdown(text));
+            }
+        }
+
+        None
     }
 
     /// Probes for `/llms.txt` and `/llms-full.txt` files on the target domain

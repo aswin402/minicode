@@ -95,15 +95,55 @@ async fn assert_resolves_public(parsed: &url::Url) -> Result<()> {
     Ok(())
 }
 
-/// Fetches web documentation using the 3-step Smart Markdown pipeline:
-/// 1. Accept: text/markdown negotiation
-/// 2. llms.txt probing
-/// 3. High-fidelity HTML-to-Fit-Markdown conversion with noise pruning
+/// Fetches web documentation or decodes safe inline `data:` URIs via the unified Smart Markdown
+/// + priority-ordered `DocumentConverterRegistry` pipeline:
+/// 1. Safe inline `data:` URI decoding & conversion (zero network/SSRF exposure)
+/// 2. `Accept: text/markdown` negotiation + binary/structured stream conversion (PDF/OOXML/RSS/CSV/IPYNB)
+/// 3. `llms.txt` probing
+/// 4. High-fidelity HTML-to-Fit-Markdown distillation with SPA escalation
 pub async fn webfetch(url: &str, query: Option<&str>) -> Result<String> {
+    if url.starts_with("data:") {
+        let (bytes, mime) = crate::context::doc_convert::decode_data_uri(url).map_err(|e| {
+            ToolError::InvalidArguments {
+                name: "webfetch".to_string(),
+                reason: e.to_string(),
+            }
+        })?;
+        let bounded = &bytes[..bytes.len().min(crate::constants::WEB_MAX_BODY_BYTES)];
+        let md = match crate::context::doc_convert::DocumentConverterRegistry::global()
+            .convert_bytes(
+                bounded,
+                None,
+                mime.as_deref(),
+                crate::context::doc_convert::ConversionPolicy::WebOrStream,
+            )? {
+            Some(doc) => doc.markdown,
+            None => String::from_utf8_lossy(bounded).into_owned(),
+        };
+        let filtered = match query.map(str::trim).filter(|q| !q.is_empty()) {
+            Some(q) => {
+                let q_lower = q.to_ascii_lowercase();
+                let matched: Vec<&str> = md
+                    .lines()
+                    .filter(|l| l.starts_with('#') || l.to_ascii_lowercase().contains(&q_lower))
+                    .collect();
+                if matched.is_empty() {
+                    md
+                } else {
+                    matched.join("\n")
+                }
+            }
+            None => md,
+        };
+        return Ok(crate::tools::browser::guard::wrap_untrusted_web_output(
+            "data:uri", &filtered,
+        ));
+    }
+
     if !url.starts_with("http://") && !url.starts_with("https://") {
         return Err(ToolError::InvalidArguments {
             name: "webfetch".to_string(),
-            reason: "URL must begin with http:// or https://".to_string(),
+            reason: "URL must begin with http://, https://, or data:".to_string(),
         }
         .into());
     }
@@ -161,5 +201,18 @@ mod tests {
         assert!(!super::is_private_ip(
             "2606:2800:220:1:248:1893:25c8:1946".parse().unwrap()
         ));
+    }
+
+    #[tokio::test]
+    async fn test_webfetch_decodes_and_converts_data_uri_csv_and_html() {
+        let csv_uri = "data:text/csv;base64,bmFtZSxwb3J0CmFwaSw4MDgwCmRiLDU0MzIK";
+        let out = webfetch(csv_uri, None).await.unwrap();
+        assert!(out.contains("| name | port |"));
+        assert!(out.contains("| api | 8080 |"));
+
+        let html_uri = "data:text/html,%3Ch1%3ESpec%3C%2Fh1%3E%3Cp%3EClean%20Markdown%3C%2Fp%3E";
+        let out_html = webfetch(html_uri, None).await.unwrap();
+        assert!(out_html.contains("Spec"));
+        assert!(out_html.contains("Clean Markdown"));
     }
 }

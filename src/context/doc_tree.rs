@@ -657,8 +657,20 @@ pub fn drilldown_markdown_section(
                 continue;
             }
         }
-        let Ok(content) = std::fs::read_to_string(&path_buf) else {
-            continue;
+        let content = match std::fs::read(&path_buf) {
+            Ok(raw_bytes) => match crate::context::doc_convert::convert_workspace_file_cached(
+                &path_buf,
+                &disp_file,
+                &raw_bytes,
+                crate::context::doc_convert::ConversionPolicy::StructuralOutline,
+            ) {
+                Ok(Some(doc)) => doc.markdown,
+                _ => match String::from_utf8(raw_bytes) {
+                    Ok(text) => text,
+                    Err(_) => continue,
+                },
+            },
+            Err(_) => continue,
         };
         let tree = parse_markdown_doc_tree(&content);
         if tree.sections.is_empty() {
