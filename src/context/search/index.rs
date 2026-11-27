@@ -40,6 +40,7 @@ struct SymbolIndexDiskSnapshot {
 }
 
 /// In-memory inverted symbol and identifier index for sub-millisecond code navigation
+#[derive(Clone)]
 pub struct SymbolIndex {
     symbols: Vec<SymbolMatch>,
     postings: BTreeMap<String, Vec<usize>>, // token -> Vec<symbol_idx>
@@ -190,17 +191,129 @@ impl SymbolIndex {
         Ok(())
     }
 
+    /// Applies an $O(|\Delta|)$ incremental symbol update for mutated, created, or deleted files
+    /// without re-walking or re-parsing untouched workspace files.
+    pub fn apply_incremental_delta(
+        &mut self,
+        workspace_root: &Path,
+        deltas: &[(String, crate::context::search::index_bus::FileMutationOp)],
+    ) {
+        use crate::context::search::index_bus::FileMutationOp;
+        if deltas.is_empty() {
+            return;
+        }
+
+        let canonical_root =
+            std::fs::canonicalize(workspace_root).unwrap_or_else(|_| workspace_root.to_path_buf());
+        let mut dirty_rel: HashSet<String> = HashSet::with_capacity(deltas.len());
+        for (rel, _) in deltas {
+            let norm = rel.trim_start_matches("./").replace('\\', "/");
+            if !norm.is_empty() {
+                dirty_rel.insert(norm);
+            }
+        }
+        if dirty_rel.is_empty() {
+            return;
+        }
+
+        // 1. Retain symbols from untouched files
+        let mut retained = Vec::with_capacity(self.symbols.len());
+        for sym in self.symbols.drain(..) {
+            let rel = sym
+                .file_path
+                .strip_prefix(workspace_root)
+                .or_else(|_| sym.file_path.strip_prefix(&canonical_root))
+                .unwrap_or(&sym.file_path)
+                .to_string_lossy()
+                .trim_start_matches("./")
+                .replace('\\', "/");
+            if !dirty_rel.contains(&rel) {
+                retained.push(sym);
+            }
+        }
+
+        // 2. Re-extract AST symbols ONLY for non-deleted dirty supported source files
+        let mut extractor = RepoMapExtractor::new();
+        for (rel, op) in deltas {
+            if *op == FileMutationOp::Delete {
+                continue;
+            }
+            let norm = rel.trim_start_matches("./").replace('\\', "/");
+            if norm.is_empty() {
+                continue;
+            }
+            let abs_path = workspace_root.join(&norm);
+            let ext = abs_path.extension().and_then(|e| e.to_str()).unwrap_or("");
+            if !crate::constants::SUPPORTED_LANG_EXTENSIONS.contains(&ext) || !abs_path.is_file() {
+                continue;
+            }
+            if let Ok(file_symbols) = extractor.extract_file_symbols(&abs_path) {
+                for sym in file_symbols {
+                    if sym.kind != "import" {
+                        let inline_prefix = Self::compute_inline_prefix(&sym.name);
+                        retained.push(SymbolMatch {
+                            name: sym.name,
+                            kind: sym.kind,
+                            signature: sym.signature,
+                            file_path: abs_path.clone(),
+                            line_number: sym.line_number,
+                            score: 0.0,
+                            doc_comment: sym.doc_comment,
+                            inline_prefix,
+                        });
+                    }
+                }
+            }
+        }
+
+        // 3. Rebuild inverted postings & BM25 document-length statistics in memory
+        self.symbols = retained;
+        self.postings.clear();
+        self.doc_lengths.clear();
+        self.doc_lengths.reserve(self.symbols.len());
+        for (idx, sym) in self.symbols.iter().enumerate() {
+            let tokens = Self::tokenize(&sym.name);
+            self.doc_lengths.push(tokens.len().max(1));
+            for token in tokens {
+                self.postings.entry(token).or_default().push(idx);
+            }
+        }
+        self.recompute_corpus_stats();
+    }
+
     /// Returns a shared `Arc<SymbolIndex>` for `workspace_root`, reusing the in-memory AST index
-    /// across the Orchestrator and parallel `MiniPub` workers (TTL: 30s or fingerprint-verified)
-    /// and falling back to the compacted disk index cache (`.minicode/cache/symbol_index.json`).
+    /// across the Orchestrator and parallel `MiniPub` workers (with $O(|\Delta|)$ incremental delta
+    /// patching via `WorkspaceIndexBus`) and falling back to `.minicode/cache/symbol_index.json`.
     pub fn get_or_build_cached(workspace_root: &Path) -> Result<std::sync::Arc<Self>> {
+        use crate::context::search::index_bus::{IndexConsumer, WorkspaceIndexBus};
+        const MAX_INCREMENTAL_DELTAS: usize = 64;
+
+        let canonical_root =
+            std::fs::canonicalize(workspace_root).unwrap_or_else(|_| workspace_root.to_path_buf());
         let cache = GLOBAL_SYMBOL_INDEX_CACHE.get_or_init(|| std::sync::RwLock::new(None));
-        if let Ok(guard) = cache.read() {
-            if let Some((ref cached_root, built_at, _fp, ref arc_idx)) = *guard {
-                if cached_root == workspace_root
-                    && built_at.elapsed() < std::time::Duration::from_secs(30)
-                {
-                    return Ok(std::sync::Arc::clone(arc_idx));
+        let dirty = WorkspaceIndexBus::drain_dirty(workspace_root, IndexConsumer::Symbol);
+
+        if dirty.is_empty() {
+            if let Ok(guard) = cache.read() {
+                if let Some((ref cached_root, built_at, _fp, ref arc_idx)) = *guard {
+                    if cached_root == &canonical_root
+                        && built_at.elapsed() < std::time::Duration::from_secs(30)
+                    {
+                        return Ok(std::sync::Arc::clone(arc_idx));
+                    }
+                }
+            }
+        } else if dirty.len() <= MAX_INCREMENTAL_DELTAS {
+            if let Ok(mut guard) = cache.write() {
+                if let Some((ref cached_root, ref mut built_at, _fp, ref mut arc_idx)) = *guard {
+                    if cached_root == &canonical_root {
+                        let mut patched = (**arc_idx).clone();
+                        patched.apply_incremental_delta(workspace_root, &dirty);
+                        let arc_patched = std::sync::Arc::new(patched);
+                        *arc_idx = std::sync::Arc::clone(&arc_patched);
+                        *built_at = std::time::Instant::now();
+                        return Ok(arc_patched);
+                    }
                 }
             }
         }
@@ -211,11 +324,13 @@ impl SymbolIndex {
         let fingerprint = Self::compute_workspace_fingerprint(workspace_root, &files);
 
         // If in-memory cache expired its 30s TTL but the workspace fingerprint is unchanged, reuse it!
-        if let Ok(mut guard) = cache.write() {
-            if let Some((ref cached_root, ref mut built_at, cached_fp, ref arc_idx)) = *guard {
-                if cached_root == workspace_root && cached_fp == fingerprint {
-                    *built_at = std::time::Instant::now();
-                    return Ok(std::sync::Arc::clone(arc_idx));
+        if dirty.is_empty() {
+            if let Ok(mut guard) = cache.write() {
+                if let Some((ref cached_root, ref mut built_at, cached_fp, ref arc_idx)) = *guard {
+                    if cached_root == &canonical_root && cached_fp == fingerprint {
+                        *built_at = std::time::Instant::now();
+                        return Ok(std::sync::Arc::clone(arc_idx));
+                    }
                 }
             }
         }
@@ -236,7 +351,7 @@ impl SymbolIndex {
         let arc_fresh = std::sync::Arc::new(fresh);
         if let Ok(mut guard) = cache.write() {
             *guard = Some((
-                workspace_root.to_path_buf(),
+                canonical_root,
                 std::time::Instant::now(),
                 fingerprint,
                 std::sync::Arc::clone(&arc_fresh),
@@ -252,22 +367,20 @@ impl SymbolIndex {
                 *guard = None;
             }
         }
+        crate::context::search::index_bus::WorkspaceIndexBus::clear_consumer_queue(
+            crate::context::search::index_bus::IndexConsumer::Symbol,
+        );
         crate::context::search::trigram::TrigramIndex::invalidate_cache();
     }
 
-    /// Targeted per-file invalidation: clears `SymbolIndex` and records an $O(1)$ coalesced dirty
-    /// event into `TrigramIndex` so search indexes update incrementally instead of re-walking disk.
+    /// Targeted per-file mutation event: fans out an $O(1)$ coalesced dirty event across ALL
+    /// workspace indexes (`Trigram`, `Symbol`, `Semantic`, `Hybrid`, `CodeGraph`) via `WorkspaceIndexBus`.
     pub fn on_file_mutated(
         workspace_root: &Path,
         rel_path: &str,
         op: crate::context::search::trigram::FileMutationOp,
     ) {
-        if let Some(cache) = GLOBAL_SYMBOL_INDEX_CACHE.get() {
-            if let Ok(mut guard) = cache.write() {
-                *guard = None;
-            }
-        }
-        crate::context::search::trigram::TrigramIndex::record_dirty_file(
+        crate::context::search::index_bus::WorkspaceIndexBus::record_file_mutation(
             workspace_root,
             rel_path,
             op,

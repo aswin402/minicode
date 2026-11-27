@@ -131,6 +131,11 @@ pub struct SemanticIndex {
     pub mmap_index: Option<crate::context::search::mmap_index::MmapTurbovecIndex>,
 }
 
+type CachedSemanticEntry = (PathBuf, std::time::Instant, std::sync::Arc<SemanticIndex>);
+static GLOBAL_SEMANTIC_INDEX_CACHE: std::sync::OnceLock<
+    std::sync::RwLock<Option<CachedSemanticEntry>>,
+> = std::sync::OnceLock::new();
+
 impl Default for SemanticIndex {
     fn default() -> Self {
         Self::new()
@@ -144,6 +149,138 @@ impl SemanticIndex {
             file_hashes: HashMap::new(),
             mmap_index: None,
         }
+    }
+
+    /// Invalidates the process-wide cached `SemanticIndex`.
+    pub fn invalidate_cache() {
+        if let Some(cache) = GLOBAL_SEMANTIC_INDEX_CACHE.get() {
+            if let Ok(mut guard) = cache.write() {
+                *guard = None;
+            }
+        }
+        crate::context::search::index_bus::WorkspaceIndexBus::clear_consumer_queue(
+            crate::context::search::index_bus::IndexConsumer::Semantic,
+        );
+    }
+
+    /// Applies an $O(|\Delta|)$ incremental AST-chunk update for dirty workspace files without
+    /// re-walking or re-embedding unchanged files.
+    pub fn apply_incremental_delta(
+        &mut self,
+        workspace_root: &Path,
+        deltas: &[(String, crate::context::search::index_bus::FileMutationOp)],
+    ) -> usize {
+        use crate::context::search::index_bus::FileMutationOp;
+        if deltas.is_empty() {
+            return 0;
+        }
+
+        let mut dirty_set = std::collections::HashSet::with_capacity(deltas.len());
+        for (rel, _) in deltas {
+            let norm = rel.trim_start_matches("./").replace('\\', "/");
+            if !norm.is_empty() {
+                dirty_set.insert(norm);
+            }
+        }
+        if dirty_set.is_empty() {
+            return 0;
+        }
+
+        // Drop stale chunks and hashes for dirty/deleted files
+        self.chunks.retain(|c| !dirty_set.contains(&c.file_path));
+        for rel in &dirty_set {
+            self.file_hashes.remove(rel);
+        }
+
+        let mut repomap = RepoMapExtractor::new();
+        let mut updated_files = 0usize;
+
+        for (rel, op) in deltas {
+            if *op == FileMutationOp::Delete {
+                continue;
+            }
+            let norm = rel.trim_start_matches("./").replace('\\', "/");
+            if norm.is_empty() {
+                continue;
+            }
+            let abs_path = workspace_root.join(&norm);
+            let ext = abs_path.extension().and_then(|e| e.to_str()).unwrap_or("");
+            if !is_indexable_extension(ext) || !abs_path.is_file() {
+                continue;
+            }
+            let mtime = fs::metadata(&abs_path)
+                .ok()
+                .and_then(|m| m.modified().ok())
+                .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                .map(|d| d.as_secs())
+                .unwrap_or(0);
+            if let Ok(content) = fs::read_to_string(&abs_path) {
+                let chunks = chunk_source_code_ast(&norm, &content, &mut repomap, &abs_path);
+                self.chunks.extend(chunks);
+                self.file_hashes.insert(norm, mtime);
+                updated_files += 1;
+            }
+        }
+
+        self.mmap_index = None;
+        if workspace_root.join(".minicode").is_dir() {
+            let cache_path = Self::cache_path(workspace_root);
+            self.save_cache(&cache_path);
+        }
+        updated_files
+    }
+
+    /// Returns a shared in-memory `Arc<SemanticIndex>` for `workspace_root`, reusing the cached
+    /// index across calls and applying $O(|\Delta|)$ incremental delta updates via `WorkspaceIndexBus`.
+    pub fn get_or_build_cached(workspace_root: &Path) -> Result<std::sync::Arc<Self>> {
+        use crate::context::search::index_bus::{IndexConsumer, WorkspaceIndexBus};
+        const MAX_INCREMENTAL_DELTAS: usize = 64;
+
+        let canonical_root =
+            fs::canonicalize(workspace_root).unwrap_or_else(|_| workspace_root.to_path_buf());
+        let cache = GLOBAL_SEMANTIC_INDEX_CACHE.get_or_init(|| std::sync::RwLock::new(None));
+        let dirty = WorkspaceIndexBus::drain_dirty(workspace_root, IndexConsumer::Semantic);
+
+        if dirty.is_empty() {
+            if let Ok(guard) = cache.read() {
+                if let Some((ref cached_root, built_at, ref arc_idx)) = *guard {
+                    if cached_root == &canonical_root
+                        && built_at.elapsed() < std::time::Duration::from_secs(30)
+                    {
+                        return Ok(std::sync::Arc::clone(arc_idx));
+                    }
+                }
+            }
+        } else if dirty.len() <= MAX_INCREMENTAL_DELTAS {
+            if let Ok(mut guard) = cache.write() {
+                if let Some((ref cached_root, ref mut built_at, ref mut arc_idx)) = *guard {
+                    if cached_root == &canonical_root {
+                        let mut patched = Self {
+                            chunks: arc_idx.chunks.clone(),
+                            file_hashes: arc_idx.file_hashes.clone(),
+                            mmap_index: None,
+                        };
+                        patched.apply_incremental_delta(workspace_root, &dirty);
+                        let arc_patched = std::sync::Arc::new(patched);
+                        *arc_idx = std::sync::Arc::clone(&arc_patched);
+                        *built_at = std::time::Instant::now();
+                        return Ok(arc_patched);
+                    }
+                }
+            }
+        }
+
+        let mut built = Self::new();
+        built.build_index(workspace_root)?;
+        let arc_built = std::sync::Arc::new(built);
+        if let Ok(mut guard) = cache.write() {
+            *guard = Some((
+                canonical_root,
+                std::time::Instant::now(),
+                std::sync::Arc::clone(&arc_built),
+            ));
+        }
+        Ok(arc_built)
     }
 
     /// Embeds a text snippet into a normalized dense vector (128 dimensions) using

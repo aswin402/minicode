@@ -307,6 +307,23 @@ impl Default for CodeGraph {
     }
 }
 
+impl Clone for CodeGraph {
+    fn clone(&self) -> Self {
+        Self {
+            graph: self.graph.clone(),
+            symbol_node_indices: self.symbol_node_indices.clone(),
+            name_to_nodes: self.name_to_nodes.clone(),
+            file_to_nodes: self.file_to_nodes.clone(),
+            file_node_indices: self.file_node_indices.clone(),
+            symbol_to_file: self.symbol_to_file.clone(),
+            file_to_symbols: self.file_to_symbols.clone(),
+            file_tracker: self.file_tracker.clone(),
+            file_shards: self.file_shards.clone(),
+            extractor: RepoMapExtractor::new(),
+        }
+    }
+}
+
 impl CodeGraph {
     /// Maximum supported source file count automatically cold-indexed on post-turn mutation when no prior `.minicode/graph.json` exists.
     /// Larger unindexed monorepos index lazily on demand when the Orchestrator invokes CodeGraph tools.
@@ -342,18 +359,122 @@ impl CodeGraph {
         }
     }
 
+    /// Applies targeted $O(|\Delta|)$ per-file AST shard deltas from `WorkspaceIndexBus` without
+    /// walking the workspace directory tree or re-parsing untouched source files.
+    pub fn apply_incremental_deltas(
+        &mut self,
+        workspace_root: &Path,
+        deltas: &[(String, crate::context::search::index_bus::FileMutationOp)],
+    ) -> IncrementalStats {
+        use crate::context::search::index_bus::FileMutationOp;
+
+        let prev_nodes = self.graph.node_count();
+        let mut stats = IncrementalStats {
+            files_scanned: deltas.len(),
+            ..Default::default()
+        };
+        if deltas.is_empty() {
+            return stats;
+        }
+
+        let canonical_root = workspace_root
+            .canonicalize()
+            .unwrap_or_else(|_| workspace_root.to_path_buf());
+        let now_nanos = Self::current_epoch_nanos();
+        let mut reparsed_count = 0usize;
+        let mut removed_count = 0usize;
+
+        for (rel, op) in deltas {
+            let norm = rel.trim_start_matches("./").replace('\\', "/");
+            if norm.is_empty() {
+                continue;
+            }
+            let joined = workspace_root.join(&norm);
+            let canonical_joined = canonical_root.join(&norm);
+
+            let existed = self.file_shards.remove(&joined).is_some()
+                | self.file_shards.remove(&canonical_joined).is_some();
+            self.file_tracker.remove(&joined);
+            self.file_tracker.remove(&canonical_joined);
+
+            if *op == FileMutationOp::Delete {
+                if existed {
+                    removed_count += 1;
+                }
+                continue;
+            }
+
+            let ext = joined.extension().and_then(|e| e.to_str()).unwrap_or("");
+            if !crate::constants::SUPPORTED_LANG_EXTENSIONS.contains(&ext) || !joined.is_file() {
+                continue;
+            }
+            let Ok(content) = std::fs::read_to_string(&joined) else {
+                continue;
+            };
+            let (mtime_nanos, byte_len) = Self::stat_file_nanos_and_len(&joined);
+            let hash = FileHashTracker::compute_hash(&content);
+            let shard = Self::extract_file_shard(
+                &mut self.extractor,
+                &joined,
+                &content,
+                hash,
+                mtime_nanos,
+                byte_len,
+                now_nanos,
+            );
+            self.file_shards.insert(joined.clone(), shard);
+            self.file_tracker
+                .update(joined, hash, mtime_nanos / 1_000_000);
+            reparsed_count += 1;
+        }
+
+        if reparsed_count == 0 && removed_count == 0 {
+            return stats;
+        }
+
+        let (new_nodes, edges_rebuilt) = self.assemble_from_shards(workspace_root);
+        stats.files_reparsed = reparsed_count;
+        stats.files_removed = removed_count;
+        stats.nodes_added = new_nodes.saturating_sub(prev_nodes);
+        stats.nodes_removed = prev_nodes.saturating_sub(new_nodes);
+        stats.edges_rebuilt = edges_rebuilt;
+        stats
+    }
+
     /// Returns a shared in-memory `Arc<CodeGraph>` across the Orchestrator and `MiniPub` workers,
-    /// avoiding repeated disk deserialization or full workspace AST rebuilds within a 15-second window.
+    /// applying $O(|\Delta|)$ incremental AST shard deltas from `WorkspaceIndexBus` when files change.
     pub fn get_or_build_cached(workspace_root: &Path) -> Result<std::sync::Arc<Self>> {
+        use crate::context::search::index_bus::{IndexConsumer, WorkspaceIndexBus};
+        const MAX_INCREMENTAL_DELTAS: usize = 64;
+
         let cache_lock = GLOBAL_CODE_GRAPH_CACHE.get_or_init(|| std::sync::RwLock::new(None));
         let canonical = workspace_root
             .canonicalize()
             .unwrap_or_else(|_| workspace_root.to_path_buf());
+        let dirty = WorkspaceIndexBus::drain_dirty(workspace_root, IndexConsumer::CodeGraph);
 
-        if let Ok(guard) = cache_lock.read() {
-            if let Some((ref cached_root, built_at, ref arc_graph)) = *guard {
-                if cached_root == &canonical && built_at.elapsed().as_secs() < 15 {
-                    return Ok(std::sync::Arc::clone(arc_graph));
+        if dirty.is_empty() {
+            if let Ok(guard) = cache_lock.read() {
+                if let Some((ref cached_root, built_at, ref arc_graph)) = *guard {
+                    if cached_root == &canonical && built_at.elapsed().as_secs() < 30 {
+                        return Ok(std::sync::Arc::clone(arc_graph));
+                    }
+                }
+            }
+        } else if dirty.len() <= MAX_INCREMENTAL_DELTAS {
+            if let Ok(mut guard) = cache_lock.write() {
+                if let Some((ref cached_root, ref mut built_at, ref mut arc_graph)) = *guard {
+                    if cached_root == &canonical && !arc_graph.file_shards.is_empty() {
+                        let mut patched = (**arc_graph).clone();
+                        let stats = patched.apply_incremental_deltas(workspace_root, &dirty);
+                        if stats.files_reparsed > 0 || stats.files_removed > 0 {
+                            let _ = patched.save_to_disk(workspace_root);
+                        }
+                        let arc_patched = std::sync::Arc::new(patched);
+                        *arc_graph = std::sync::Arc::clone(&arc_patched);
+                        *built_at = std::time::Instant::now();
+                        return Ok(arc_patched);
+                    }
                 }
             }
         }
@@ -391,13 +512,16 @@ impl CodeGraph {
         Some(arc_graph)
     }
 
-    /// Invalidates the shared in-memory `CodeGraph` cache (called on file writes/merges).
+    /// Invalidates the shared in-memory `CodeGraph` cache (called on bulk workspace changes/merges).
     pub fn invalidate_cache() {
         if let Some(cache_lock) = GLOBAL_CODE_GRAPH_CACHE.get() {
             if let Ok(mut guard) = cache_lock.write() {
                 *guard = None;
             }
         }
+        crate::context::search::index_bus::WorkspaceIndexBus::clear_consumer_queue(
+            crate::context::search::index_bus::IndexConsumer::CodeGraph,
+        );
     }
 
     /// Builds or incrementally updates the symbol-level dependency graph, leveraging disk cache if available.

@@ -2,6 +2,7 @@ pub mod fault_localizer;
 pub mod fusion;
 pub mod hybrid;
 pub mod index;
+pub mod index_bus;
 pub mod intent_filter;
 pub mod lexical;
 pub mod mmap_index;

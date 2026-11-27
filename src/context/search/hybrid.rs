@@ -436,11 +436,16 @@ fn normalize_workspace_path(path: &Path, workspace_root: Option<&Path>) -> Strin
 /// Unified multi-modal search engine combining BM25 lexical matching,
 /// dense subword embedding vectors, and CodeGraph PageRank centrality with Reciprocal Rank Fusion (RRF).
 pub struct HybridIndex {
-    symbol_index: SymbolIndex,
-    semantic_index: SemanticIndex,
+    symbol_index: std::sync::Arc<SymbolIndex>,
+    semantic_index: std::sync::Arc<SemanticIndex>,
     pagerank_map: HashMap<String, f64>,
     workspace_root: Option<PathBuf>,
 }
+
+type CachedHybridEntry = (PathBuf, std::time::Instant, std::sync::Arc<HybridIndex>);
+static GLOBAL_HYBRID_INDEX_CACHE: std::sync::OnceLock<
+    std::sync::RwLock<Option<CachedHybridEntry>>,
+> = std::sync::OnceLock::new();
 
 impl Default for HybridIndex {
     fn default() -> Self {
@@ -451,32 +456,98 @@ impl Default for HybridIndex {
 impl HybridIndex {
     pub fn new() -> Self {
         Self {
-            symbol_index: SymbolIndex::new(),
-            semantic_index: SemanticIndex::new(),
+            symbol_index: std::sync::Arc::new(SymbolIndex::new()),
+            semantic_index: std::sync::Arc::new(SemanticIndex::new()),
             pagerank_map: HashMap::new(),
             workspace_root: None,
         }
     }
 
+    /// Invalidates the process-wide cached `HybridIndex`.
+    pub fn invalidate_cache() {
+        if let Some(cache) = GLOBAL_HYBRID_INDEX_CACHE.get() {
+            if let Ok(mut guard) = cache.write() {
+                *guard = None;
+            }
+        }
+        crate::context::search::index_bus::WorkspaceIndexBus::clear_consumer_queue(
+            crate::context::search::index_bus::IndexConsumer::Hybrid,
+        );
+    }
+
+    fn build_pagerank_map(workspace_root: &Path, graph: &CodeGraph) -> HashMap<String, f64> {
+        let mut pagerank_map = HashMap::new();
+        for (sym, score) in graph.compute_symbol_pagerank(&[]) {
+            pagerank_map.insert(sym.name, score);
+            pagerank_map.insert(sym.qualified_name, score);
+        }
+        for (path, score) in graph.compute_pagerank(&[]) {
+            let rel = normalize_workspace_path(&path, Some(workspace_root));
+            pagerank_map.insert(rel, score);
+        }
+        pagerank_map
+    }
+
+    /// Returns a shared in-memory `Arc<HybridIndex>` composing the delta-synced `SymbolIndex`,
+    /// `SemanticIndex`, and `CodeGraph` PageRank maps in $O(1)$ on cache hit and $O(|\Delta|)$
+    /// after workspace file mutations (zero redundant full workspace rebuilds).
+    pub fn get_or_build_cached(workspace_root: &Path) -> Result<std::sync::Arc<Self>> {
+        use crate::context::search::index_bus::{IndexConsumer, WorkspaceIndexBus};
+
+        let canonical_root =
+            std::fs::canonicalize(workspace_root).unwrap_or_else(|_| workspace_root.to_path_buf());
+        let cache = GLOBAL_HYBRID_INDEX_CACHE.get_or_init(|| std::sync::RwLock::new(None));
+        let dirty = WorkspaceIndexBus::drain_dirty(workspace_root, IndexConsumer::Hybrid);
+
+        if dirty.is_empty() {
+            if let Ok(guard) = cache.read() {
+                if let Some((ref cached_root, built_at, ref arc_idx)) = *guard {
+                    if cached_root == &canonical_root
+                        && built_at.elapsed() < std::time::Duration::from_secs(30)
+                    {
+                        return Ok(std::sync::Arc::clone(arc_idx));
+                    }
+                }
+            }
+        }
+
+        let symbol_index = SymbolIndex::get_or_build_cached(workspace_root)?;
+        let semantic_index = SemanticIndex::get_or_build_cached(workspace_root)?;
+        let pagerank_map = CodeGraph::get_or_build_cached(workspace_root)
+            .map(|graph| Self::build_pagerank_map(workspace_root, &graph))
+            .unwrap_or_default();
+
+        let arc_built = std::sync::Arc::new(Self {
+            symbol_index,
+            semantic_index,
+            pagerank_map,
+            workspace_root: Some(workspace_root.to_path_buf()),
+        });
+
+        if let Ok(mut guard) = cache.write() {
+            *guard = Some((
+                canonical_root,
+                std::time::Instant::now(),
+                std::sync::Arc::clone(&arc_built),
+            ));
+        }
+        Ok(arc_built)
+    }
+
     /// Builds the full multi-modal index (BM25 inverted index, vector semantic index, PageRank graph)
     pub fn build_index(&mut self, workspace_root: &Path) -> Result<()> {
         self.workspace_root = Some(workspace_root.to_path_buf());
-        self.symbol_index.build_index(workspace_root)?;
-        self.semantic_index.build_index(workspace_root)?;
+        let mut sym = SymbolIndex::new();
+        sym.build_index(workspace_root)?;
+        self.symbol_index = std::sync::Arc::new(sym);
+
+        let mut sem = SemanticIndex::new();
+        sem.build_index(workspace_root)?;
+        self.semantic_index = std::sync::Arc::new(sem);
 
         let mut graph = CodeGraph::new();
         if graph.build_graph(workspace_root).is_ok() {
-            let symbol_pr = graph.compute_symbol_pagerank(&[]);
-            for (sym, score) in symbol_pr {
-                self.pagerank_map.insert(sym.name, score);
-                self.pagerank_map.insert(sym.qualified_name, score);
-            }
-
-            let file_pr = graph.compute_pagerank(&[]);
-            for (path, score) in file_pr {
-                let rel = normalize_workspace_path(&path, Some(workspace_root));
-                self.pagerank_map.insert(rel, score);
-            }
+            self.pagerank_map = Self::build_pagerank_map(workspace_root, &graph);
         }
 
         Ok(())

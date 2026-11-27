@@ -89,9 +89,9 @@ impl KnowledgeFusionEngine {
         let start = Instant::now();
         let query_trimmed = query.trim();
 
-        // 1. Build and query HybridIndex (BM25 + Dense Semantic + PageRank)
-        let mut hybrid_index = HybridIndex::new();
-        let _ = hybrid_index.build_index(workspace_root);
+        // 1. Query cached incremental HybridIndex (BM25 + Dense Semantic + PageRank)
+        let hybrid_index = HybridIndex::get_or_build_cached(workspace_root)
+            .unwrap_or_else(|_| std::sync::Arc::new(HybridIndex::new()));
         let raw_hits: Vec<HybridHit> = hybrid_index.search(query_trimmed, limit, true);
         let total_candidates_evaluated = raw_hits.len();
 

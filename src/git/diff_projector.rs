@@ -44,6 +44,9 @@ pub struct ProjectedSymbolChange {
     pub pagerank_score: f64,
     pub is_breaking: bool,
     pub breaking_reason: Option<String>,
+    /// Concise structural AST atom changes computed via bounded Dijkstra diff (`AstDiffEngine`).
+    #[serde(default)]
+    pub structural_changes: Vec<String>,
 }
 
 /// Comprehensive report of all projected symbol mutations across a git diff
@@ -55,6 +58,12 @@ pub struct DiffProjectionReport {
     pub affected_caller_files: Vec<String>,
     pub high_risk_symbols: Vec<ProjectedSymbolChange>,
     pub breaking_changes: Vec<ProjectedSymbolChange>,
+    /// Number of symbols whose diff hunks contained only whitespace/formatting or comment changes.
+    #[serde(default)]
+    pub formatting_only_symbols: usize,
+    /// Relative paths whose changes had zero semantic AST delta (pure formatting/comments).
+    #[serde(default)]
+    pub formatting_only_files: Vec<String>,
 }
 
 impl DiffProjectionReport {
@@ -85,12 +94,13 @@ impl DiffProjector {
             return Ok(DiffProjectionReport::default());
         }
 
-        let mut owned_graph = CodeGraph::new();
+        let cached_graph;
         let graph = if let Some(g) = code_graph_opt {
             g
         } else {
-            let _ = owned_graph.build_graph(workspace_root);
-            &owned_graph
+            cached_graph = CodeGraph::get_or_build_cached(workspace_root)
+                .unwrap_or_else(|_| std::sync::Arc::new(CodeGraph::new()));
+            cached_graph.as_ref()
         };
 
         Self::project_diff_files(workspace_root, &diff_files, graph, &git).await
@@ -105,6 +115,8 @@ impl DiffProjector {
     ) -> Result<DiffProjectionReport> {
         let mut changes = Vec::new();
         let mut affected_caller_files_set = HashSet::new();
+        let mut formatting_only_symbols = 0usize;
+        let mut formatting_only_files = Vec::new();
 
         // Compute symbol pagerank mapping
         let pagerank_list = graph.compute_symbol_pagerank(&[]);
@@ -142,12 +154,18 @@ impl DiffProjector {
                 .await
                 .unwrap_or_default();
 
-            // Run AST diff engine
+            // Run AST diff engine (bounded Dijkstra structural diff)
             let delta_report =
                 match AstDiffEngine::diff_sources(&diff_file.path, ext, &old_source, &new_source) {
                     Ok(r) => r,
                     Err(_) => continue,
                 };
+            formatting_only_symbols =
+                formatting_only_symbols.saturating_add(delta_report.formatting_only_count);
+            if delta_report.is_empty() && !old_source.is_empty() && !new_source.is_empty() {
+                formatting_only_files.push(diff_file.path.clone());
+                continue;
+            }
 
             let mut resolve_symbol_impact =
                 |name: &str, record_dependents: bool| -> (String, f64, Vec<String>, Vec<String>) {
@@ -202,6 +220,7 @@ impl DiffProjector {
                     pagerank_score: pagerank,
                     is_breaking: false,
                     breaking_reason: None,
+                    structural_changes: Vec::new(),
                 });
             }
 
@@ -249,6 +268,7 @@ impl DiffProjector {
                     pagerank_score: pagerank,
                     is_breaking,
                     breaking_reason,
+                    structural_changes: modified.structural_changes.clone(),
                 });
             }
 
@@ -281,6 +301,7 @@ impl DiffProjector {
                     pagerank_score: pagerank,
                     is_breaking,
                     breaking_reason,
+                    structural_changes: Vec::new(),
                 });
             }
         }
@@ -288,6 +309,8 @@ impl DiffProjector {
         let mut affected_caller_files: Vec<String> =
             affected_caller_files_set.into_iter().collect();
         affected_caller_files.sort();
+        formatting_only_files.sort();
+        formatting_only_files.dedup();
 
         let mut high_risk_symbols: Vec<ProjectedSymbolChange> = changes
             .iter()
@@ -314,19 +337,36 @@ impl DiffProjector {
             affected_caller_files,
             high_risk_symbols,
             breaking_changes,
+            formatting_only_symbols,
+            formatting_only_files,
         })
     }
 
     /// Formats the diff projection report into structured markdown with caller trees
     pub fn format_markdown(report: &DiffProjectionReport) -> String {
         if report.is_empty() {
+            if report.formatting_only_symbols > 0 || !report.formatting_only_files.is_empty() {
+                return format!(
+                    "### 🔍 Symbol-Level Diff Impact\n\nNo semantic AST symbols modified ({} formatting/comment-only symbol(s) filtered across {} file(s)).\n",
+                    report.formatting_only_symbols,
+                    report.formatting_only_files.len()
+                );
+            }
             return "### 🔍 Symbol-Level Diff Impact\n\nNo AST symbols affected by current git diff.\n"
                 .to_string();
         }
 
+        let fmt_note = if report.formatting_only_symbols > 0 {
+            format!(
+                " · {} formatting-only filtered",
+                report.formatting_only_symbols
+            )
+        } else {
+            String::new()
+        };
         let mut out = format!(
-            "### 🔍 Symbol-Level Diff Projection ({} symbols affected in {} files)\n\n",
-            report.total_symbols_modified, report.total_files
+            "### 🔍 Symbol-Level Diff Projection ({} symbols affected in {} files{})\n\n",
+            report.total_symbols_modified, report.total_files, fmt_note
         );
 
         if !report.breaking_changes.is_empty() {
@@ -389,6 +429,9 @@ impl DiffProjector {
                     c.direct_callers.len(),
                     c.direct_callers.join("`, `")
                 ));
+            }
+            for ast_delta in c.structural_changes.iter().take(3) {
+                out.push_str(&format!("  • **AST Delta**: {}\n", ast_delta));
             }
         }
 

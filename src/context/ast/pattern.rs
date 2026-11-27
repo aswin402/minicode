@@ -1550,7 +1550,6 @@ pub fn ast_grep_rewrite(
     }
 
     if !dry_run && !files_modified.is_empty() {
-        crate::context::graph::CodeGraph::invalidate_cache();
         for rel in &files_modified {
             crate::context::index::SymbolIndex::on_file_mutated(
                 workspace_root,

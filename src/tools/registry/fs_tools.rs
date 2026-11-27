@@ -1016,6 +1016,22 @@ pub async fn dispatch(
                     crate::error::ToolError::invalid_args("ast_replace_node", e.to_string())
                 })??;
                 let mut out = result.format_receipt();
+                crate::context::search::index_bus::WorkspaceIndexBus::record_file_mutation(
+                    workspace_root,
+                    path,
+                    crate::context::search::index_bus::FileMutationOp::Modify,
+                );
+                if let Ok(full_updated) = std::fs::read_to_string(&validated_path) {
+                    let diag_block =
+                        crate::tools::compiler::ScopedCompiler::run_post_edit_diagnostics(
+                            workspace_root,
+                            path,
+                            &full_updated,
+                        );
+                    if !diag_block.is_empty() {
+                        out.push_str(&diag_block);
+                    }
+                }
                 finalize_file_mutation_with_hygiene(
                     workspace_root,
                     &validated_path,
@@ -1058,6 +1074,7 @@ pub async fn dispatch(
                 tx_id,
                 reason,
             )?;
+            crate::context::search::index_bus::WorkspaceIndexBus::invalidate_all();
             Ok(receipt.format_receipt())
         })()),
         "get_transaction_status" => {

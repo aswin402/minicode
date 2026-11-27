@@ -516,11 +516,28 @@ impl GitReviewer {
             }
         }
 
-        // 4. Missing Tests Check
-        let has_rust_or_py_changes = target_files
+        // 4. Structural & Public API Impact Analysis (DiffProjector with bounded Dijkstra AST diff)
+        let projection_opt = crate::git::diff_projector::DiffProjector::project_workspace_diff(
+            workspace_root,
+            staged_only,
+            None,
+        )
+        .await
+        .ok();
+        let formatting_only_set: std::collections::HashSet<&str> = projection_opt
+            .as_ref()
+            .map(|p| p.formatting_only_files.iter().map(String::as_str).collect())
+            .unwrap_or_default();
+
+        // 5. Missing Tests Check (ignores pure formatting/comment-only edits verified by AstDiffEngine)
+        let semantic_code_files: Vec<&String> = target_files
+            .iter()
+            .filter(|f| !formatting_only_set.contains(f.as_str()))
+            .collect();
+        let has_rust_or_py_changes = semantic_code_files
             .iter()
             .any(|f| f.ends_with(".rs") || f.ends_with(".py"));
-        let has_ts_changes = target_files
+        let has_ts_changes = semantic_code_files
             .iter()
             .any(|f| f.ends_with(".ts") || f.ends_with(".tsx"));
         let has_code_changes = has_rust_or_py_changes || has_ts_changes;
@@ -559,14 +576,7 @@ impl GitReviewer {
             }
         }
 
-        // 5. Structural & Public API Impact Analysis (DiffProjector)
-        if let Ok(projection) = crate::git::diff_projector::DiffProjector::project_workspace_diff(
-            workspace_root,
-            staged_only,
-            None,
-        )
-        .await
-        {
+        if let Some(projection) = projection_opt {
             for b in projection.breaking_changes {
                 if b.direct_callers.is_empty() {
                     continue;
@@ -601,14 +611,28 @@ impl GitReviewer {
                     && !h.symbol_name.starts_with("test_")
                     && h.pagerank_score > 0.04
                 {
+                    let delta_note = if h.structural_changes.is_empty() {
+                        String::new()
+                    } else {
+                        format!(
+                            " Structural delta: {}",
+                            h.structural_changes
+                                .iter()
+                                .take(2)
+                                .cloned()
+                                .collect::<Vec<_>>()
+                                .join("; ")
+                        )
+                    };
                     findings.push(ReviewFinding {
                         category: "Architectural Risk & Blast Radius".to_string(),
                         severity: "MEDIUM".to_string(),
                         title: format!("High-Centrality Symbol Modified: `{}`", h.symbol_name),
                         details: format!(
-                            "Symbol has PageRank score {:.4} and {} direct incoming callers.",
+                            "Symbol has PageRank score {:.4} and {} direct incoming callers.{}",
                             h.pagerank_score,
-                            h.direct_callers.len()
+                            h.direct_callers.len(),
+                            delta_note
                         ),
                         line_hint: Some(format!(
                             "{}:lines {}-{}",
@@ -1161,6 +1185,60 @@ mod tests {
         assert!(
             !raw_diff.contains("DATABASE_PASSWORD"),
             "raw_diff must NEVER copy untracked .env lines"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_formatting_only_rust_diff_skips_missing_tests_penalty() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let root = dir.path();
+
+        for args in [
+            vec!["init"],
+            vec!["config", "user.email", "test@minicode.dev"],
+            vec!["config", "user.name", "Minicode Test"],
+        ] {
+            tokio::process::Command::new("git")
+                .args(&args)
+                .current_dir(root)
+                .output()
+                .await
+                .expect("git setup");
+        }
+
+        std::fs::create_dir_all(root.join("src")).expect("mkdir src");
+        std::fs::write(
+            root.join("src/math.rs"),
+            "pub fn add(a: i32, b: i32) -> i32 {\n    a + b\n}\n",
+        )
+        .expect("write initial math.rs");
+        for args in [vec!["add", "."], vec!["commit", "-m", "initial"]] {
+            tokio::process::Command::new("git")
+                .args(&args)
+                .current_dir(root)
+                .output()
+                .await
+                .expect("git commit");
+        }
+
+        // Pure formatting & comment reflow — zero semantic AST change
+        std::fs::write(
+            root.join("src/math.rs"),
+            "/// Adds two integers.\npub fn add(\n    a: i32,\n    b: i32,\n) -> i32 {\n    a + b\n}\n",
+        )
+        .expect("write formatted math.rs");
+
+        let report = GitReviewer::review_workspace(root, false)
+            .await
+            .expect("review_workspace");
+
+        assert!(
+            !report
+                .findings
+                .iter()
+                .any(|f| f.title == "Code Changes Detected Without Associated Tests"),
+            "Formatting-only AST diff must not trigger missing-tests penalty; got findings: {:?}",
+            report.findings
         );
     }
 }

@@ -139,7 +139,7 @@ pub async fn dispatch(
             let max_depth = param::opt_usize(args, "max_depth", 2);
             let include_source = param::opt_bool(args, "include_source", true);
 
-            let graph = CodeGraph::load_or_build(workspace_root)?;
+            let graph = CodeGraph::get_or_build_cached(workspace_root)?;
             let res = CodeExploreEngine::explore(
                 workspace_root,
                 &graph,
@@ -172,7 +172,7 @@ pub async fn dispatch(
                     return Ok("### 📊 Diff Impact Analysis\n\nNo uncommitted file changes detected in workspace git status.".to_string());
                 }
 
-                let graph = CodeGraph::load_or_build(workspace_root)?;
+                let graph = CodeGraph::get_or_build_cached(workspace_root)?;
                 let git = crate::git::service::GitService::new(workspace_root.to_path_buf());
 
                 let projection = crate::git::diff_projector::DiffProjector::project_diff_files(
@@ -264,7 +264,7 @@ pub async fn dispatch(
             let file_filter = param::opt_path(args);
             let include_source = param::opt_bool(args, "include_source", true);
 
-            let graph = CodeGraph::load_or_build(workspace_root)?;
+            let graph = CodeGraph::get_or_build_cached(workspace_root)?;
             let res = CodeExploreEngine::explore(
                 workspace_root,
                 &graph,
@@ -364,7 +364,7 @@ pub async fn dispatch(
                 _ => crate::context::graph_visualizer::VisualizeMode::Downstream,
             };
 
-            let graph = CodeGraph::load_or_build(workspace_root)?;
+            let graph = CodeGraph::get_or_build_cached(workspace_root)?;
             crate::context::graph_visualizer::GraphVisualizer::render(
                 workspace_root,
                 &graph,
@@ -375,7 +375,7 @@ pub async fn dispatch(
         })()),
         "code_impact" => Some((|| {
             let target = param::require_str(args, "target", "code_impact")?;
-            let graph = CodeGraph::load_or_build(workspace_root)?;
+            let graph = CodeGraph::get_or_build_cached(workspace_root)?;
             let report = graph.get_blast_radius(target, workspace_root)?;
 
             let mut out = format!(

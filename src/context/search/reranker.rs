@@ -100,8 +100,7 @@ impl CrossEncoderReranker {
         fts_anchors: &[String],
         file_pattern: Option<&str>,
     ) -> Result<SemanticSearchResult> {
-        let mut hybrid_index = HybridIndex::new();
-        hybrid_index.build_index(workspace_root)?;
+        let hybrid_index = HybridIndex::get_or_build_cached(workspace_root)?;
 
         let pool_size = limit.max(5) * 4;
         let opts = HybridSearchOptions {

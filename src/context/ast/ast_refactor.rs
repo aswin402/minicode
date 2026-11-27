@@ -1929,9 +1929,7 @@ impl AstRefactorer {
     }
 
     fn invalidate_caches() {
-        crate::context::graph::CodeGraph::invalidate_cache();
-        crate::context::index::SymbolIndex::invalidate_cache();
-        crate::context::search::trigram::TrigramIndex::invalidate_cache();
+        crate::context::search::index_bus::WorkspaceIndexBus::invalidate_all();
     }
 
     fn resolve_workspace_path(workspace_root: &Path, file_path: &str) -> Result<PathBuf> {

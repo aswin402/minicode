@@ -489,7 +489,7 @@ impl GitWorktreeManager {
         .map_err(|e| e.to_string())?;
 
         let _ = Self::remove_worktree(&handle);
-        crate::context::index::SymbolIndex::invalidate_cache();
+        crate::context::search::index_bus::WorkspaceIndexBus::invalidate_all();
 
         Ok(report.commit_hash)
     }

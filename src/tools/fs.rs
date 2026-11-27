@@ -1413,7 +1413,6 @@ fn write_file_inner(
         crate::context::search::trigram::FileMutationOp::Create
     };
     crate::context::index::SymbolIndex::on_file_mutated(workspace_root, relative_path, mut_op);
-    crate::context::graph::CodeGraph::invalidate_cache();
     crate::context::governance::dox::DoxEngine::sync_and_harvest_rules(
         workspace_root,
         &[relative_path],
@@ -1448,38 +1447,13 @@ fn write_file_inner(
     }
 
     if run_compiler_check {
-        if let Some(feedback) =
-            crate::tools::compiler::ScopedCompiler::run_scoped_check(workspace_root, relative_path)
-        {
-            msg.push_str("\n\n");
-            msg.push_str(&feedback);
-        }
-
-        // Smart Auto-Guard: ultra-fast (<15ms) single-file native AST Critical/Error micro-guard
-        let doctor_hits: Vec<minidoctor::Diagnostic> =
-            minidoctor::check_single_file(workspace_root, relative_path, &effective_content)
-                .into_iter()
-                .filter(|d| {
-                    matches!(
-                        d.severity,
-                        minidoctor::Severity::Critical | minidoctor::Severity::Error
-                    )
-                })
-                .take(4)
-                .collect();
-        if !doctor_hits.is_empty() {
-            msg.push_str("\n\n[MiniDoctor Auto-Guard]:");
-            for d in doctor_hits {
-                msg.push_str(&format!(
-                    "\n  - [{}] `{}` at {}:{} — {} (Fix: {})",
-                    d.severity.badge(),
-                    d.rule,
-                    d.file,
-                    d.line,
-                    d.message,
-                    d.suggestion
-                ));
-            }
+        let diag_block = crate::tools::compiler::ScopedCompiler::run_post_edit_diagnostics(
+            workspace_root,
+            relative_path,
+            &effective_content,
+        );
+        if !diag_block.is_empty() {
+            msg.push_str(&diag_block);
         }
     }
 
@@ -1551,16 +1525,21 @@ fn find_all_match_lines(content: &str, needle: &str) -> Vec<usize> {
     lines
 }
 
-/// Formats patch success message, preserving optional compiler or linter diagnostic feedback.
+/// Formats patch success message, preserving all post-edit diagnostic blocks (CSS advisories,
+/// scoped compiler feedback, linter feedback, and MiniDoctor Auto-Guard warnings).
 fn format_patch_success(tier_desc: &str, relative_path: &str, write_res: &str) -> String {
     let mut msg = format!("Successfully patched {}", relative_path);
     if !tier_desc.is_empty() {
         msg.push_str(&format!(" ({})", tier_desc));
     }
-    if let Some(feedback_start) = write_res.find("\n\n[Compiler") {
-        msg.push_str(&write_res[feedback_start..]);
-    } else if let Some(feedback_start) = write_res.find("\n\n[Linter") {
-        msg.push_str(&write_res[feedback_start..]);
+    const FEEDBACK_MARKERS: &[&str] =
+        &["\n\n⚠️", "\n\n[Compiler", "\n\n[Linter", "\n\n[MiniDoctor"];
+    if let Some(earliest) = FEEDBACK_MARKERS
+        .iter()
+        .filter_map(|marker| write_res.find(marker))
+        .min()
+    {
+        msg.push_str(&write_res[earliest..]);
     }
     msg
 }
@@ -2465,12 +2444,14 @@ pub fn replace_in_files_with_options(
         ));
     }
 
-    if let Some(feedback) = crate::tools::compiler::ScopedCompiler::run_scoped_check(
+    let first_modified_content = &matched_files[0].2;
+    let diag_block = crate::tools::compiler::ScopedCompiler::run_post_edit_diagnostics(
         workspace_root,
         &first_modified_rel,
-    ) {
-        result_msg.push_str("\n\n");
-        result_msg.push_str(&feedback);
+        first_modified_content,
+    );
+    if !diag_block.is_empty() {
+        result_msg.push_str(&diag_block);
     }
 
     Ok(result_msg)

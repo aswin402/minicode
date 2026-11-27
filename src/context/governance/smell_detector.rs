@@ -27,6 +27,8 @@ pub enum SmellCategory {
     TrivialWrapper,
     /// Internal trait/interface with <=1 implementation across the repository graph (speculative abstraction)
     SpeculativeAbstraction,
+    /// Empty catch/except/Err handler silently swallowing errors (detected via structural `ast-grep`)
+    SwallowedError,
 }
 
 /// Structured entry in the Ponytail-inspired `shortcut:` technical debt ledger.
@@ -51,6 +53,7 @@ impl SmellCategory {
             Self::RedundantComment => "💬 Redundant Comment",
             Self::TrivialWrapper => "🪆 Trivial Pass-Through Wrapper",
             Self::SpeculativeAbstraction => "🏗️ Speculative Abstraction",
+            Self::SwallowedError => "🫣 Swallowed Error",
         }
     }
 }
@@ -285,84 +288,16 @@ impl AstSmellDetector {
             }
         }
 
-        // 2. Line-level inspections (Deep Nesting & Complex Boolean Logic)
-        let mut last_nesting_line: usize = 0;
-        let mut nesting_findings_in_file: usize = 0;
-
-        for (idx, line) in lines.iter().enumerate() {
-            let line_no = idx + 1;
-            let trimmed = line.trim();
-            if trimmed.is_empty()
-                || trimmed.starts_with("//")
-                || trimmed.starts_with('#')
-                || trimmed.starts_with("/*")
-                || trimmed.starts_with('*')
-            {
-                continue;
-            }
-
-            // (d) Deep Nesting (>= 5 levels: 20 spaces or 5 tabs) on control-flow branching statements
-            // Ignore declarative JSX/HTML/SVG markup tags (`<div`, `</div`, `/>`) and coalesce contiguous blocks.
-            let is_control_flow = trimmed.starts_with("if ")
-                || trimmed.starts_with("if(")
-                || trimmed.starts_with("else if ")
-                || trimmed.starts_with("for ")
-                || trimmed.starts_with("for(")
-                || trimmed.starts_with("while ")
-                || trimmed.starts_with("while(")
-                || trimmed.starts_with("match ")
-                || trimmed.starts_with("switch ")
-                || trimmed.starts_with("switch(");
-
-            if is_control_flow && nesting_findings_in_file < 3 {
-                let indent_spaces = line.chars().take_while(|&c| c == ' ').count();
-                let indent_tabs = line.chars().take_while(|&c| c == '\t').count();
-                let nesting_level = indent_tabs + (indent_spaces / 4);
-
-                if nesting_level >= 5
-                    && (last_nesting_line == 0 || line_no > last_nesting_line + 10)
-                {
-                    last_nesting_line = line_no;
-                    nesting_findings_in_file += 1;
-                    smells.push(CodeSmell {
-                        id: format!("nesting-{}", uuid::Uuid::new_v4().simple()),
-                        category: SmellCategory::DeepNesting,
-                        severity: "WARNING".to_string(),
-                        symbol_name: None,
-                        file_path: path_display.clone(),
-                        start_line: line_no,
-                        end_line: line_no,
-                        message: format!(
-                            "Deep control-flow nesting level {} detected at line {}",
-                            nesting_level, line_no
-                        ),
-                        remediation: "Use early returns / guard clauses or extract nested inner loop/match into a helper method.".to_string(),
-                    });
-                }
-            }
-
-            // (e) Complex Boolean Expression (>= 4 logical operators)
-            let and_count = trimmed.matches("&&").count();
-            let or_count = trimmed.matches("||").count();
-            let bool_ops = and_count + or_count;
-
-            if bool_ops >= 4 && (trimmed.starts_with("if ") || trimmed.starts_with("while ")) {
-                smells.push(CodeSmell {
-                    id: format!("bool-{}", uuid::Uuid::new_v4().simple()),
-                    category: SmellCategory::ComplexBoolean,
-                    severity: "WARNING".to_string(),
-                    symbol_name: None,
-                    file_path: path_display.clone(),
-                    start_line: line_no,
-                    end_line: line_no,
-                    message: format!(
-                        "Complex boolean expression with {} logical operators at line {}",
-                        bool_ops, line_no
-                    ),
-                    remediation: "Extract condition clauses into well-named boolean helper variables or methods.".to_string(),
-                });
-            }
+        // 2. Structural AST Complexity (Deep Control-Flow Nesting & Multi-Line Boolean Complexity)
+        // Uses Tree-sitter AST depth & condition operator counting on valid files (immune to 2-space
+        // indentation, JSX markup, and string literals), falling back to lexical scanning only for
+        // unsupported grammars or syntax-incomplete snippets.
+        if !Self::collect_ast_complexity_smells(file_path, content, &mut smells) {
+            Self::collect_lexical_complexity_fallback(&path_display, &lines, &mut smells);
         }
+
+        // 3. Declarative `ast-grep` Structural Anti-Pattern Rules (e.g. silent error swallowing)
+        Self::collect_ast_grep_structural_smells(file_path, content, &mut smells);
 
         // (f) Tree-sitter AST `shortcut:` / `ponytail:` Technical Debt Ledger
         for shortcut in Self::harvest_shortcut_comments_ast(file_path, content) {
@@ -408,6 +343,220 @@ impl AstSmellDetector {
         Self::collect_ast_yagni_bloat_smells(file_path, content, &lines, graph, &mut smells);
 
         smells
+    }
+
+    /// Computes true Tree-sitter AST control-flow nesting depth (`>= 5`) and boolean condition
+    /// operator complexity (`>= 4` logical operators inside condition AST nodes), returning `true`
+    /// when a clean AST parse succeeded.
+    fn collect_ast_complexity_smells(
+        file_path: &Path,
+        code: &str,
+        smells: &mut Vec<CodeSmell>,
+    ) -> bool {
+        let ext = file_path
+            .extension()
+            .and_then(|e| e.to_str())
+            .unwrap_or_default();
+        let Some(lang) = crate::context::syntax_guard::SyntaxGuard::language_for_extension(ext)
+        else {
+            return false;
+        };
+        let mut parser = tree_sitter::Parser::new();
+        if parser.set_language(&lang).is_err() {
+            return false;
+        }
+        let Some(tree) = parser.parse(code, None) else {
+            return false;
+        };
+        if tree.root_node().has_error() {
+            return false;
+        }
+
+        let path_display = file_path.display().to_string();
+        let mut last_nesting_line = 0usize;
+        let mut nesting_findings = 0usize;
+        let mut bool_findings = 0usize;
+
+        collect_ast_complexity_dfs(
+            tree.root_node(),
+            code,
+            &path_display,
+            0,
+            false,
+            smells,
+            &mut last_nesting_line,
+            &mut nesting_findings,
+            &mut bool_findings,
+        );
+        true
+    }
+
+    fn collect_lexical_complexity_fallback(
+        path_display: &str,
+        lines: &[&str],
+        smells: &mut Vec<CodeSmell>,
+    ) {
+        let mut last_nesting_line: usize = 0;
+        let mut nesting_findings_in_file: usize = 0;
+
+        for (idx, line) in lines.iter().enumerate() {
+            let line_no = idx + 1;
+            let trimmed = line.trim();
+            if trimmed.is_empty()
+                || trimmed.starts_with("//")
+                || trimmed.starts_with('#')
+                || trimmed.starts_with("/*")
+                || trimmed.starts_with('*')
+            {
+                continue;
+            }
+
+            let is_control_flow = trimmed.starts_with("if ")
+                || trimmed.starts_with("if(")
+                || trimmed.starts_with("else if ")
+                || trimmed.starts_with("for ")
+                || trimmed.starts_with("for(")
+                || trimmed.starts_with("while ")
+                || trimmed.starts_with("while(")
+                || trimmed.starts_with("match ")
+                || trimmed.starts_with("switch ")
+                || trimmed.starts_with("switch(");
+
+            if is_control_flow && nesting_findings_in_file < 3 {
+                let indent_spaces = line.chars().take_while(|&c| c == ' ').count();
+                let indent_tabs = line.chars().take_while(|&c| c == '\t').count();
+                let nesting_level = indent_tabs + (indent_spaces / 4);
+
+                if nesting_level >= 5
+                    && (last_nesting_line == 0 || line_no > last_nesting_line + 10)
+                {
+                    last_nesting_line = line_no;
+                    nesting_findings_in_file += 1;
+                    smells.push(CodeSmell {
+                        id: format!("nesting-{}", uuid::Uuid::new_v4().simple()),
+                        category: SmellCategory::DeepNesting,
+                        severity: "WARNING".to_string(),
+                        symbol_name: None,
+                        file_path: path_display.to_string(),
+                        start_line: line_no,
+                        end_line: line_no,
+                        message: format!(
+                            "Deep control-flow nesting level {} detected at line {}",
+                            nesting_level, line_no
+                        ),
+                        remediation: "Use early returns / guard clauses or extract nested inner loop/match into a helper method.".to_string(),
+                    });
+                }
+            }
+
+            let code_only = crate::utils::strings::strip_code_strings_and_comments(trimmed);
+            let bool_ops = code_only.matches("&&").count() + code_only.matches("||").count();
+            if bool_ops >= 4 && (trimmed.starts_with("if ") || trimmed.starts_with("while ")) {
+                smells.push(CodeSmell {
+                    id: format!("bool-{}", uuid::Uuid::new_v4().simple()),
+                    category: SmellCategory::ComplexBoolean,
+                    severity: "WARNING".to_string(),
+                    symbol_name: None,
+                    file_path: path_display.to_string(),
+                    start_line: line_no,
+                    end_line: line_no,
+                    message: format!(
+                        "Complex boolean expression with {} logical operators at line {}",
+                        bool_ops, line_no
+                    ),
+                    remediation: "Extract condition clauses into well-named boolean helper variables or methods.".to_string(),
+                });
+            }
+        }
+    }
+
+    /// Evaluates declarative `ast-grep` structural rules against `code` with relational `not_inside`
+    /// scoping (zero regexes, fast fixed-literal short-circuiting).
+    fn collect_ast_grep_structural_smells(
+        file_path: &Path,
+        code: &str,
+        smells: &mut Vec<CodeSmell>,
+    ) {
+        struct AstGrepSmellRule {
+            extensions: &'static [&'static str],
+            pattern: &'static str,
+            not_inside: Option<&'static str>,
+            message: &'static str,
+            remediation: &'static str,
+        }
+
+        const STRUCTURAL_RULES: &[AstGrepSmellRule] = &[
+            AstGrepSmellRule {
+                extensions: &["js", "jsx", "ts", "tsx"],
+                pattern: "try { $$$BODY } catch ($E) {}",
+                not_inside: None,
+                message: "Empty `catch` block silently swallows runtime errors",
+                remediation: "Log, rethrow, or handle the caught error explicitly instead of ignoring it.",
+            },
+            AstGrepSmellRule {
+                extensions: &["js", "jsx", "ts", "tsx"],
+                pattern: "try { $$$BODY } catch {}",
+                not_inside: None,
+                message: "Empty `catch` block silently swallows runtime errors",
+                remediation: "Log, rethrow, or handle the caught error explicitly instead of ignoring it.",
+            },
+            AstGrepSmellRule {
+                extensions: &["py"],
+                pattern: "try:\n    $$$BODY\nexcept $_:\n    pass",
+                not_inside: None,
+                message: "Empty `except: pass` block silently swallows exceptions",
+                remediation: "Handle, log, or narrow the exception type instead of silently passing.",
+            },
+            AstGrepSmellRule {
+                extensions: &["rs"],
+                pattern: "if let Err(_) = $_ {}",
+                not_inside: Some("mod tests"),
+                message: "Empty `if let Err(_)` block silently discards Result error",
+                remediation: "Propagate the error with `?` or log it with `tracing::warn!` / `tracing::debug!`.",
+            },
+        ];
+
+        let ext = file_path
+            .extension()
+            .and_then(|e| e.to_str())
+            .unwrap_or_default()
+            .to_ascii_lowercase();
+        let path_display = file_path.display().to_string();
+        if path_display.contains("test") || path_display.contains("spec") {
+            return;
+        }
+
+        for rule in STRUCTURAL_RULES {
+            if !rule.extensions.contains(&ext.as_str()) {
+                continue;
+            }
+            let filter = crate::context::ast::pattern::AstGrepFilter {
+                not_inside: rule.not_inside.map(str::to_string),
+                ..Default::default()
+            };
+            if let Ok(matches) = crate::context::ast::pattern::find_matches_in_source(
+                &path_display,
+                &ext,
+                code,
+                rule.pattern,
+                &filter,
+                3,
+            ) {
+                for m in matches {
+                    smells.push(CodeSmell {
+                        id: format!("swallow-{}", uuid::Uuid::new_v4().simple()),
+                        category: SmellCategory::SwallowedError,
+                        severity: "WARNING".to_string(),
+                        symbol_name: None,
+                        file_path: path_display.clone(),
+                        start_line: m.start_line,
+                        end_line: m.end_line,
+                        message: format!("{} at line {}", rule.message, m.start_line),
+                        remediation: rule.remediation.to_string(),
+                    });
+                }
+            }
+        }
     }
 
     /// Walks the Tree-sitter AST once to detect:
@@ -608,6 +757,194 @@ impl AstSmellDetector {
         }
 
         out
+    }
+}
+
+fn is_ast_control_flow_node(node: tree_sitter::Node<'_>) -> bool {
+    let kind = node.kind();
+    if !matches!(
+        kind,
+        "if_expression"
+            | "if_statement"
+            | "for_expression"
+            | "for_statement"
+            | "for_in_statement"
+            | "while_expression"
+            | "while_statement"
+            | "loop_expression"
+            | "match_expression"
+            | "switch_statement"
+            | "try_statement"
+    ) {
+        return false;
+    }
+    // Exclude `else if` continuation branches from artificially inflating nesting depth
+    if matches!(kind, "if_expression" | "if_statement") {
+        if let Some(parent) = node.parent() {
+            if matches!(parent.kind(), "else_clause" | "alternative") {
+                return false;
+            }
+        }
+    }
+    true
+}
+
+fn count_ast_boolean_operators(node: tree_sitter::Node<'_>, source: &str) -> usize {
+    let kind = node.kind();
+    // Never descend into nested blocks, closures, or bodies inside a condition
+    if matches!(
+        kind,
+        "block"
+            | "statement_block"
+            | "closure_expression"
+            | "arrow_function"
+            | "function_expression"
+            | "lambda"
+    ) {
+        return 0;
+    }
+
+    let mut count = 0usize;
+    if matches!(kind, "binary_expression" | "boolean_operator") {
+        if let Some(op_node) = node.child_by_field_name("operator") {
+            if let Ok(op_text) = op_node.utf8_text(source.as_bytes()) {
+                if matches!(op_text.trim(), "&&" | "||" | "and" | "or") {
+                    count += 1;
+                }
+            }
+        } else {
+            // Python `boolean_operator` exposes `and`/`or` as an unnamed child token
+            let mut c = node.walk();
+            for ch in node.children(&mut c) {
+                if !ch.is_named() {
+                    if let Ok(tok) = ch.utf8_text(source.as_bytes()) {
+                        if matches!(tok.trim(), "&&" | "||" | "and" | "or") {
+                            count += 1;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        count += count_ast_boolean_operators(child, source);
+    }
+    count
+}
+
+#[allow(clippy::too_many_arguments)]
+fn collect_ast_complexity_dfs(
+    node: tree_sitter::Node<'_>,
+    source: &str,
+    file_path: &str,
+    cf_depth: usize,
+    inside_callable: bool,
+    smells: &mut Vec<CodeSmell>,
+    last_nesting_line: &mut usize,
+    nesting_findings: &mut usize,
+    bool_findings: &mut usize,
+) {
+    let kind = node.kind();
+    let now_inside_callable = inside_callable
+        || matches!(
+            kind,
+            "function_item"
+                | "function_declaration"
+                | "function_definition"
+                | "method_definition"
+                | "arrow_function"
+                | "function_expression"
+                | "impl_item"
+                | "class_declaration"
+                | "class_definition"
+        );
+    let is_cf = is_ast_control_flow_node(node);
+    let next_depth = if is_cf { cf_depth + 1 } else { cf_depth };
+
+    // Inside complete functions/classes use pure AST control-flow depth (immune to 2-space vs 4-space).
+    // For bare top-level control-flow excerpts without enclosing declarations, incorporate base indent.
+    let effective_depth = if is_cf && !now_inside_callable {
+        let row = node.start_position().row;
+        let base_indent_depth = source
+            .lines()
+            .nth(row)
+            .map(|line| {
+                let spaces = line.chars().take_while(|&c| c == ' ').count();
+                let tabs = line.chars().take_while(|&c| c == '\t').count();
+                tabs + (spaces / 4)
+            })
+            .unwrap_or(0);
+        next_depth.max(base_indent_depth)
+    } else {
+        next_depth
+    };
+
+    if is_cf && effective_depth >= 5 && *nesting_findings < 3 {
+        let line_no = node.start_position().row + 1;
+        if *last_nesting_line == 0 || line_no > *last_nesting_line + 10 {
+            *last_nesting_line = line_no;
+            *nesting_findings += 1;
+            smells.push(CodeSmell {
+                id: format!("nesting-{}", uuid::Uuid::new_v4().simple()),
+                category: SmellCategory::DeepNesting,
+                severity: "WARNING".to_string(),
+                symbol_name: None,
+                file_path: file_path.to_string(),
+                start_line: line_no,
+                end_line: line_no,
+                message: format!(
+                    "Deep control-flow nesting level {} detected at line {}",
+                    effective_depth, line_no
+                ),
+                remediation: "Use early returns / guard clauses or extract nested inner loop/match into a helper method.".to_string(),
+            });
+        }
+    }
+
+    if *bool_findings < 5
+        && matches!(
+            kind,
+            "if_expression" | "if_statement" | "while_expression" | "while_statement"
+        )
+    {
+        if let Some(cond) = node.child_by_field_name("condition") {
+            let bool_ops = count_ast_boolean_operators(cond, source);
+            if bool_ops >= 4 {
+                let line_no = node.start_position().row + 1;
+                *bool_findings += 1;
+                smells.push(CodeSmell {
+                    id: format!("bool-{}", uuid::Uuid::new_v4().simple()),
+                    category: SmellCategory::ComplexBoolean,
+                    severity: "WARNING".to_string(),
+                    symbol_name: None,
+                    file_path: file_path.to_string(),
+                    start_line: line_no,
+                    end_line: cond.end_position().row + 1,
+                    message: format!(
+                        "Complex boolean expression with {} logical operators at line {}",
+                        bool_ops, line_no
+                    ),
+                    remediation: "Extract condition clauses into well-named boolean helper variables or methods.".to_string(),
+                });
+            }
+        }
+    }
+
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        collect_ast_complexity_dfs(
+            child,
+            source,
+            file_path,
+            next_depth,
+            now_inside_callable,
+            smells,
+            last_nesting_line,
+            nesting_findings,
+            bool_findings,
+        );
     }
 }
 
@@ -1097,5 +1434,63 @@ pub fn run() -> i32 {
             wrappers
         );
         assert_eq!(wrappers[0].symbol_name.as_deref(), Some("fetch_user_score"));
+    }
+
+    #[test]
+    fn test_ast_complexity_and_ast_grep_swallowed_error_detection() {
+        // 2-space indented TS with 5 nested control-flow levels (old indent/4 heuristic missed this!)
+        // plus multi-line complex boolean condition and empty catch block; string literal with && must NOT trigger.
+        let ts_code = r#"
+export function evaluate(a: boolean, b: boolean, c: boolean, d: boolean, e: boolean) {
+  const msg = "a && b && c && d && e";
+  if (a) {
+    for (const x of [1, 2]) {
+      while (b) {
+        if (c) {
+          if (d) {
+            return msg;
+          }
+        }
+      }
+    }
+  }
+  if (
+    a &&
+    b &&
+    c &&
+    d &&
+    e
+  ) {
+    try {
+      doWork();
+    } catch (err) {}
+  }
+}
+"#;
+        let smells = AstSmellDetector::scan_code(Path::new("src/eval.ts"), ts_code, &[], None);
+        assert!(
+            smells
+                .iter()
+                .any(|s| s.category == SmellCategory::DeepNesting),
+            "True AST control-flow depth must catch 2-space 5-level nesting; got: {:?}",
+            smells
+        );
+        let bool_smells: Vec<_> = smells
+            .iter()
+            .filter(|s| s.category == SmellCategory::ComplexBoolean)
+            .collect();
+        assert_eq!(
+            bool_smells.len(),
+            1,
+            "Must detect multi-line boolean condition once and ignore string literal; got: {:?}",
+            bool_smells
+        );
+        assert!(
+            smells
+                .iter()
+                .any(|s| s.category == SmellCategory::SwallowedError),
+            "ast-grep structural rule must detect empty `catch (err) {{}}`; got: {:?}",
+            smells
+        );
     }
 }

@@ -385,8 +385,8 @@ impl FaultLocalizer {
         // ---------------------------------------------------------------------
         // Tier 1: Candidate File Retrieval
         // ---------------------------------------------------------------------
-        let mut hybrid = HybridIndex::new();
-        let _ = hybrid.build_index(&self.workspace_root);
+        let hybrid = HybridIndex::get_or_build_cached(&self.workspace_root)
+            .unwrap_or_else(|_| std::sync::Arc::new(HybridIndex::new()));
 
         let hybrid_hits = hybrid.search(query, max_files * 4, true);
 

@@ -119,8 +119,7 @@ impl WorktreeManager {
             .run_git(&["merge", "--no-ff", "-m", &commit_msg, &branch_name])
             .await;
         if res.is_ok() {
-            crate::context::index::SymbolIndex::invalidate_cache();
-            crate::context::graph::CodeGraph::invalidate_cache();
+            crate::context::search::index_bus::WorkspaceIndexBus::invalidate_all();
         }
         res
     }

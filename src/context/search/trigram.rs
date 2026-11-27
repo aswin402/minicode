@@ -599,75 +599,8 @@ fn simplify_plan(plan: QueryPlan) -> QueryPlan {
     }
 }
 
-/// Workspace file mutation event fed into [`DirtyPathCoalescer`] (`watchexec` event-coalescing model).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum FileMutationOp {
-    Create,
-    Modify,
-    Delete,
-}
-
-/// Pure algebraic event-lattice coalescer (`watchexec` pattern) collapsing rapid bursts of
-/// `Create`/`Modify`/`Delete` mutations on the same workspace path into minimal net deltas.
-#[derive(Debug, Default, Clone)]
-pub struct DirtyPathCoalescer {
-    pending: HashMap<String, FileMutationOp>,
-}
-
-impl DirtyPathCoalescer {
-    /// Algebraic state-lattice merge:
-    /// - `Create + Modify -> Create`, `Create + Delete -> None` (net no-op)
-    /// - `Modify + Delete -> Delete`, `Delete + Create/Modify -> Modify`
-    #[inline]
-    pub fn coalesce_op(
-        prev: Option<FileMutationOp>,
-        next: FileMutationOp,
-    ) -> Option<FileMutationOp> {
-        match (prev, next) {
-            (None, op) => Some(op),
-            (Some(FileMutationOp::Create), FileMutationOp::Create | FileMutationOp::Modify) => {
-                Some(FileMutationOp::Create)
-            }
-            (Some(FileMutationOp::Create), FileMutationOp::Delete) => None,
-            (Some(FileMutationOp::Modify), FileMutationOp::Delete) => Some(FileMutationOp::Delete),
-            (Some(FileMutationOp::Modify), FileMutationOp::Create | FileMutationOp::Modify) => {
-                Some(FileMutationOp::Modify)
-            }
-            (Some(FileMutationOp::Delete), FileMutationOp::Create | FileMutationOp::Modify) => {
-                Some(FileMutationOp::Modify)
-            }
-            (Some(FileMutationOp::Delete), FileMutationOp::Delete) => Some(FileMutationOp::Delete),
-        }
-    }
-
-    pub fn record(&mut self, rel_path: &str, op: FileMutationOp) {
-        let norm = rel_path.trim_start_matches("./").replace('\\', "/");
-        if norm.is_empty() {
-            return;
-        }
-        let prev = self.pending.get(&norm).copied();
-        match Self::coalesce_op(prev, op) {
-            Some(merged) => {
-                self.pending.insert(norm, merged);
-            }
-            None => {
-                self.pending.remove(&norm);
-            }
-        }
-    }
-
-    pub fn drain(&mut self) -> Vec<(String, FileMutationOp)> {
-        self.pending.drain().collect()
-    }
-
-    #[allow(dead_code)]
-    pub fn is_empty(&self) -> bool {
-        self.pending.is_empty()
-    }
-}
-
-static GLOBAL_DIRTY_COALESCER: OnceLock<RwLock<HashMap<PathBuf, DirtyPathCoalescer>>> =
-    OnceLock::new();
+pub use crate::context::search::index_bus::{DirtyPathCoalescer, FileMutationOp};
+use crate::context::search::index_bus::{IndexConsumer, WorkspaceIndexBus};
 
 /// Workspace Trigram & File Path Index for instant candidate narrowing and file discovery.
 #[derive(Clone)]
@@ -712,25 +645,16 @@ impl TrigramIndex {
     /// so the next [`Self::get_or_build_cached`] call applies an $O(\text{dirty files})$
     /// incremental overlay patch instead of rebuilding the entire workspace index.
     pub fn record_dirty_file(workspace_root: &Path, rel_path: &str, op: FileMutationOp) {
-        let key =
-            std::fs::canonicalize(workspace_root).unwrap_or_else(|_| workspace_root.to_path_buf());
-        let map = GLOBAL_DIRTY_COALESCER.get_or_init(|| RwLock::new(HashMap::new()));
-        if let Ok(mut guard) = map.write() {
-            guard.entry(key).or_default().record(rel_path, op);
-        }
+        WorkspaceIndexBus::record_for_consumer(
+            workspace_root,
+            IndexConsumer::Trigram,
+            rel_path,
+            op,
+        );
     }
 
     fn drain_dirty_files(workspace_root: &Path) -> Vec<(String, FileMutationOp)> {
-        let key =
-            std::fs::canonicalize(workspace_root).unwrap_or_else(|_| workspace_root.to_path_buf());
-        let Some(map) = GLOBAL_DIRTY_COALESCER.get() else {
-            return Vec::new();
-        };
-        if let Ok(mut guard) = map.write() {
-            guard.get_mut(&key).map(|c| c.drain()).unwrap_or_default()
-        } else {
-            Vec::new()
-        }
+        WorkspaceIndexBus::drain_dirty(workspace_root, IndexConsumer::Trigram)
     }
 
     /// Invalidates the shared in-memory `TrigramIndex` cache when workspace files are bulk-changed
@@ -741,11 +665,7 @@ impl TrigramIndex {
                 *guard = None;
             }
         }
-        if let Some(map) = GLOBAL_DIRTY_COALESCER.get() {
-            if let Ok(mut guard) = map.write() {
-                guard.clear();
-            }
-        }
+        WorkspaceIndexBus::clear_consumer_queue(IndexConsumer::Trigram);
     }
 
     /// Applies an incremental LSM-overlay delta (`microsoft/tgrep` WAL pattern) for modified,

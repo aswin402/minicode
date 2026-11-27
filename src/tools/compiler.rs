@@ -11,32 +11,95 @@ use std::time::Duration;
 /// directly inside tool responses, enabling immediate self-correction.
 pub struct ScopedCompiler;
 
-impl ScopedCompiler {
-    /// Detects and executes a scoped compiler or linter check for the modified file/project.
-    ///
-    /// Respects strict resource constraints (max 3 concurrent jobs) and timeouts.
-    /// Returns formatted diagnostic feedback for the LLM if applicable.
-    pub fn run_scoped_check(workspace_root: &Path, relative_path: &str) -> Option<String> {
-        let is_rust = relative_path.ends_with(".rs") && workspace_root.join("Cargo.toml").exists();
-        let is_python = relative_path.ends_with(".py");
-        let is_ts = (relative_path.ends_with(".ts") || relative_path.ends_with(".tsx"))
-            && workspace_root.join("tsconfig.json").exists();
+struct CompilerCheckRule {
+    extensions: &'static [&'static str],
+    required_marker: Option<&'static str>,
+    runner: fn(&Path, &str) -> Option<String>,
+}
 
-        if is_rust {
-            Self::check_rust(workspace_root, relative_path)
-        } else if is_python {
-            Self::check_python(workspace_root, relative_path)
-        } else if is_ts {
-            Self::check_typescript(workspace_root, relative_path)
-        } else {
-            None
-        }
+const COMPILER_CHECK_RULES: &[CompilerCheckRule] = &[
+    CompilerCheckRule {
+        extensions: &[".rs"],
+        required_marker: Some("Cargo.toml"),
+        runner: ScopedCompiler::check_rust,
+    },
+    CompilerCheckRule {
+        extensions: &[".py"],
+        required_marker: None,
+        runner: ScopedCompiler::check_python,
+    },
+    CompilerCheckRule {
+        extensions: &[".ts", ".tsx"],
+        required_marker: Some("tsconfig.json"),
+        runner: ScopedCompiler::check_typescript,
+    },
+    CompilerCheckRule {
+        extensions: &[".go"],
+        required_marker: Some("go.mod"),
+        runner: ScopedCompiler::check_go,
+    },
+];
+
+impl ScopedCompiler {
+    /// Detects and executes a scoped compiler or linter check for the modified file/project
+    /// using the declarative `COMPILER_CHECK_RULES` table (Rust, Python, TypeScript, Go).
+    pub fn run_scoped_check(workspace_root: &Path, relative_path: &str) -> Option<String> {
+        let lower = relative_path.to_ascii_lowercase();
+        let rule = COMPILER_CHECK_RULES.iter().find(|r| {
+            r.extensions.iter().any(|ext| lower.ends_with(ext))
+                && r.required_marker
+                    .is_none_or(|marker| workspace_root.join(marker).exists())
+        })?;
+        (rule.runner)(workspace_root, relative_path)
     }
 
-    /// Runs a scoped `cargo check -j 3 --message-format=short` inside the Rust project.
+    /// Unified post-edit diagnostic hook combining scoped compiler checks (`cargo check`, `tsc`,
+    /// `py_compile`, `go vet`) with ultra-fast (<15ms) single-file native AST `minidoctor` guards.
+    /// Returns a formatted diagnostic block (prefixed with `\n\n`) or an empty string if clean/n/a.
+    pub fn run_post_edit_diagnostics(
+        workspace_root: &Path,
+        relative_path: &str,
+        content: &str,
+    ) -> String {
+        let mut out = String::new();
+        if let Some(feedback) = Self::run_scoped_check(workspace_root, relative_path) {
+            out.push_str("\n\n");
+            out.push_str(&feedback);
+        }
+
+        // Smart Auto-Guard: ultra-fast (<15ms) single-file native AST Critical/Error micro-guard
+        let doctor_hits: Vec<minidoctor::Diagnostic> =
+            minidoctor::check_single_file(workspace_root, relative_path, content)
+                .into_iter()
+                .filter(|d| {
+                    matches!(
+                        d.severity,
+                        minidoctor::Severity::Critical | minidoctor::Severity::Error
+                    )
+                })
+                .take(4)
+                .collect();
+        if !doctor_hits.is_empty() {
+            out.push_str("\n\n[MiniDoctor Auto-Guard]:");
+            for d in doctor_hits {
+                out.push_str(&format!(
+                    "\n  - [{}] `{}` at {}:{} — {} (Fix: {})",
+                    d.severity.badge(),
+                    d.rule,
+                    d.file,
+                    d.line,
+                    d.message,
+                    d.suggestion
+                ));
+            }
+        }
+        out
+    }
+
+    /// Runs a scoped `cargo check -j 1 --message-format=short` inside the Rust project.
     pub fn check_rust(workspace_root: &Path, relative_path: &str) -> Option<String> {
         let mut cmd = Command::new("cargo");
-        cmd.args(["check", "-j", "3", "--message-format=short"]);
+        cmd.args(["check", "-j", "1", "--message-format=short"]);
         cmd.current_dir(workspace_root);
 
         let output = Self::run_with_timeout(cmd, Duration::from_millis(AUTO_LINT_TIMEOUT_MS))?;
@@ -194,6 +257,42 @@ impl ScopedCompiler {
                 missing_export_tip
             ))
         }
+    }
+
+    /// Runs `go vet` on the package containing `relative_path` inside a Go module.
+    pub fn check_go(workspace_root: &Path, relative_path: &str) -> Option<String> {
+        let pkg_target = Path::new(relative_path)
+            .parent()
+            .and_then(|p| p.to_str())
+            .filter(|s| !s.is_empty() && *s != ".")
+            .map(|dir| format!("./{dir}"))
+            .unwrap_or_else(|| "./...".to_string());
+
+        let mut cmd = Command::new("go");
+        cmd.args(["vet", &pkg_target]);
+        cmd.current_dir(workspace_root);
+
+        let output = Self::run_with_timeout(cmd, Duration::from_millis(AUTO_LINT_TIMEOUT_MS))?;
+        if output.status.success() {
+            return Some("[Compiler Status]: ✓ go vet passed cleanly (0 errors).".to_string());
+        }
+
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let combined = format!("{stdout}\n{stderr}");
+        let errs: Vec<&str> = combined
+            .lines()
+            .map(str::trim)
+            .filter(|l| !l.is_empty() && !l.starts_with('#'))
+            .take(MAX_COMPILER_DIAGNOSTICS)
+            .collect();
+        if errs.is_empty() {
+            return None;
+        }
+        Some(format!(
+            "[Compiler Feedback]:\n⚠️ go vet reported errors:\n{}",
+            errs.join("\n")
+        ))
     }
 
     /// Helper to execute a command with a timeout without blocking indefinitely or leaking orphan processes.

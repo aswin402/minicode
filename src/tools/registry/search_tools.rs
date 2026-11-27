@@ -343,8 +343,7 @@ fn execute_semantic_search(
     limit: usize,
     symbols_only: bool,
 ) -> Result<String> {
-    let mut index = crate::context::semantic::SemanticIndex::new();
-    let _ = index.build_index(workspace_root)?;
+    let index = crate::context::semantic::SemanticIndex::get_or_build_cached(workspace_root)?;
     let results = if symbols_only {
         index.search_symbols(query, limit)
     } else {
@@ -475,8 +474,7 @@ pub fn dispatch(
                 return Ok(result.format_markdown());
             }
 
-            let mut index = crate::context::hybrid::HybridIndex::new();
-            index.build_index(workspace_root)?;
+            let index = crate::context::hybrid::HybridIndex::get_or_build_cached(workspace_root)?;
             let opts = crate::context::hybrid::HybridSearchOptions {
                 include_symbols,
                 prefer_symbol,
@@ -629,7 +627,23 @@ pub fn dispatch(
                 &filter,
                 dry_run,
             )?;
-            Ok(report.format_markdown())
+            let mut out = report.format_markdown();
+            if !dry_run {
+                if let Some(first_rel) = report.files_modified.first() {
+                    if let Ok(updated) = std::fs::read_to_string(workspace_root.join(first_rel)) {
+                        let diag_block =
+                            crate::tools::compiler::ScopedCompiler::run_post_edit_diagnostics(
+                                workspace_root,
+                                first_rel,
+                                &updated,
+                            );
+                        if !diag_block.is_empty() {
+                            out.push_str(&diag_block);
+                        }
+                    }
+                }
+            }
+            Ok(out)
         })()),
         "locate_fault" => Some((|| {
             let query = require_query(args, "locate_fault")?;
