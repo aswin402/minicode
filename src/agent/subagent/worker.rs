@@ -754,11 +754,12 @@ impl SubagentWorker {
                 system_instruction: Some(system_prompt),
                 thinking_budget: None,
                 reasoning_effort: None,
-                prompt_cache_key: Some(format!(
-                    "minicode:sub:{}:{}",
-                    role.badge().to_ascii_lowercase(),
-                    id
-                )),
+                prompt_cache_key: Some(
+                    crate::context::budget::prefix_cache::shared_subagent_prompt_cache_key(
+                        &main_root,
+                        role.badge(),
+                    ),
+                ),
                 stream: app_cfg.agent.streaming,
             };
 

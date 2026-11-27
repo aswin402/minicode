@@ -576,7 +576,25 @@ fn values_equivalent(a: &Value, b: &Value) -> bool {
     }
 }
 
-/// End-to-end OKF v0.2 §10.5 consumer attestation gate for an `Attested Computation` concept in a bundle.
+/// Resolves the enclosing workspace root for an OKF bundle directory by walking upward for
+/// repository markers (`.git`, `.minicode`, `Cargo.toml`, `package.json`), falling back to `bundle_root`.
+pub(crate) fn find_workspace_root_for_bundle(bundle_root: &Path) -> std::path::PathBuf {
+    let mut cur = Some(bundle_root);
+    while let Some(dir) = cur {
+        if dir.join(".git").exists()
+            || dir.join(".minicode").is_dir()
+            || dir.join("Cargo.toml").is_file()
+            || dir.join("package.json").is_file()
+        {
+            return dir.to_path_buf();
+        }
+        cur = dir.parent();
+    }
+    bundle_root.to_path_buf()
+}
+
+/// End-to-end OKF v0.2 §10.5 consumer attestation gate for an `Attested Computation` (SQL)
+/// or AST-attested code concept (`extensions.ast_hash` + `code_ref` / `resource#symbol`) in a bundle.
 pub fn attest_concept_doc(
     bundle_root: &Path,
     concept_id: &str,
@@ -589,6 +607,27 @@ pub fn attest_concept_doc(
             ContextError::Okf(format!("Concept '{}' not found in bundle", concept_id)).into(),
         );
     };
+
+    // Support direct Tree-sitter AST code symbol attestation when `ast_hash` is declared
+    let ws_root = find_workspace_root_for_bundle(bundle_root);
+    let receipt_has_sql = receipt
+        .as_object()
+        .is_some_and(|o| o.contains_key("executed_sql") || o.contains_key("sql"));
+    if fm.extensions.contains_key("ast_hash") && !receipt_has_sql {
+        if let Some(mut code_verdict) = attest_code_symbol(&ws_root, &fm) {
+            let conf = super::compute_knowledge_confidence(&fm, Some(&ws_root), None);
+            if let Some(details_obj) = code_verdict.details.as_object_mut() {
+                details_obj.insert("concept_id".to_string(), json!(concept_id));
+                details_obj.insert("trust_tier".to_string(), json!(conf.trust_tier));
+                details_obj.insert("stale".to_string(), json!(conf.stale));
+                details_obj.insert("confidence_multiplier".to_string(), json!(conf.multiplier));
+                if !conf.drifted_sources.is_empty() {
+                    details_obj.insert("drifted_sources".to_string(), json!(conf.drifted_sources));
+                }
+            }
+            return Ok(code_verdict);
+        }
+    }
 
     if fm.concept_type != "Attested Computation" {
         return Err(ContextError::Okf(format!(
@@ -654,6 +693,188 @@ pub fn attest_concept_doc(
     Ok(verdict)
 }
 
+/// Computes a formatting- and comment-invariant Tree-sitter AST fingerprint (`"ast_fnv1a64:<hex>"`)
+/// for a named code symbol (`function`, `struct`, `class`, `trait`, `interface`, `enum`, etc.)
+/// located inside `workspace_root/file_path`.
+///
+/// Reuses `RepoMapExtractor` for cross-language symbol span extraction and `SyntaxGuard` Tree-sitter
+/// grammars to traverse semantic leaf atoms (ignoring whitespace and comment nodes).
+pub fn compute_ast_symbol_hash(
+    workspace_root: &Path,
+    file_path: &str,
+    symbol_name: &str,
+) -> Result<String> {
+    let rel = super::resolve_repo_source_path(file_path).ok_or_else(|| {
+        ContextError::Okf(format!("Invalid repo-relative code path '{}'", file_path))
+    })?;
+    let abs = workspace_root.join(&rel);
+    let source = fs::read_to_string(&abs).map_err(|e| {
+        ContextError::Okf(format!(
+            "Failed to read source file '{}' for AST attestation: {}",
+            rel, e
+        ))
+    })?;
+    let ext = abs.extension().and_then(|e| e.to_str()).unwrap_or("");
+    let extractor = crate::context::repomap::RepoMapExtractor::new();
+    let symbols = extractor.extract_symbols_from_str(ext, &source)?;
+
+    let sym = symbols
+        .iter()
+        .find(|s| s.name == symbol_name && s.kind != "import")
+        .ok_or_else(|| {
+            ContextError::Okf(format!(
+                "Symbol '{}' not found in '{}' for AST attestation",
+                symbol_name, rel
+            ))
+        })?;
+
+    let lines: Vec<&str> = source.lines().collect();
+    let start_idx = sym.line_number.saturating_sub(1).min(lines.len());
+    let end_idx = sym.end_line.min(lines.len()).max(start_idx);
+    let sym_slice = lines[start_idx..end_idx].join("\n");
+
+    let mut hash: u64 = crate::constants::FNV_OFFSET_BASIS;
+    let feed = |h: &mut u64, bytes: &[u8]| {
+        for &b in bytes {
+            *h ^= u64::from(b);
+            *h = h.wrapping_mul(crate::constants::FNV_PRIME);
+        }
+    };
+    feed(&mut hash, sym.kind.as_bytes());
+    feed(&mut hash, &[0x1F]);
+    feed(&mut hash, sym.name.as_bytes());
+    feed(&mut hash, &[0x1F]);
+
+    if let Some(lang) = crate::context::syntax_guard::SyntaxGuard::language_for_extension(ext) {
+        let mut parser = tree_sitter::Parser::new();
+        if parser.set_language(&lang).is_ok() {
+            if let Some(tree) = parser.parse(&sym_slice, None) {
+                let mut leaves: Vec<(&str, &str)> = Vec::new();
+                let mut stack = vec![tree.root_node()];
+                while let Some(node) = stack.pop() {
+                    let kind = node.kind();
+                    if kind.contains("comment") {
+                        continue;
+                    }
+                    if node.child_count() == 0 {
+                        if let Ok(text) = node.utf8_text(sym_slice.as_bytes()) {
+                            let trimmed = text.trim();
+                            if !trimmed.is_empty() {
+                                leaves.push((kind, trimmed));
+                            }
+                        }
+                    } else {
+                        for idx in (0..node.child_count()).rev() {
+                            if let Some(child) = node.child(idx) {
+                                stack.push(child);
+                            }
+                        }
+                    }
+                }
+                // Strip formatter-inserted trailing commas (rustfmt / prettier / black) immediately
+                // preceding closing delimiters while keeping all operators, identifiers, and literals.
+                for (i, &(kind, text)) in leaves.iter().enumerate() {
+                    let is_trailing_comma = text == ","
+                        && leaves
+                            .get(i + 1)
+                            .is_some_and(|&(_, next)| matches!(next, ")" | "]" | "}" | ">"));
+                    if is_trailing_comma {
+                        continue;
+                    }
+                    feed(&mut hash, kind.as_bytes());
+                    feed(&mut hash, &[0x1E]);
+                    feed(&mut hash, text.as_bytes());
+                    feed(&mut hash, &[0x1D]);
+                }
+                return Ok(format!("ast_fnv1a64:{:016x}", hash));
+            }
+        }
+    }
+
+    // Fallback for extensions without a registered Tree-sitter grammar: whitespace-normalized tokens
+    for tok in sym_slice.split_whitespace() {
+        feed(&mut hash, tok.as_bytes());
+        feed(&mut hash, &[0x1D]);
+    }
+    Ok(format!("ast_fnv1a64:{:016x}", hash))
+}
+
+/// Extracts `(file_path, symbol_name)` from OKF frontmatter `extensions.code_ref` or `resource` (`path#symbol`).
+fn extract_code_ref(fm: &OkfFrontmatter) -> Option<(String, String)> {
+    if let Some(val) = fm.extensions.get("code_ref") {
+        if let Some(s) = val.as_str() {
+            if let Some((path, sym)) = s.split_once('#') {
+                let sym = sym.trim();
+                if !sym.is_empty() {
+                    return Some((path.trim().to_string(), sym.to_string()));
+                }
+            }
+        } else if let Some(obj) = val.as_object() {
+            let path = obj.get("file").and_then(|v| v.as_str())?.trim();
+            let sym = obj.get("symbol").and_then(|v| v.as_str())?.trim();
+            if !path.is_empty() && !sym.is_empty() {
+                return Some((path.to_string(), sym.to_string()));
+            }
+        }
+    }
+    if let Some(ref res) = fm.resource {
+        if let Some((path, sym)) = res.split_once('#') {
+            let sym = sym.trim();
+            if !sym.is_empty() && super::resolve_repo_source_path(path).is_some() {
+                return Some((path.trim().to_string(), sym.to_string()));
+            }
+        }
+    }
+    None
+}
+
+/// Verifies an OKF document's `ast_hash` extension against the live Tree-sitter AST of the
+/// referenced code symbol (`extensions.code_ref` or `resource: "path/to/file.rs#symbol"`).
+///
+/// Returns `None` if the document does not declare a code symbol attestation contract.
+pub fn attest_code_symbol(
+    workspace_root: &Path,
+    fm: &OkfFrontmatter,
+) -> Option<AttestationVerdict> {
+    let expected_hash = fm
+        .extensions
+        .get("ast_hash")
+        .and_then(|v| v.as_str())
+        .map(str::trim)
+        .filter(|s| !s.is_empty())?;
+    let (file_path, symbol_name) = extract_code_ref(fm)?;
+
+    match compute_ast_symbol_hash(workspace_root, &file_path, &symbol_name) {
+        Ok(actual_hash) => {
+            let ok = actual_hash == expected_hash;
+            Some(AttestationVerdict {
+                ok,
+                reason: (!ok).then(|| {
+                    format!(
+                        "AST fingerprint mismatch for '{}#{}' (expected {}, found {})",
+                        file_path, symbol_name, expected_hash, actual_hash
+                    )
+                }),
+                details: json!({
+                    "file": file_path,
+                    "symbol": symbol_name,
+                    "expected_ast_hash": expected_hash,
+                    "actual_ast_hash": actual_hash,
+                }),
+            })
+        }
+        Err(e) => Some(AttestationVerdict {
+            ok: false,
+            reason: Some(e.to_string()),
+            details: json!({
+                "file": file_path,
+                "symbol": symbol_name,
+                "expected_ast_hash": expected_hash,
+            }),
+        }),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -698,5 +919,41 @@ mod tests {
             bound,
             "SELECT created_at::date, 'email@id.com' FROM t WHERE id = 42 AND tag = 'a,b' AND d = '2026-10-31' AND r = 'a,b'"
         );
+    }
+
+    #[test]
+    fn test_ast_symbol_hash_comment_whitespace_invariance_and_code_attestation() {
+        let dir = tempfile::tempdir().unwrap();
+        let ws = dir.path();
+        fs::create_dir_all(ws.join("src")).unwrap();
+
+        let original =
+            "pub fn compute_fee(amount: u64) -> u64 {\n    // base fee\n    amount * 2 + 5\n}\n";
+        fs::write(ws.join("src/billing.rs"), original).unwrap();
+        let h1 = compute_ast_symbol_hash(ws, "src/billing.rs", "compute_fee").unwrap();
+        assert!(h1.starts_with("ast_fnv1a64:"));
+
+        // Reformatting + changing comments must preserve the exact semantic AST hash
+        let reformatted = "pub fn compute_fee(\n    amount: u64,\n) -> u64 {\n    /* updated comment */\n    amount*2+5\n}\n";
+        fs::write(ws.join("src/billing.rs"), reformatted).unwrap();
+        let h2 = compute_ast_symbol_hash(ws, "src/billing.rs", "compute_fee").unwrap();
+        assert_eq!(
+            h1, h2,
+            "AST symbol hash must be invariant to formatting and comments"
+        );
+
+        let mut fm = OkfFrontmatter::default();
+        fm.extensions
+            .insert("code_ref".to_string(), json!("src/billing.rs#compute_fee"));
+        fm.extensions.insert("ast_hash".to_string(), json!(h1));
+
+        let pass = attest_code_symbol(ws, &fm).expect("verdict expected");
+        assert!(pass.ok, "Expected matching AST attestation: {:?}", pass);
+
+        // Changing arithmetic logic must fail AST attestation immediately
+        let mutated = "pub fn compute_fee(amount: u64) -> u64 {\n    amount * 3 + 5\n}\n";
+        fs::write(ws.join("src/billing.rs"), mutated).unwrap();
+        let fail = attest_code_symbol(ws, &fm).expect("verdict expected");
+        assert!(!fail.ok, "Mutated code logic must fail AST attestation");
     }
 }

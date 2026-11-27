@@ -106,6 +106,12 @@ pub struct AgentLoop {
     pub(super) session_emitted_ui_warehouse_sig: Option<String>,
     /// Index into `self.messages` up to which the prompt prefix is currently cached in provider KV memory.
     pub(super) kv_watermark_idx: usize,
+    /// Sticky append-only tool schema ordering across turns so mid-session additions never shift earlier indices.
+    pub(super) session_tool_order: Vec<String>,
+    /// Rolling content-addressed KV prefix chunk ledger (LMCache LCCP alignment telemetry).
+    pub(super) prefix_ledger: crate::context::budget::prefix_cache::PrefixChunkLedger,
+    /// CacheBlend-inspired 2-tier (L1 RAM + L2 disk) observation chunk store for selective delta reuse.
+    pub(super) context_chunk_cache: crate::context::budget::prefix_cache::ContextChunkCache,
     /// Timestamp of the last completed provider call (used for 5-minute KV TTL `idleCompact` expiry).
     pub(super) last_provider_call_at: Option<std::time::Instant>,
     /// Whether the host runs an idle reactive wakeup loop (true in Interactive TUI mode, false in one-shot CLI mode).
@@ -235,6 +241,12 @@ impl AgentLoop {
             session_active_skills: indexmap::IndexSet::new(),
             session_emitted_ui_warehouse_sig: None,
             kv_watermark_idx: 0,
+            session_tool_order: Vec::new(),
+            prefix_ledger: crate::context::budget::prefix_cache::PrefixChunkLedger::new(),
+            context_chunk_cache:
+                crate::context::budget::prefix_cache::ContextChunkCache::open_for_workspace(
+                    workspace_root,
+                ),
             last_provider_call_at: None,
             async_idle_wakeup_enabled: false,
             last_human_prompt: None,
@@ -484,6 +496,8 @@ impl AgentLoop {
                 "Provider KV cache TTL (300s) expired while idle; unlocking prefix for free idleCompact"
             );
             self.kv_watermark_idx = 0;
+            self.prefix_ledger.reset();
+            self.context_chunk_cache.clear_all_prefix_anchors();
         }
         self.kv_watermark_idx = self.kv_watermark_idx.min(self.messages.len());
 
@@ -635,6 +649,10 @@ impl AgentLoop {
             &active_mcp_servers,
             &active_tool_names,
         );
+        crate::context::budget::prefix_cache::align_tools_to_session_order(
+            &mut self.session_tool_order,
+            &mut tools,
+        );
         let tool_registry_telemetry =
             crate::tools::category::format_tool_registry_telemetry_block_with_detail(
                 &tools,
@@ -729,13 +747,21 @@ impl AgentLoop {
                 if promoted_tools {
                     self.session_active_tool_names
                         .clone_from(&active_tool_names);
-                    tools = self.rebuild_active_tools(
+                    let rebuilt = self.rebuild_active_tools(
                         user_prompt,
                         &active_categories,
                         &mcp_tools_by_server,
                         &active_mcp_servers,
                         &active_tool_names,
                     );
+                    let (merged, changed, _) =
+                        crate::context::budget::prefix_cache::append_only_merge_tools(
+                            &tools, rebuilt,
+                        );
+                    if changed {
+                        tools = merged;
+                        self.session_tool_order = tools.iter().map(|t| t.name.clone()).collect();
+                    }
                 }
             }
         }
@@ -1595,6 +1621,22 @@ impl AgentLoop {
             // Record the exact message boundary just transmitted and cached in provider KV memory.
             self.kv_watermark_idx = self.messages.len();
             self.last_provider_call_at = Some(std::time::Instant::now());
+            let prefix_report = self.prefix_ledger.commit_prefix(
+                options.system_instruction.as_deref().unwrap_or(""),
+                &tools,
+                &self.messages,
+            );
+            self.context_chunk_cache.persist_l2();
+            tracing::debug!(
+                turn_id,
+                matched_chunks = prefix_report.matched_chunks,
+                total_chunks = prefix_report.total_chunks,
+                hit_ratio = format_args!("{:.3}", prefix_report.hit_ratio),
+                system_hit = prefix_report.system_hit,
+                matched_tools = prefix_report.matched_tool_schemas,
+                lccp_msgs = prefix_report.lccp_message_count,
+                "KV prefix chunk alignment committed"
+            );
 
             // If assistant produced tool calls, execute them and continue ReAct loop
             if !pending_tool_calls.is_empty() {

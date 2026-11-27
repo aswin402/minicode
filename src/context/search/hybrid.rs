@@ -1254,10 +1254,6 @@ impl HybridIndex {
     }
 }
 
-/// Declarative OKF v0.2 trust-tier score multipliers for Markdown concept hits in hybrid search.
-const OKF_HYBRID_TRUST_FACTORS: &[(&str, f64)] =
-    &[("human-reviewed", 1.15), ("machine-confirmed", 1.07)];
-
 fn compute_okf_doc_multiplier(
     workspace_root: Option<&Path>,
     rel_path: &str,
@@ -1272,32 +1268,11 @@ fn compute_okf_doc_multiplier(
         return None;
     };
 
-    let tier = crate::context::okf::trust_tier(&fm);
-    let stale = crate::context::okf::is_stale(&fm, None);
-    let deprecated = fm.status.as_deref() == Some("deprecated");
-
-    let mut factor = OKF_HYBRID_TRUST_FACTORS
-        .iter()
-        .find_map(|&(k, mult)| (k == tier).then_some(mult))
-        .unwrap_or(1.0);
-    if stale {
-        factor *= 0.75;
-    }
-    if deprecated {
-        factor *= 0.60;
-    }
-
-    if (factor - 1.0).abs() < 1e-6 {
+    let conf = crate::context::okf::compute_knowledge_confidence(&fm, Some(root), None);
+    if (conf.multiplier - 1.0).abs() < 1e-6 && conf.drifted_sources.is_empty() {
         return None;
     }
-
-    let suffix = match (stale, deprecated) {
-        (true, true) => ":stale+deprecated",
-        (true, false) => ":stale",
-        (false, true) => ":deprecated",
-        (false, false) => "",
-    };
-    Some((factor, format!("OKF:{tier}{suffix}")))
+    Some((conf.multiplier, conf.badge))
 }
 
 #[cfg(test)]
@@ -1445,8 +1420,25 @@ mod tests {
 
         let (stale_mult, stale_badge) =
             compute_okf_doc_multiplier(Some(&temp_dir), "docs/stale.md").unwrap();
-        assert!((stale_mult - 0.45).abs() < 1e-6);
+        assert!(
+            (0.25..=0.45).contains(&stale_mult),
+            "Continuous exponential decay + deprecation should penalize heavily: {}",
+            stale_mult
+        );
         assert_eq!(stale_badge, "OKF:unverified:stale+deprecated");
+
+        // Transitive code-provenance drift penalty when referenced source file is newer than verification
+        fs::create_dir_all(temp_dir.join("src")).unwrap();
+        fs::write(temp_dir.join("src/live.rs"), "pub fn live() {}\n").unwrap();
+        fs::write(
+            temp_dir.join("docs/drifted.md"),
+            "---\ntype: Architecture\ntitle: Drifted Spec\nverified: { by: \"human:alice\", at: \"2020-01-01T00:00:00Z\" }\nsources:\n  - { resource: \"src/live.rs\" }\n---\n\n# Spec\nOlder than live.rs.\n",
+        )
+        .unwrap();
+        let (drifted_mult, drifted_badge) =
+            compute_okf_doc_multiplier(Some(&temp_dir), "docs/drifted.md").unwrap();
+        assert!(drifted_mult < verified_mult);
+        assert_eq!(drifted_badge, "OKF:human-reviewed:drifted(1)");
 
         let _ = fs::remove_dir_all(&temp_dir);
     }

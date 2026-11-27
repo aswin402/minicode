@@ -13,6 +13,7 @@ pub mod json_crusher;
 pub mod log_pruner;
 pub mod micro_compact;
 pub mod observation_pruner;
+pub mod prefix_cache;
 pub mod toon;
 
 pub use budget::*;
@@ -25,5 +26,10 @@ pub use economy::{
 #[allow(unused_imports)]
 pub use micro_compact::{MicroCompactMetrics, MicroCompactor};
 pub use observation_pruner::ObservationPruner;
+#[allow(unused_imports)]
+pub use prefix_cache::{
+    align_tools_to_session_order, append_only_merge_tools, shared_subagent_prompt_cache_key,
+    BlendDecision, ContextChunkCache, PrefixChunkLedger, PrefixMatchReport,
+};
 #[allow(unused_imports)]
 pub use toon::{DelimiterMode, ToonCodec, ToonDelimiter, ToonOptions};

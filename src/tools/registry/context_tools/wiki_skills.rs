@@ -333,6 +333,22 @@ pub async fn dispatch(
                     }
                     .into());
                 };
+                if fm.extensions.contains_key("ast_hash") {
+                    let empty_receipt = serde_json::json!({});
+                    let verdict = attest_concept_doc(
+                        &bundle_dir,
+                        concept_id,
+                        &empty_receipt,
+                        None,
+                        param_map,
+                    )?;
+                    let status_icon = if verdict.ok { "✔ PASS" } else { "✖ FAIL" };
+                    let out = serde_json::to_string_pretty(&verdict).unwrap_or_default();
+                    return Ok(format!(
+                        "{} — OKF v0.2 AST Code Attestation Verdict for `{}`:\n```json\n{}\n```",
+                        status_icon, concept_id, out
+                    ));
+                }
                 let raw_comp = extract_computation_text(&bundle_dir, &fm, &body)?;
                 let runtime = fm.runtime.as_deref().unwrap_or("sql");
                 let empty_map = serde_json::Map::new();

@@ -12,17 +12,23 @@ impl AgentLoop {
     #[inline]
     fn apply_rebuilt_tools(
         kv_watermark_idx: &mut usize,
+        session_tool_order: &mut Vec<String>,
         tools: &mut Vec<crate::agent::provider::ToolSchema>,
         rebuilt: Vec<crate::agent::provider::ToolSchema>,
     ) {
-        let changed = rebuilt.len() != tools.len()
-            || rebuilt
-                .iter()
-                .zip(tools.iter())
-                .any(|(a, b)| a.name != b.name || a.description != b.description);
+        let (merged, changed, prefix_preserved) =
+            crate::context::budget::prefix_cache::append_only_merge_tools(tools, rebuilt);
         if changed {
-            *tools = rebuilt;
+            let prev_len = tools.len();
+            *tools = merged;
+            *session_tool_order = tools.iter().map(|t| t.name.clone()).collect();
             *kv_watermark_idx = 0;
+            tracing::debug!(
+                prev_tools = prev_len,
+                new_tools = tools.len(),
+                prefix_preserved,
+                "Updated active tool schemas with append-only prefix stabilization"
+            );
         }
     }
 
@@ -247,7 +253,12 @@ impl AgentLoop {
                                 active_mcp_servers,
                                 active_tool_names,
                             );
-                            Self::apply_rebuilt_tools(&mut self.kv_watermark_idx, tools, rebuilt);
+                            Self::apply_rebuilt_tools(
+                                &mut self.kv_watermark_idx,
+                                &mut self.session_tool_order,
+                                tools,
+                                rebuilt,
+                            );
                         }
                     }
                 } else if *action == "unloaded" {
@@ -421,7 +432,12 @@ impl AgentLoop {
                     active_mcp_servers,
                     active_tool_names,
                 );
-                Self::apply_rebuilt_tools(&mut self.kv_watermark_idx, tools, rebuilt);
+                Self::apply_rebuilt_tools(
+                    &mut self.kv_watermark_idx,
+                    &mut self.session_tool_order,
+                    tools,
+                    rebuilt,
+                );
                 tool_result.output.push_str(&format!(
                     "\n[Tool Registry Telemetry: {} Active Tool Schemas in Context / {} Built-in Domain Tools]",
                     tools.len(),
@@ -444,7 +460,12 @@ impl AgentLoop {
                 active_mcp_servers,
                 active_tool_names,
             );
-            Self::apply_rebuilt_tools(&mut self.kv_watermark_idx, tools, rebuilt);
+            Self::apply_rebuilt_tools(
+                &mut self.kv_watermark_idx,
+                &mut self.session_tool_order,
+                tools,
+                rebuilt,
+            );
         } else if !tool_result.success
             && tool_result.output.contains("Tool '")
             && tool_result.output.contains("not found")
@@ -466,7 +487,12 @@ impl AgentLoop {
                     active_mcp_servers,
                     active_tool_names,
                 );
-                Self::apply_rebuilt_tools(&mut self.kv_watermark_idx, tools, rebuilt);
+                Self::apply_rebuilt_tools(
+                    &mut self.kv_watermark_idx,
+                    &mut self.session_tool_order,
+                    tools,
+                    rebuilt,
+                );
             }
         }
 
@@ -603,7 +629,12 @@ impl AgentLoop {
                 active_mcp_servers,
                 active_tool_names,
             );
-            Self::apply_rebuilt_tools(&mut self.kv_watermark_idx, tools, rebuilt);
+            Self::apply_rebuilt_tools(
+                &mut self.kv_watermark_idx,
+                &mut self.session_tool_order,
+                tools,
+                rebuilt,
+            );
             self.emit_current_plan(Some(turn_id), event_sender);
             plan_emitted = true;
         } else if !crate::tools::is_read_only(&tool_call.name)
@@ -853,7 +884,12 @@ impl AgentLoop {
                     active_mcp_servers,
                     active_tool_names,
                 );
-                Self::apply_rebuilt_tools(&mut self.kv_watermark_idx, tools, rebuilt);
+                Self::apply_rebuilt_tools(
+                    &mut self.kv_watermark_idx,
+                    &mut self.session_tool_order,
+                    tools,
+                    rebuilt,
+                );
                 if !auto_cats.is_empty() {
                     tool_result.output.push_str(&format!(
                         "\n[Tool Registry Telemetry: Auto-activated '{}' tool categories for scaffolded UI stack (`block_*`, `minitask` & `browser_*` are ALREADY active — do NOT call `activate_tools` for them).]",
@@ -878,6 +914,66 @@ impl AgentLoop {
             ) {
                 self.fetch_tracker.invalidate_local_reads();
             } else {
+                if !output_for_llm.contains("[CCR Summary:")
+                    && matches!(
+                        crate::tools::meta::canonical_name(&tool_call.name),
+                        "read_file" | "look_at"
+                    )
+                {
+                    if let Some(target_path) = crate::tools::param::opt_path(&tool_call.arguments) {
+                        let start_l = tool_call
+                            .arguments
+                            .get("start_line")
+                            .or_else(|| tool_call.arguments.get("offset"))
+                            .and_then(|v| v.as_u64())
+                            .unwrap_or(0);
+                        let end_l = tool_call
+                            .arguments
+                            .get("end_line")
+                            .or_else(|| tool_call.arguments.get("limit"))
+                            .and_then(|v| v.as_u64())
+                            .unwrap_or(0);
+                        let chunk_key = if start_l > 0 || end_l > 0 {
+                            format!("{}:{}-{}", target_path, start_l, end_l)
+                        } else {
+                            target_path.to_string()
+                        };
+                        match self.context_chunk_cache.blend_or_record(
+                            &chunk_key,
+                            &output_for_llm,
+                            self.messages.len(),
+                            self.kv_watermark_idx,
+                        ) {
+                            crate::context::budget::prefix_cache::BlendDecision::FullBlock => {}
+                            crate::context::budget::prefix_cache::BlendDecision::IdenticalPrefixRef {
+                                bytes_saved,
+                                rendered_ref,
+                                ..
+                            } => {
+                                tracing::debug!(
+                                    key = %chunk_key,
+                                    bytes_saved,
+                                    "CacheBlend collapsed identical live-prefix read to pointer ref"
+                                );
+                                output_for_llm = rendered_ref;
+                            }
+                            crate::context::budget::prefix_cache::BlendDecision::SelectiveDelta {
+                                bytes_saved,
+                                changed_lines,
+                                rendered_delta,
+                                ..
+                            } => {
+                                tracing::debug!(
+                                    key = %chunk_key,
+                                    bytes_saved,
+                                    changed_lines,
+                                    "CacheBlend emitted selective line delta against KV-cached base block"
+                                );
+                                output_for_llm = rendered_delta;
+                            }
+                        }
+                    }
+                }
                 output_for_llm = self.fetch_tracker.record_and_annotate(
                     &tool_call.name,
                     &tool_call.arguments,

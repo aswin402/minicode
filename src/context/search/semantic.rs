@@ -194,6 +194,7 @@ impl SemanticIndex {
 
         let mut repomap = RepoMapExtractor::new();
         let mut updated_files = 0usize;
+        let mut newly_chunked: Vec<CodeChunk> = Vec::new();
 
         for (rel, op) in deltas {
             if *op == FileMutationOp::Delete {
@@ -216,16 +217,71 @@ impl SemanticIndex {
                 .unwrap_or(0);
             if let Ok(content) = fs::read_to_string(&abs_path) {
                 let chunks = chunk_source_code_ast(&norm, &content, &mut repomap, &abs_path);
-                self.chunks.extend(chunks);
+                newly_chunked.extend(chunks);
                 self.file_hashes.insert(norm, mtime);
                 updated_files += 1;
             }
         }
 
-        self.mmap_index = None;
-        if workspace_root.join(".minicode").is_dir() {
-            let cache_path = Self::cache_path(workspace_root);
-            self.save_cache(&cache_path);
+        // Zero-Rewrite LSM Delta Overlay fast-path: tombstone modified/deleted base slots in O(1),
+        // append freshly quantized records to the in-memory delta overlay, and avoid rewriting `.bin`
+        // until compaction thresholds (`>25%` deleted or `>256` delta records) are exceeded.
+        let mut served_by_lsm_overlay = false;
+        let cache_path = Self::cache_path(workspace_root);
+        let bin_path = cache_path.with_extension("bin");
+        let hashes_path = cache_path.with_file_name("semantic_hashes.json");
+
+        if let Some(ref mut mmap) = self.mmap_index {
+            use crate::context::search::mmap_index::ChunkMetadata;
+            use crate::context::search::quantize::TurbovecRecord;
+
+            mmap.mark_deleted_where_file(|fp| dirty_set.contains(fp));
+
+            let mut delta_records = Vec::with_capacity(newly_chunked.len());
+            let mut delta_metadata = Vec::with_capacity(newly_chunked.len());
+            for chunk in &newly_chunked {
+                delta_records.push(TurbovecRecord::from_quant2(chunk.get_polar_quant2()));
+                delta_metadata.push(ChunkMetadata {
+                    file_path: chunk.file_path.clone(),
+                    start_line: chunk.start_line,
+                    end_line: chunk.end_line,
+                    symbol_name: chunk.symbol_name.clone(),
+                    symbol_kind: chunk.symbol_kind.clone(),
+                    content: chunk.content.clone(),
+                });
+            }
+            mmap.append_delta_records(delta_records, delta_metadata);
+
+            if !mmap.needs_compaction() {
+                served_by_lsm_overlay = true;
+                if workspace_root.join(".minicode").is_dir() && bin_path.exists() {
+                    let _ = mmap.persist_tombstones(&bin_path);
+                    // Omit files residing solely in the in-memory delta overlay from disk hashes
+                    // so a cold process restart automatically re-embeds those few delta files.
+                    let delta_files: std::collections::HashSet<String> = mmap
+                        .delta_file_paths()
+                        .into_iter()
+                        .map(str::to_string)
+                        .collect();
+                    let disk_hashes: HashMap<&String, &u64> = self
+                        .file_hashes
+                        .iter()
+                        .filter(|(k, _)| !delta_files.contains(k.as_str()))
+                        .collect();
+                    if let Ok(bytes) = serde_json::to_vec(&disk_hashes) {
+                        let _ = fs::write(&hashes_path, bytes);
+                    }
+                }
+            }
+        }
+
+        self.chunks.extend(newly_chunked);
+
+        if !served_by_lsm_overlay {
+            self.mmap_index = None;
+            if workspace_root.join(".minicode").is_dir() {
+                self.save_cache(&cache_path);
+            }
         }
         updated_files
     }
@@ -258,7 +314,7 @@ impl SemanticIndex {
                         let mut patched = Self {
                             chunks: arc_idx.chunks.clone(),
                             file_hashes: arc_idx.file_hashes.clone(),
-                            mmap_index: None,
+                            mmap_index: arc_idx.mmap_index.clone(),
                         };
                         patched.apply_incremental_delta(workspace_root, &dirty);
                         let arc_patched = std::sync::Arc::new(patched);

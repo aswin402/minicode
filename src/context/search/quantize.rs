@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+use std::sync::OnceLock;
 
 /// Fixed 128-bit SplitMix64 orthogonal sign-flip mask ($D_{1,ii} \in \{-1, +1\}$) applied prior to
 /// Stage-1 Fast Walsh-Hadamard Transform (`D_1 · H`). Eliminates DC/positive-orthant clustering on
@@ -9,27 +10,144 @@ const TURBOQUANT_SIGN_MASK: [u64; 2] = [0x9E37_79B9_7F4A_7C15, 0xBF58_476D_1CE4_
 /// Stage-2 Quantized Johnson-Lindenstrauss (`QJL`) residual projection (`D_2 · H`).
 const TURBOQUANT_QJL_SIGN_MASK: [u64; 2] = [0x94D0_49BB_1331_11EB, 0xD6E8_FEB8_6659_FD93];
 
-/// Optimal 4-level (2-bit) Lloyd-Max decision threshold on unit-variance Gaussian $\mathcal{N}(0, 1)$
+/// Asymptotic ($d \to \infty$) 4-level (2-bit) Lloyd-Max decision threshold on $\mathcal{N}(0, 1)$
 /// coordinates: $t = \frac{c_{\text{inner}} + c_{\text{outer}}}{2} = 0.98159883$.
 pub const LLOYD_MAX_2BIT_THRESHOLD: f32 = 0.981_598_83;
 
-/// Optimal 4-level (2-bit) inner centroid $\mathbb{E}[Z \mid 0 \le Z < t]$ for $Z \sim \mathcal{N}(0, 1)$.
+/// Asymptotic 4-level (2-bit) inner centroid $\mathbb{E}[Z \mid 0 \le Z < t]$ for $Z \sim \mathcal{N}(0, 1)$.
 pub const LLOYD_MAX_2BIT_INNER: f32 = 0.452_78;
 
-/// Optimal 4-level (2-bit) outer centroid $\mathbb{E}[Z \mid Z \ge t]$ for $Z \sim \mathcal{N}(0, 1)$.
+/// Asymptotic 4-level (2-bit) outer centroid $\mathbb{E}[Z \mid Z \ge t]$ for $Z \sim \mathcal{N}(0, 1)$.
 pub const LLOYD_MAX_2BIT_OUTER: f32 = 1.510_417_6;
 
-/// Declarative lookup table indexed by `(mag_bit << 1) | sign_bit`:
-/// - `0b00` (`sign=0, mag=0`): `-0.4527800`
-/// - `0b01` (`sign=1, mag=0`): `+0.4527800`
-/// - `0b10` (`sign=0, mag=1`): `-1.5104176`
-/// - `0b11` (`sign=1, mag=1`): `+1.5104176`
+/// Asymptotic Gaussian 2-bit codebook indexed by `(mag_bit << 1) | sign_bit`.
+/// Retained for backward compatibility; runtime 128-D quantization uses [`beta_lloyd_max_128`].
 pub const LLOYD_MAX_2BIT_CODEBOOK: [f32; 4] = [
     -LLOYD_MAX_2BIT_INNER,
     LLOYD_MAX_2BIT_INNER,
     -LLOYD_MAX_2BIT_OUTER,
     LLOYD_MAX_2BIT_OUTER,
 ];
+
+/// Adaptive QJL residual-energy break-even gate ($\eta = \|r\|_2^2 / \|y\|_2^2$).
+/// When Stage-1 PolarQuant already explains $> 98.5\%$ of vector energy ($\eta < 0.015$),
+/// 1-bit QJL quantization variance outweighs the tiny residual, so Stage-2 QJL is bypassed
+/// (`qjl_scale = 0.0`), skipping 32 LUT lookups during Stage-2 FastScan scoring.
+pub const QJL_RESIDUAL_ENERGY_GATE: f32 = 0.015;
+
+/// Exact finite-dimension $d$ 4-level (2-bit) Lloyd-Max codebook solved numerically on the
+/// unit-variance hyperspherical Beta marginal density $p_d(z) \propto (1 - z^2/d)^{(d-3)/2}$
+/// for $z \in [-\sqrt{d}, \sqrt{d}]$ (TurboQuant ICLR 2026 finite-$d$ optimal scalar quantizer).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct BetaLloydMax2Bit {
+    pub dim: usize,
+    pub threshold: f32,
+    pub inner_centroid: f32,
+    pub outer_centroid: f32,
+    pub codebook: [f32; 4],
+}
+
+/// Integrates $\int_a^b (1 - z^2/d)^{\text{exp}} \, dz$ via composite Simpson's rule (256 panels).
+#[inline]
+fn simpson_beta_mass(a: f64, b: f64, d: f64, exp: f64) -> f64 {
+    const PANELS: usize = 256;
+    if b <= a {
+        return 0.0;
+    }
+    let h = (b - a) / (PANELS as f64);
+    let eval = |z: f64| -> f64 {
+        let base = (1.0 - (z * z) / d).max(0.0);
+        if base == 0.0 && exp > 0.0 {
+            0.0
+        } else {
+            base.powf(exp)
+        }
+    };
+    let mut sum = eval(a) + eval(b);
+    for i in 1..PANELS {
+        let z = a + (i as f64) * h;
+        let coeff = if i % 2 == 0 { 2.0 } else { 4.0 };
+        sum += coeff * eval(z);
+    }
+    sum * (h / 3.0)
+}
+
+/// Exact analytical first-moment integral $\int_a^b z (1 - z^2/d)^{\text{exp}} \, dz$
+/// $= \frac{d}{2(\text{exp} + 1)} \left[ (1 - a^2/d)^{\text{exp}+1} - (1 - b^2/d)^{\text{exp}+1} \right]$.
+#[inline]
+fn exact_beta_first_moment(a: f64, b: f64, d: f64, exp: f64) -> f64 {
+    if b <= a {
+        return 0.0;
+    }
+    let p = exp + 1.0;
+    let fa = (1.0 - (a * a) / d).max(0.0).powf(p);
+    let fb = (1.0 - (b * b) / d).max(0.0).powf(p);
+    (d / (2.0 * p)) * (fa - fb)
+}
+
+/// Solves the exact 2-bit symmetric Lloyd-Max decision threshold and centroids for coordinates
+/// uniformly distributed on the $(d-1)$-sphere normalized to unit variance ($\mathbb{E}[Z^2] = 1$).
+/// Converges monotonically to the asymptotic Gaussian solution as $d \to \infty$.
+#[must_use]
+pub fn solve_beta_lloyd_max_2bit(dim: usize) -> BetaLloydMax2Bit {
+    let eff_dim = dim.max(4);
+    let d = eff_dim as f64;
+    let exp = 0.5 * (d - 3.0);
+    let z_max = d.sqrt();
+    // Density `(1 - z^2/d)^((d-3)/2) <= exp(-z^2 * (d-3)/(2d))` vanishes below f64 epsilon past z = 10.0,
+    // so clamping the quadrature support keeps Simpson step size < 0.04 for arbitrarily large `d`.
+    let z_quad_max = z_max.min(10.0);
+
+    let mut t = (LLOYD_MAX_2BIT_THRESHOLD as f64).min(z_max * 0.85);
+    let mut c_in = LLOYD_MAX_2BIT_INNER as f64;
+    let mut c_out = LLOYD_MAX_2BIT_OUTER as f64;
+
+    for _ in 0..64 {
+        let mass_in = simpson_beta_mass(0.0, t, d, exp);
+        let mass_out = simpson_beta_mass(t, z_quad_max, d, exp);
+        if mass_in <= 1e-15 || mass_out <= 1e-15 {
+            break;
+        }
+        let mom_in = exact_beta_first_moment(0.0, t, d, exp);
+        let mom_out = exact_beta_first_moment(t, z_max, d, exp);
+
+        let next_in = mom_in / mass_in;
+        let next_out = mom_out / mass_out;
+        let next_t = 0.5 * (next_in + next_out);
+
+        let delta = (next_t - t).abs();
+        c_in = next_in;
+        c_out = next_out;
+        t = next_t;
+        if delta < 1e-10 {
+            break;
+        }
+    }
+
+    let threshold = t as f32;
+    let inner_centroid = c_in as f32;
+    let outer_centroid = c_out as f32;
+    BetaLloydMax2Bit {
+        dim: eff_dim,
+        threshold,
+        inner_centroid,
+        outer_centroid,
+        codebook: [
+            -inner_centroid,
+            inner_centroid,
+            -outer_centroid,
+            outer_centroid,
+        ],
+    }
+}
+
+/// Process-wide memoized exact $d = 128$ hyperspherical Beta Lloyd-Max 2-bit codebook.
+#[inline]
+#[must_use]
+pub fn beta_lloyd_max_128() -> &'static BetaLloydMax2Bit {
+    static CODEBOOK_128: OnceLock<BetaLloydMax2Bit> = OnceLock::new();
+    CODEBOOK_128.get_or_init(|| solve_beta_lloyd_max_2bit(128))
+}
 
 /// 128-dimensional 1-bit Polarized Binary Vector (16 bytes total).
 /// Compresses 512-byte f32 vectors by 32x while preserving angular direction.
@@ -193,8 +311,9 @@ impl PolarQuant2Fixed {
                 qjl_scale: 0.0,
             };
         }
+        let beta = beta_lloyd_max_128();
         let rms = (sum_sq / 128.0).sqrt();
-        let threshold = LLOYD_MAX_2BIT_THRESHOLD * rms;
+        let threshold = beta.threshold * rms;
 
         let mut sign_bits = [0u64; 2];
         let mut mag_bits = [0u64; 2];
@@ -216,7 +335,7 @@ impl PolarQuant2Fixed {
             if m == 1 {
                 mag_bits[word] |= 1u64 << bit;
             }
-            let c = LLOYD_MAX_2BIT_CODEBOOK[(m << 1) | s];
+            let c = beta.codebook[(m << 1) | s];
             centroids[i] = c;
             dot_yz += clean * c;
             norm_z_sq += c * c;
@@ -228,7 +347,8 @@ impl PolarQuant2Fixed {
             rms
         };
 
-        // Stage 2: Orthogonal residual r = y - alpha_mmse * z_hat, projected via independent D_2 * H
+        // Stage 2: Orthogonal residual r = y - alpha_mmse * z_hat, projected via independent D_2 * H.
+        // Adaptive SNR Energy Gate: skip Stage-2 QJL when residual energy < 1.5% of total energy.
         let mut residual_u = [0.0f32; 128];
         let mut res_sq = 0.0f32;
         for i in 0..128 {
@@ -238,7 +358,7 @@ impl PolarQuant2Fixed {
         }
 
         let mut qjl_bits = [0u64; 2];
-        let qjl_scale = if res_sq > 1e-20 {
+        let qjl_scale = if res_sq > 1e-20 && (res_sq / sum_sq) >= QJL_RESIDUAL_ENERGY_GATE {
             BinaryVector128::qjl_fwht_128(&mut residual_u);
             let mut u_l1 = 0.0f32;
             for (i, &u_val) in residual_u.iter().enumerate() {
@@ -295,46 +415,147 @@ impl PolarQuant2Fixed {
     }
 
     /// Two-Stage FastScan asymmetric dot product using a precomputed L1-resident `QueryLut2Bit`.
-    /// Combines 32 Stage-1 2-bit PolarQuant nibble lookups + 32 Stage-2 1-bit `QJL` residual lookups.
+    /// Combines 32 Stage-1 2-bit PolarQuant nibble lookups + 32 Stage-2 1-bit `QJL` residual lookups
+    /// (short-circuiting all 32 QJL lookups when `self.qjl_scale == 0.0`).
     #[inline]
     pub fn score_with_lut(&self, lut: &QueryLut2Bit) -> f32 {
         let mut polar_acc = 0.0f32;
-        let mut qjl_acc = 0.0f32;
 
         let s0 = self.sign_bits[0];
         let m0 = self.mag_bits[0];
-        let q0 = self.qjl_bits[0];
-        for k in 0..16 {
-            let shift = k * 4;
-            let idx = (((s0 >> shift) & 0x0F) | (((m0 >> shift) & 0x0F) << 4)) as usize;
-            let q_nib = ((q0 >> shift) & 0x0F) as usize;
-            polar_acc += lut.tables[k][idx & 0xFF];
-            qjl_acc += lut.qjl_tables[k][q_nib & 0x0F];
-        }
-
         let s1 = self.sign_bits[1];
         let m1 = self.mag_bits[1];
+
+        if self.qjl_scale == 0.0 {
+            for k in 0..16 {
+                let shift = k * 4;
+                let idx0 = (((s0 >> shift) & 0x0F) | (((m0 >> shift) & 0x0F) << 4)) as usize;
+                let idx1 = (((s1 >> shift) & 0x0F) | (((m1 >> shift) & 0x0F) << 4)) as usize;
+                polar_acc += lut.tables[k][idx0 & 0xFF] + lut.tables[16 + k][idx1 & 0xFF];
+            }
+            return polar_acc * self.scale;
+        }
+
+        let mut qjl_acc = 0.0f32;
+        let q0 = self.qjl_bits[0];
         let q1 = self.qjl_bits[1];
         for k in 0..16 {
             let shift = k * 4;
-            let idx = (((s1 >> shift) & 0x0F) | (((m1 >> shift) & 0x0F) << 4)) as usize;
-            let q_nib = ((q1 >> shift) & 0x0F) as usize;
-            polar_acc += lut.tables[16 + k][idx & 0xFF];
-            qjl_acc += lut.qjl_tables[16 + k][q_nib & 0x0F];
+            let idx0 = (((s0 >> shift) & 0x0F) | (((m0 >> shift) & 0x0F) << 4)) as usize;
+            let q_nib0 = ((q0 >> shift) & 0x0F) as usize;
+            polar_acc += lut.tables[k][idx0 & 0xFF];
+            qjl_acc += lut.qjl_tables[k][q_nib0 & 0x0F];
+        }
+        for k in 0..16 {
+            let shift = k * 4;
+            let idx1 = (((s1 >> shift) & 0x0F) | (((m1 >> shift) & 0x0F) << 4)) as usize;
+            let q_nib1 = ((q1 >> shift) & 0x0F) as usize;
+            polar_acc += lut.tables[16 + k][idx1 & 0xFF];
+            qjl_acc += lut.qjl_tables[16 + k][q_nib1 & 0x0F];
         }
 
         polar_acc * self.scale + qjl_acc * self.qjl_scale
     }
 
+    /// 4-way register-blocked FastScan kernel scoring 4 `PolarQuant2Fixed` vectors in lockstep
+    /// against the same L1-resident `QueryLut2Bit` slots (4x LUT reuse, zero `unsafe`).
+    #[inline]
+    pub fn score_batch4_with_lut(records: [&Self; 4], lut: &QueryLut2Bit) -> [f32; 4] {
+        let mut p = [0.0f32; 4];
+        let mut q = [0.0f32; 4];
+
+        let s0 = [
+            records[0].sign_bits[0],
+            records[1].sign_bits[0],
+            records[2].sign_bits[0],
+            records[3].sign_bits[0],
+        ];
+        let m0 = [
+            records[0].mag_bits[0],
+            records[1].mag_bits[0],
+            records[2].mag_bits[0],
+            records[3].mag_bits[0],
+        ];
+        let s1 = [
+            records[0].sign_bits[1],
+            records[1].sign_bits[1],
+            records[2].sign_bits[1],
+            records[3].sign_bits[1],
+        ];
+        let m1 = [
+            records[0].mag_bits[1],
+            records[1].mag_bits[1],
+            records[2].mag_bits[1],
+            records[3].mag_bits[1],
+        ];
+
+        for k in 0..16 {
+            let shift = k * 4;
+            let tbl = &lut.tables[k];
+            for lane in 0..4 {
+                let idx =
+                    (((s0[lane] >> shift) & 0x0F) | (((m0[lane] >> shift) & 0x0F) << 4)) as usize;
+                p[lane] += tbl[idx & 0xFF];
+            }
+        }
+        for k in 0..16 {
+            let shift = k * 4;
+            let tbl = &lut.tables[16 + k];
+            for lane in 0..4 {
+                let idx =
+                    (((s1[lane] >> shift) & 0x0F) | (((m1[lane] >> shift) & 0x0F) << 4)) as usize;
+                p[lane] += tbl[idx & 0xFF];
+            }
+        }
+
+        let any_qjl = records.iter().any(|r| r.qjl_scale != 0.0);
+        if any_qjl {
+            let qb0 = [
+                records[0].qjl_bits[0],
+                records[1].qjl_bits[0],
+                records[2].qjl_bits[0],
+                records[3].qjl_bits[0],
+            ];
+            let qb1 = [
+                records[0].qjl_bits[1],
+                records[1].qjl_bits[1],
+                records[2].qjl_bits[1],
+                records[3].qjl_bits[1],
+            ];
+            for k in 0..16 {
+                let shift = k * 4;
+                let qtbl = &lut.qjl_tables[k];
+                for lane in 0..4 {
+                    q[lane] += qtbl[((qb0[lane] >> shift) & 0x0F) as usize];
+                }
+            }
+            for k in 0..16 {
+                let shift = k * 4;
+                let qtbl = &lut.qjl_tables[16 + k];
+                for lane in 0..4 {
+                    q[lane] += qtbl[((qb1[lane] >> shift) & 0x0F) as usize];
+                }
+            }
+        }
+
+        [
+            p[0] * records[0].scale + q[0] * records[0].qjl_scale,
+            p[1] * records[1].scale + q[1] * records[1].qjl_scale,
+            p[2] * records[2].scale + q[2] * records[2].qjl_scale,
+            p[3] * records[3].scale + q[3] * records[3].qjl_scale,
+        ]
+    }
+
     /// Direct scalar asymmetric dot product against an already Stage-1 rotated query slice.
     pub fn asymmetric_dot_rotated(&self, rotated_query: &[f32; 128]) -> f32 {
+        let codebook = &beta_lloyd_max_128().codebook;
         let mut polar_dot = 0.0f32;
         for (i, &qv) in rotated_query.iter().enumerate() {
             let word = i / 64;
             let bit = i % 64;
             let s = ((self.sign_bits[word] >> bit) & 1) as usize;
             let m = ((self.mag_bits[word] >> bit) & 1) as usize;
-            polar_dot += qv * LLOYD_MAX_2BIT_CODEBOOK[(m << 1) | s];
+            polar_dot += qv * codebook[(m << 1) | s];
         }
 
         let mut qjl_dot = 0.0f32;
@@ -362,6 +583,7 @@ impl PolarQuant2Fixed {
 
     /// Reconstructs the Stage-1 rotated 128-dimensional `f32` vector including the inverse-projected QJL residual.
     pub fn dequantize_rotated(&self) -> [f32; 128] {
+        let codebook = &beta_lloyd_max_128().codebook;
         let mut out = [0.0f32; 128];
         if self.qjl_scale != 0.0 {
             for (i, slot) in out.iter_mut().enumerate() {
@@ -381,7 +603,7 @@ impl PolarQuant2Fixed {
             let bit = i % 64;
             let s = ((self.sign_bits[word] >> bit) & 1) as usize;
             let m = ((self.mag_bits[word] >> bit) & 1) as usize;
-            *slot += LLOYD_MAX_2BIT_CODEBOOK[(m << 1) | s] * self.scale;
+            *slot += codebook[(m << 1) | s] * self.scale;
         }
         out
     }
@@ -438,6 +660,7 @@ pub struct QueryLut2Bit {
 impl QueryLut2Bit {
     /// Builds a Two-Stage (`PolarQuant + QJL`) FastScan lookup table from a Stage-1 rotated 128-D query vector.
     pub fn from_rotated_query(rotated_query: [f32; 128]) -> Self {
+        let codebook = &beta_lloyd_max_128().codebook;
         let query_binary = BinaryVector128::from_f32_slice(&rotated_query);
         let mut tables = [[0.0f32; 256]; 32];
 
@@ -452,10 +675,10 @@ impl QueryLut2Bit {
                 let s_nib = byte_idx & 0x0F;
                 let m_nib = (byte_idx >> 4) & 0x0F;
 
-                let c0 = LLOYD_MAX_2BIT_CODEBOOK[((m_nib & 1) << 1) | (s_nib & 1)];
-                let c1 = LLOYD_MAX_2BIT_CODEBOOK[(((m_nib >> 1) & 1) << 1) | ((s_nib >> 1) & 1)];
-                let c2 = LLOYD_MAX_2BIT_CODEBOOK[(((m_nib >> 2) & 1) << 1) | ((s_nib >> 2) & 1)];
-                let c3 = LLOYD_MAX_2BIT_CODEBOOK[(((m_nib >> 3) & 1) << 1) | ((s_nib >> 3) & 1)];
+                let c0 = codebook[((m_nib & 1) << 1) | (s_nib & 1)];
+                let c1 = codebook[(((m_nib >> 1) & 1) << 1) | ((s_nib >> 1) & 1)];
+                let c2 = codebook[(((m_nib >> 2) & 1) << 1) | ((s_nib >> 2) & 1)];
+                let c3 = codebook[(((m_nib >> 3) & 1) << 1) | ((s_nib >> 3) & 1)];
 
                 *entry = q0 * c0 + q1 * c1 + q2 * c2 + q3 * c3;
             }
@@ -783,6 +1006,20 @@ impl TurbovecRecord {
         self.quant2.score_with_lut(lut)
     }
 
+    /// 4-way register-blocked Stage-2 FastScan kernel across 4 `TurbovecRecord` items.
+    #[inline]
+    pub fn score_batch4_with_lut(records: [&Self; 4], lut: &QueryLut2Bit) -> [f32; 4] {
+        PolarQuant2Fixed::score_batch4_with_lut(
+            [
+                &records[0].quant2,
+                &records[1].quant2,
+                &records[2].quant2,
+                &records[3].quant2,
+            ],
+            lut,
+        )
+    }
+
     /// Direct scalar asymmetric dot product against a slice in the same basis as `self`.
     #[inline]
     pub fn asymmetric_dot_product(&self, query: &[f32]) -> f32 {
@@ -924,6 +1161,83 @@ mod tests {
             lut_score,
             rel_err
         );
+    }
+
+    #[test]
+    fn test_beta_lloyd_max_finite_dim_solver_and_asymptotic_convergence() {
+        let b128 = beta_lloyd_max_128();
+        let b_asym = solve_beta_lloyd_max_2bit(100_000);
+
+        // As d -> infinity, exact Beta solver must converge to Gaussian Lloyd-Max constants
+        assert!(
+            (b_asym.threshold - LLOYD_MAX_2BIT_THRESHOLD).abs() < 1e-3,
+            "Asymptotic Beta threshold {} must match Gaussian {}",
+            b_asym.threshold,
+            LLOYD_MAX_2BIT_THRESHOLD
+        );
+        assert!(
+            (b_asym.inner_centroid - LLOYD_MAX_2BIT_INNER).abs() < 1e-3,
+            "Asymptotic Beta inner centroid {} must match Gaussian {}",
+            b_asym.inner_centroid,
+            LLOYD_MAX_2BIT_INNER
+        );
+        assert!(
+            (b_asym.outer_centroid - LLOYD_MAX_2BIT_OUTER).abs() < 1e-3,
+            "Asymptotic Beta outer centroid {} must match Gaussian {}",
+            b_asym.outer_centroid,
+            LLOYD_MAX_2BIT_OUTER
+        );
+
+        // For finite d=128, lighter hyperspherical tails yield tighter outer centroid than Gaussian
+        assert!(b128.outer_centroid < LLOYD_MAX_2BIT_OUTER);
+        assert!(b128.inner_centroid > 0.44 && b128.inner_centroid < 0.47);
+        assert!(((b128.inner_centroid + b128.outer_centroid) * 0.5 - b128.threshold).abs() < 1e-5);
+    }
+
+    #[test]
+    fn test_adaptive_qjl_energy_gate_and_batch4_exactness() {
+        let beta = beta_lloyd_max_128();
+        // Construct a vector already lying exactly on Stage-1 centroids -> residual energy == 0 -> QJL gated off
+        let mut exact_centroid_vec = [0.0f32; 128];
+        for (i, slot) in exact_centroid_vec.iter_mut().enumerate() {
+            *slot = beta.codebook[i % 4];
+        }
+        let gated = PolarQuant2Fixed::from_rotated_slice(&exact_centroid_vec);
+        assert_eq!(
+            gated.qjl_scale, 0.0,
+            "Adaptive QJL energy gate must disable Stage-2 when residual energy < 1.5%"
+        );
+
+        // Verify 4-way register-blocked FastScan matches scalar score_with_lut identically (mixed gated + ungated)
+        let mut vecs = [[0.0f32; 128]; 4];
+        for (k, v) in vecs.iter_mut().enumerate() {
+            for (i, slot) in v.iter_mut().enumerate() {
+                *slot = ((i + k * 7) as f32 * 0.19).sin() + ((i * 3 + k) as f32 * 0.11).cos();
+            }
+        }
+        let r0 = TurbovecRecord::from_quant2(gated);
+        let r1 = TurbovecRecord::from_f32_with_wht(&vecs[1]);
+        let r2 = TurbovecRecord::from_f32_with_wht(&vecs[2]);
+        let r3 = TurbovecRecord::from_f32_with_wht(&vecs[3]);
+        assert!(r1.quant2.qjl_scale > 0.0);
+
+        let lut = QueryLut2Bit::from_f32_query(&vecs[2]);
+        let batch_scores = TurbovecRecord::score_batch4_with_lut([&r0, &r1, &r2, &r3], &lut);
+        let scalar_scores = [
+            r0.score_with_lut(&lut),
+            r1.score_with_lut(&lut),
+            r2.score_with_lut(&lut),
+            r3.score_with_lut(&lut),
+        ];
+        for lane in 0..4 {
+            assert!(
+                (batch_scores[lane] - scalar_scores[lane]).abs() < 1e-5,
+                "Batch-4 lane {} mismatch: batch={} vs scalar={}",
+                lane,
+                batch_scores[lane],
+                scalar_scores[lane]
+            );
+        }
     }
 
     #[test]

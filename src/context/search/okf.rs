@@ -7,8 +7,8 @@ pub mod web_enricher;
 pub mod yaml;
 
 pub use attestation::{
-    attest_computation, attest_concept_doc, bind_parameters, canonicalize_sql,
-    extract_computation_text, AttestationVerdict,
+    attest_code_symbol, attest_computation, attest_concept_doc, bind_parameters, canonicalize_sql,
+    compute_ast_symbol_hash, extract_computation_text, AttestationVerdict,
 };
 pub use index_log::{
     append_okf_log_entry, build_index_text, regenerate_indexes, synthesize_directory_description,
@@ -18,8 +18,8 @@ pub use paths::{
     schema_field_names, validate_segment, write_concept_doc, WriteConceptOutcome,
 };
 pub use viewer::{
-    concept_neighbors, extract_links, generate_visualization, lint_bundle_graph, BrokenWikiLink,
-    VisualizationStats, WikiLintReport,
+    concept_neighbors, extract_links, generate_visualization, lint_bundle_graph,
+    BrokenCodeAttestation, BrokenWikiLink, DriftedConcept, VisualizationStats, WikiLintReport,
 };
 pub use web_enricher::{validate_bundle_conformance, BundleValidationReport, OkfWebCrawlState};
 
@@ -256,6 +256,216 @@ pub fn is_stale(fm: &OkfFrontmatter, now: Option<DateTime<Utc>>) -> bool {
     current >= stale_after_utc
 }
 
+/// Declarative OKF v0.2 base trust-tier ranking multipliers.
+const OKF_TRUST_TIER_BASE: &[(&str, f64)] =
+    &[("human-reviewed", 1.15), ("machine-confirmed", 1.07)];
+
+/// Declarative lifecycle status multipliers.
+const OKF_STATUS_MULTIPLIERS: &[(&str, f64)] = &[("deprecated", 0.60), ("draft", 0.92)];
+
+/// Continuous provenance-aware confidence score derived from OKF v0.2 metadata and live
+/// workspace code-provenance timestamps.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct KnowledgeConfidence {
+    pub trust_tier: String,
+    /// Continuous ranking multiplier in `[0.25, 1.35]`.
+    pub multiplier: f64,
+    pub stale: bool,
+    pub deprecated: bool,
+    /// Repo-relative source paths (or declared sources) modified strictly after the document's
+    /// latest verification/generation timestamp.
+    pub drifted_sources: Vec<String>,
+    /// Compact provenance telemetry badge (e.g., `"OKF:human-reviewed"`, `"OKF:unverified:drifted(1)"`).
+    pub badge: String,
+}
+
+#[inline]
+fn parse_okf_rfc3339(raw: &str) -> Option<DateTime<Utc>> {
+    let trimmed = raw.trim();
+    if !trimmed.contains('T') {
+        return None;
+    }
+    DateTime::parse_from_rfc3339(trimmed)
+        .ok()
+        .map(|dt| dt.with_timezone(&Utc))
+}
+
+/// Resolves an OKF resource string (`"src/lib.rs"`, `"repo://src/lib.rs#foo"`, `"file://src/lib.rs:42"`)
+/// into a safe workspace-relative path, returning `None` for external URLs or path traversal escapes.
+pub(crate) fn resolve_repo_source_path(resource: &str) -> Option<String> {
+    let trimmed = resource.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    let stripped = if let Some(rest) = trimmed.strip_prefix("repo://") {
+        rest
+    } else if let Some(rest) = trimmed.strip_prefix("file://") {
+        rest
+    } else if trimmed.contains("://") {
+        return None;
+    } else {
+        trimmed
+    };
+
+    // Strip optional `#symbol` anchor and trailing `:line` suffix
+    let without_frag = stripped.split('#').next().unwrap_or(stripped);
+    let without_line = match without_frag.rsplit_once(':') {
+        Some((head, tail)) if !tail.is_empty() && tail.chars().all(|c| c.is_ascii_digit()) => head,
+        _ => without_frag,
+    };
+
+    let clean = without_line
+        .trim_start_matches("./")
+        .trim_start_matches('/')
+        .replace('\\', "/");
+    if clean.is_empty() || clean.split('/').any(|seg| seg == "..") {
+        return None;
+    }
+    Some(clean)
+}
+
+/// Extracts the latest verification timestamp (falling back to `generated.at`) for a concept document.
+fn document_attestation_timestamp(fm: &OkfFrontmatter) -> Option<DateTime<Utc>> {
+    let latest_verified = normalize_verified(fm)
+        .iter()
+        .filter_map(|v| parse_okf_rfc3339(&v.at))
+        .max();
+    latest_verified.or_else(|| fm.generated.as_ref().and_then(|g| parse_okf_rfc3339(&g.at)))
+}
+
+/// Computes continuous provenance-graph trust confidence for an OKF v0.2 document:
+/// - Trust tier (`human-reviewed`, `machine-confirmed`, `unverified`)
+/// - Logarithmic source authority boost (`1 + 0.012 * ln(1 + total_usage)`, capped at `1.12`)
+/// - Continuous exponential `stale_after` half-life decay (90-day half-life from `0.78` toward `0.45`)
+/// - Transitive code-provenance drift penalty when cited repo files have disk `mtime` (or declared
+///   `sources[].last_modified`) strictly newer than the doc's verification/generation timestamp
+/// - Lifecycle status scaling (`deprecated`, `draft`, `stable`)
+pub fn compute_knowledge_confidence(
+    fm: &OkfFrontmatter,
+    workspace_root: Option<&Path>,
+    now: Option<DateTime<Utc>>,
+) -> KnowledgeConfidence {
+    let current = now.unwrap_or_else(Utc::now);
+    let tier = trust_tier(fm);
+    let base = OKF_TRUST_TIER_BASE
+        .iter()
+        .find_map(|&(k, v)| (k == tier).then_some(v))
+        .unwrap_or(1.0);
+
+    // 1. Logarithmic source authority weight from `sources[].usage_count`
+    let total_usage: u64 = fm
+        .sources
+        .iter()
+        .filter_map(|s| s.usage_count)
+        .fold(0u64, u64::saturating_add);
+    let usage_boost = if total_usage > 0 {
+        (1.0 + 0.012 * ((1 + total_usage) as f64).ln()).min(1.12)
+    } else {
+        1.0
+    };
+
+    // 2. Continuous exponential decay after `stale_after`
+    let stale_after_dt = fm.stale_after.as_deref().and_then(parse_okf_rfc3339);
+    let stale = stale_after_dt.is_some_and(|dt| current >= dt);
+    let stale_factor = match stale_after_dt {
+        Some(dt) if current >= dt => {
+            let overdue_days = (current - dt).num_seconds().max(0) as f64 / 86_400.0;
+            0.45 + 0.33 * (-std::f64::consts::LN_2 * overdue_days / 90.0).exp()
+        }
+        _ => 1.0,
+    };
+
+    // 3. Transitive code-provenance drift detection against workspace files and source timestamps
+    let mut drifted_sources = Vec::new();
+    if let Some(doc_at) = document_attestation_timestamp(fm) {
+        let skew_grace = chrono::Duration::seconds(2);
+        let mut seen = std::collections::BTreeSet::new();
+
+        let mut check_resource = |resource: &str, declared_mod: Option<&str>| {
+            let mut is_drifted = false;
+            if let Some(mod_ts) = declared_mod.and_then(parse_okf_rfc3339) {
+                if mod_ts > doc_at + skew_grace {
+                    is_drifted = true;
+                }
+            }
+            if !is_drifted {
+                if let (Some(root), Some(rel)) =
+                    (workspace_root, resolve_repo_source_path(resource))
+                {
+                    let abs = root.join(&rel);
+                    if abs.is_file() {
+                        if let Ok(mtime) = fs::metadata(&abs).and_then(|m| m.modified()) {
+                            let file_dt: DateTime<Utc> = mtime.into();
+                            if file_dt > doc_at + skew_grace {
+                                if seen.insert(rel.clone()) {
+                                    drifted_sources.push(rel);
+                                }
+                                return;
+                            }
+                        }
+                    }
+                }
+            }
+            if is_drifted {
+                let label =
+                    resolve_repo_source_path(resource).unwrap_or_else(|| resource.to_string());
+                if seen.insert(label.clone()) {
+                    drifted_sources.push(label);
+                }
+            }
+        };
+
+        for src in &fm.sources {
+            check_resource(&src.resource, src.last_modified.as_deref());
+        }
+        if let Some(ref res) = fm.resource {
+            check_resource(res, None);
+        }
+    }
+
+    let drift_factor = if drifted_sources.is_empty() {
+        1.0
+    } else {
+        0.55 + 0.45 * (-0.45 * drifted_sources.len() as f64).exp()
+    };
+
+    // 4. Lifecycle status scaling
+    let status_str = fm.status.as_deref().unwrap_or("stable");
+    let deprecated = status_str == "deprecated";
+    let status_factor = OKF_STATUS_MULTIPLIERS
+        .iter()
+        .find_map(|&(k, v)| (k == status_str).then_some(v))
+        .unwrap_or(1.0);
+
+    let multiplier =
+        (base * usage_boost * stale_factor * drift_factor * status_factor).clamp(0.25, 1.35);
+
+    let mut flags = Vec::new();
+    if stale {
+        flags.push("stale".to_string());
+    }
+    if !drifted_sources.is_empty() {
+        flags.push(format!("drifted({})", drifted_sources.len()));
+    }
+    if deprecated {
+        flags.push("deprecated".to_string());
+    }
+    let badge = if flags.is_empty() {
+        format!("OKF:{}", tier)
+    } else {
+        format!("OKF:{}:{}", tier, flags.join("+"))
+    };
+
+    KnowledgeConfidence {
+        trust_tier: tier.to_string(),
+        multiplier,
+        stale,
+        deprecated,
+        drifted_sources,
+        badge,
+    }
+}
+
 /// Parser and serializer for OKF v0.2 documents
 pub struct OkfDocument;
 
@@ -472,6 +682,57 @@ Recognized revenue per the recognition policy.[^rev-policy]
         let after = Utc.with_ymd_and_hms(2026, 10, 1, 0, 0, 0).unwrap();
         assert!(!is_stale(&fm, Some(before)));
         assert!(is_stale(&fm, Some(after)));
+    }
+
+    #[test]
+    fn test_compute_knowledge_confidence_usage_decay_and_code_provenance_drift() {
+        let dir = tempdir().unwrap();
+        let ws = dir.path();
+        fs::create_dir_all(ws.join("src")).unwrap();
+        fs::write(ws.join("src/engine.rs"), "pub fn run() -> usize { 42 }\n").unwrap();
+
+        // Document verified in 2020 referencing live file modified "now" -> transitive code drift!
+        let fm = OkfFrontmatter {
+            concept_type: "Architecture".to_string(),
+            title: Some("Engine Architecture".to_string()),
+            verified_events: vec![OkfVerification {
+                by: "human:alice".to_string(),
+                at: "2020-01-01T00:00:00Z".to_string(),
+            }],
+            stale_after: Some("2025-01-01T00:00:00Z".to_string()),
+            sources: vec![OkfSource {
+                id: Some("eng".to_string()),
+                resource: "repo://src/engine.rs#run".to_string(),
+                usage_count: Some(500),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+
+        let before_stale = Utc.with_ymd_and_hms(2024, 6, 1, 0, 0, 0).unwrap();
+        let fresh_conf = compute_knowledge_confidence(&fm, None, Some(before_stale));
+        assert!(!fresh_conf.stale);
+        assert!(fresh_conf.drifted_sources.is_empty());
+        assert!(
+            fresh_conf.multiplier > 1.15,
+            "Verified doc with usage_count=500 should exceed base 1.15: {}",
+            fresh_conf.multiplier
+        );
+
+        // With workspace_root provided, live file mtime > 2020 triggers transitive code-provenance drift
+        let drifted_conf = compute_knowledge_confidence(&fm, Some(ws), Some(before_stale));
+        assert_eq!(
+            drifted_conf.drifted_sources,
+            vec!["src/engine.rs".to_string()]
+        );
+        assert!(drifted_conf.badge.contains("drifted(1)"));
+        assert!(drifted_conf.multiplier < fresh_conf.multiplier);
+
+        // Past stale_after applies continuous exponential decay on top of drift
+        let long_after = Utc.with_ymd_and_hms(2026, 6, 1, 0, 0, 0).unwrap();
+        let decayed_conf = compute_knowledge_confidence(&fm, Some(ws), Some(long_after));
+        assert!(decayed_conf.stale);
+        assert!(decayed_conf.multiplier < drifted_conf.multiplier);
     }
 
     #[test]

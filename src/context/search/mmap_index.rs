@@ -44,15 +44,18 @@ pub struct ChunkMetadata {
     pub content: String,
 }
 
-/// Zero-copy memory-mapped Two-Stage TurboQuant (`PolarQuant + QJL`) vector index (`FORMAT_VERSION = 3`).
+/// Zero-copy memory-mapped Two-Stage TurboQuant (`PolarQuant + QJL`) vector index (`FORMAT_VERSION = 3`)
+/// with a zero-rewrite in-memory LSM delta overlay.
 ///
 /// Maps contiguous 56-byte `TurbovecRecord` bit-planes directly into virtual memory (`< 1ms` open),
 /// routes large workspaces via Coarse Binary IVF (`BinaryVector128` $K$-Means clusters), supports
-/// $O(1)$ persisted `.tomb` tombstone masking for incremental deletes without rewriting `.bin`, and
-/// executes bounded-heap Stage-1 Hamming `POPCNT` screening + Stage-2 `QueryLut2Bit` L1 FastScan.
+/// $O(1)$ persisted `.tomb` tombstone masking + in-memory LSM delta append for incremental edits
+/// without rewriting `.bin` until compaction, and executes bounded-heap Stage-1 Hamming `POPCNT`
+/// screening + 4-way register-blocked Stage-2 `QueryLut2Bit` L1 FastScan.
+#[derive(Clone)]
 pub struct MmapTurbovecIndex {
-    mmap: Option<memmap2::Mmap>,
-    data_buffer: Option<Vec<u8>>,
+    mmap: Option<std::sync::Arc<memmap2::Mmap>>,
+    data_buffer: Option<std::sync::Arc<Vec<u8>>>,
     record_count: usize,
     records_offset: usize,
     metadata_offset: usize,
@@ -61,6 +64,11 @@ pub struct MmapTurbovecIndex {
     cluster_count: usize,
     tombstones: Vec<u64>,
     deleted_count: usize,
+    /// In-memory LSM delta overlay storing newly appended records at virtual indices `record_count..`.
+    delta_records: Vec<TurbovecRecord>,
+    delta_metadata: Vec<ChunkMetadata>,
+    delta_tombstones: Vec<bool>,
+    delta_deleted_count: usize,
 }
 
 impl MmapTurbovecIndex {
@@ -88,12 +96,12 @@ impl MmapTurbovecIndex {
 
         // Attempt memory mapping with safe fallback to read buffer
         let (mmap, data_buffer) = match unsafe { memmap2::Mmap::map(&file) } {
-            Ok(m) => (Some(m), None),
+            Ok(m) => (Some(std::sync::Arc::new(m)), None),
             Err(_) => {
                 let bytes = fs::read(path).map_err(|e| {
                     ContextError::VectorIndex(format!("Failed to read fallback index bytes: {}", e))
                 })?;
-                (None, Some(bytes))
+                (None, Some(std::sync::Arc::new(bytes)))
             }
         };
 
@@ -210,6 +218,10 @@ impl MmapTurbovecIndex {
             cluster_count,
             tombstones,
             deleted_count,
+            delta_records: Vec::new(),
+            delta_metadata: Vec::new(),
+            delta_tombstones: Vec::new(),
+            delta_deleted_count: 0,
         })
     }
 
@@ -297,22 +309,70 @@ impl MmapTurbovecIndex {
         Ok(())
     }
 
-    /// Total number of physical vector slots in this index.
+    /// Total number of physical vector slots in the memory-mapped base segment.
     #[inline]
     pub fn record_count(&self) -> usize {
         self.record_count
     }
 
-    /// Number of soft-deleted slots currently masked by tombstones.
+    /// Total number of addressable virtual slots (`base + LSM delta overlay`).
     #[inline]
-    pub fn deleted_count(&self) -> usize {
-        self.deleted_count
+    pub fn total_slot_count(&self) -> usize {
+        self.record_count + self.delta_records.len()
     }
 
-    /// Number of live (non-tombstoned) vector records in this index.
+    /// Number of live (non-tombstoned) records currently in the in-memory LSM delta overlay.
+    #[inline]
+    pub fn delta_record_count(&self) -> usize {
+        self.delta_records
+            .len()
+            .saturating_sub(self.delta_deleted_count)
+    }
+
+    /// Number of soft-deleted slots currently masked by tombstones (base + delta).
+    #[inline]
+    pub fn deleted_count(&self) -> usize {
+        self.deleted_count + self.delta_deleted_count
+    }
+
+    /// Number of live (non-tombstoned) vector records in this index (base + delta overlay).
     #[inline]
     pub fn active_record_count(&self) -> usize {
-        self.record_count.saturating_sub(self.deleted_count)
+        self.record_count.saturating_sub(self.deleted_count) + self.delta_record_count()
+    }
+
+    /// Appends new vector records and chunk metadata to the in-memory LSM delta overlay in $O(|\Delta|)$
+    /// without rewriting the underlying `.bin` memory map.
+    pub fn append_delta_records(
+        &mut self,
+        records: Vec<TurbovecRecord>,
+        metadata: Vec<ChunkMetadata>,
+    ) -> usize {
+        let count = records.len().min(metadata.len());
+        self.delta_records.extend(records.into_iter().take(count));
+        self.delta_metadata.extend(metadata.into_iter().take(count));
+        self.delta_tombstones
+            .resize(self.delta_records.len(), false);
+        count
+    }
+
+    /// Returns `true` when tombstone fragmentation ($> 25\%$ of base slots deleted) or LSM delta
+    /// overlay growth ($> 256$ delta slots) warrants compacting into a fresh `.bin` segment.
+    #[inline]
+    pub fn needs_compaction(&self) -> bool {
+        (self.record_count > 0 && self.deleted_count.saturating_mul(4) > self.record_count)
+            || self.delta_records.len() > 256
+    }
+
+    /// Collects the set of unique file paths currently served from live LSM delta overlay entries.
+    pub fn delta_file_paths(&self) -> std::collections::HashSet<&str> {
+        let mut files = std::collections::HashSet::new();
+        for (i, meta) in self.delta_metadata.iter().enumerate() {
+            if !self.delta_tombstones.get(i).copied().unwrap_or(true) {
+                files.insert(meta.file_path.as_str());
+            }
+        }
+        files
     }
 
     /// Number of Coarse Binary IVF clusters (`0` when flat scan is used for small indices).
@@ -321,26 +381,34 @@ impl MmapTurbovecIndex {
         self.cluster_count
     }
 
-    /// Marks `index` as soft-deleted in $O(1)$ without mutating the underlying memory map.
+    /// Marks `index` (base mmap or LSM delta overlay) as soft-deleted in $O(1)$.
     #[inline]
     pub fn mark_deleted(&mut self, index: usize) -> bool {
-        if index >= self.record_count {
+        if index < self.record_count {
+            let word = index / 64;
+            let mask = 1u64 << (index % 64);
+            if let Some(slot) = self.tombstones.get_mut(word) {
+                if (*slot & mask) == 0 {
+                    *slot |= mask;
+                    self.deleted_count += 1;
+                    return true;
+                }
+            }
             return false;
         }
-        let word = index / 64;
-        let mask = 1u64 << (index % 64);
-        if let Some(slot) = self.tombstones.get_mut(word) {
-            if (*slot & mask) == 0 {
-                *slot |= mask;
-                self.deleted_count += 1;
+        let delta_idx = index - self.record_count;
+        if let Some(slot) = self.delta_tombstones.get_mut(delta_idx) {
+            if !*slot {
+                *slot = true;
+                self.delta_deleted_count += 1;
                 return true;
             }
         }
         false
     }
 
-    /// Zero-allocation file-level soft-delete: scans live metadata `file_path` slices directly in
-    /// the memory map and tombstones every slot where `should_delete(file_path)` returns `true`.
+    /// Zero-allocation file-level soft-delete across both the memory-mapped base segment and
+    /// the in-memory LSM delta overlay, tombstoning every slot where `should_delete(file_path)` is `true`.
     pub fn mark_deleted_where_file<F>(&mut self, should_delete: F) -> usize
     where
         F: Fn(&str) -> bool,
@@ -355,12 +423,29 @@ impl MmapTurbovecIndex {
                 newly_deleted += 1;
             }
         }
+        for delta_idx in 0..self.delta_metadata.len() {
+            if self
+                .delta_tombstones
+                .get(delta_idx)
+                .copied()
+                .unwrap_or(true)
+            {
+                continue;
+            }
+            let should_mark = should_delete(&self.delta_metadata[delta_idx].file_path);
+            if should_mark && self.mark_deleted(self.record_count + delta_idx) {
+                newly_deleted += 1;
+            }
+        }
         newly_deleted
     }
 
     fn peek_file_path(&self, index: usize) -> Option<&str> {
         if index >= self.record_count {
-            return None;
+            return self
+                .delta_metadata
+                .get(index - self.record_count)
+                .map(|m| m.file_path.as_str());
         }
         let meta_entry_offset = self.metadata_offset + index * METADATA_ENTRY_SIZE;
         let slice = self.slice();
@@ -372,52 +457,63 @@ impl MmapTurbovecIndex {
         std::str::from_utf8(pool.get(fp_offset..end)?).ok()
     }
 
-    /// Returns `true` if `index` has been soft-deleted via `mark_deleted`.
+    /// Returns `true` if `index` (base or LSM delta overlay) has been soft-deleted.
     #[inline]
     pub fn is_deleted(&self, index: usize) -> bool {
-        if index >= self.record_count {
-            return true;
+        if index < self.record_count {
+            let word = index / 64;
+            let mask = 1u64 << (index % 64);
+            return self
+                .tombstones
+                .get(word)
+                .is_some_and(|&bits| (bits & mask) != 0);
         }
-        let word = index / 64;
-        let mask = 1u64 << (index % 64);
-        self.tombstones
-            .get(word)
-            .is_some_and(|&bits| (bits & mask) != 0)
+        self.delta_tombstones
+            .get(index - self.record_count)
+            .copied()
+            .unwrap_or(true)
     }
 
     fn slice(&self) -> &[u8] {
         if let Some(ref m) = self.mmap {
             &m[..]
+        } else if let Some(ref b) = self.data_buffer {
+            &b[..]
         } else {
-            self.data_buffer.as_deref().unwrap_or(&[])
+            &[]
         }
     }
 
-    /// Reads only the 16-byte `sign_bits` (`BinaryVector128`) prefix of a 56-byte record for Stage-1 Hamming screening.
+    /// Reads only the 16-byte `sign_bits` (`BinaryVector128`) prefix of a record (base or delta) for Stage-1 Hamming screening.
     #[inline]
     pub fn get_binary_vector(&self, index: usize) -> Option<BinaryVector128> {
-        if index >= self.record_count {
-            return None;
+        if index < self.record_count {
+            let offset = self.records_offset + index * RECORD_SIZE;
+            let bytes = self.slice().get(offset..offset + 16)?;
+            return Some(BinaryVector128 {
+                bits: [
+                    u64::from_le_bytes(bytes[0..8].try_into().ok()?),
+                    u64::from_le_bytes(bytes[8..16].try_into().ok()?),
+                ],
+            });
         }
-        let offset = self.records_offset + index * RECORD_SIZE;
-        let bytes = self.slice().get(offset..offset + 16)?;
-        Some(BinaryVector128 {
-            bits: [
-                u64::from_le_bytes(bytes[0..8].try_into().ok()?),
-                u64::from_le_bytes(bytes[8..16].try_into().ok()?),
-            ],
-        })
+        self.delta_records
+            .get(index - self.record_count)
+            .map(TurbovecRecord::binary)
     }
 
-    /// Retrieves a single 56-byte Two-Stage `TurbovecRecord` from the memory-mapped array.
+    /// Retrieves a single 56-byte Two-Stage `TurbovecRecord` from the memory-mapped base or LSM delta overlay.
     #[inline]
     pub fn get_record(&self, index: usize) -> Option<TurbovecRecord> {
-        if index >= self.record_count || self.is_deleted(index) {
+        if self.is_deleted(index) {
             return None;
         }
-        let offset = self.records_offset + index * RECORD_SIZE;
-        let rec_slice = self.slice().get(offset..offset + RECORD_SIZE)?;
-        TurbovecRecord::from_bytes(rec_slice)
+        if index < self.record_count {
+            let offset = self.records_offset + index * RECORD_SIZE;
+            let rec_slice = self.slice().get(offset..offset + RECORD_SIZE)?;
+            return TurbovecRecord::from_bytes(rec_slice);
+        }
+        self.delta_records.get(index - self.record_count).copied()
     }
 
     fn consider_candidate(
@@ -460,7 +556,7 @@ impl MmapTurbovecIndex {
         // Max-heap ordered by `(hamming_distance, index)` so `peek()` is the worst candidate in the top-M pool.
         let mut top_candidates: BinaryHeap<(u32, usize)> =
             BinaryHeap::with_capacity(candidate_pool_size + 1);
-        let has_tombstones = self.deleted_count > 0;
+        let has_tombstones = self.deleted_count > 0 || self.delta_deleted_count > 0;
 
         let used_ivf = if self.cluster_count > 0 && self.ivf_offset > 0 {
             self.collect_ivf_candidates(
@@ -468,7 +564,7 @@ impl MmapTurbovecIndex {
                 candidate_pool_size,
                 has_tombstones,
                 &mut top_candidates,
-            ) && top_candidates.len() >= k.min(live_count)
+            ) && (top_candidates.len() + self.delta_record_count()) >= k.min(live_count)
         } else {
             false
         };
@@ -486,13 +582,39 @@ impl MmapTurbovecIndex {
             }
         }
 
-        // Stage 2: Two-Stage (PolarQuant + QJL) LUT FastScan reranking on bounded candidate pool
-        let mut scored: Vec<(usize, f32)> = Vec::with_capacity(top_candidates.len());
+        // Always scan live in-memory LSM delta overlay slots so freshly edited files participate immediately
+        for delta_idx in 0..self.delta_records.len() {
+            self.consider_candidate(
+                self.record_count + delta_idx,
+                &lut.query_binary,
+                candidate_pool_size,
+                has_tombstones,
+                &mut top_candidates,
+            );
+        }
+
+        // Stage 2: 4-way register-blocked Two-Stage (PolarQuant + QJL) LUT FastScan reranking
+        let mut candidate_recs: Vec<(usize, TurbovecRecord)> =
+            Vec::with_capacity(top_candidates.len());
         for (_, idx) in top_candidates {
             if let Some(rec) = self.get_record(idx) {
-                let score = rec.score_with_lut(&lut);
-                scored.push((idx, score));
+                candidate_recs.push((idx, rec));
             }
+        }
+
+        let mut scored: Vec<(usize, f32)> = Vec::with_capacity(candidate_recs.len());
+        let (chunks, remainder) = candidate_recs.as_chunks::<4>();
+        for chunk in chunks {
+            let scores = TurbovecRecord::score_batch4_with_lut(
+                [&chunk[0].1, &chunk[1].1, &chunk[2].1, &chunk[3].1],
+                &lut,
+            );
+            for lane in 0..4 {
+                scored.push((chunk[lane].0, scores[lane]));
+            }
+        }
+        for &(idx, ref rec) in remainder {
+            scored.push((idx, rec.score_with_lut(&lut)));
         }
 
         scored.sort_by(|a, b| b.1.total_cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
@@ -566,10 +688,13 @@ impl MmapTurbovecIndex {
         true
     }
 
-    /// Loads chunk metadata directly from the memory map on demand (returns `None` if tombstoned).
+    /// Loads chunk metadata directly from the memory map or LSM delta overlay on demand (returns `None` if tombstoned).
     pub fn get_metadata(&self, index: usize) -> Option<ChunkMetadata> {
-        if index >= self.record_count || self.is_deleted(index) {
+        if self.is_deleted(index) {
             return None;
+        }
+        if index >= self.record_count {
+            return self.delta_metadata.get(index - self.record_count).cloned();
         }
 
         let meta_entry_offset = self.metadata_offset + index * METADATA_ENTRY_SIZE;
@@ -973,6 +1098,92 @@ mod tests {
         assert_eq!(
             results[0].0, 217,
             "Coarse Binary IVF must route query to exact target record 217"
+        );
+
+        let _ = fs::remove_file(&index_path);
+        let _ = fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn test_mmap_turbovec_lsm_delta_overlay_and_compaction_trigger() {
+        let temp_dir = std::env::temp_dir().join(format!(
+            "turbovec_v3_lsm_{}_{}",
+            std::process::id(),
+            uuid::Uuid::new_v4().simple()
+        ));
+        let _ = fs::create_dir_all(&temp_dir);
+        let index_path = temp_dir.join("lsm_index.bin");
+
+        let mut records = Vec::new();
+        let mut metadata = Vec::new();
+        for i in 0..40 {
+            let content = format!("pub fn base_handler_{}() {{ /* base_{} */ }}", i, i);
+            let vec = crate::context::search::semantic::SemanticIndex::embed(&content);
+            records.push(TurbovecRecord::from_f32_with_wht(&vec));
+            metadata.push(ChunkMetadata {
+                file_path: format!("src/base_{}.rs", i),
+                start_line: 1,
+                end_line: 10,
+                symbol_name: Some(format!("base_handler_{}", i)),
+                symbol_kind: Some("function".to_string()),
+                content,
+            });
+        }
+
+        MmapTurbovecIndex::create(&index_path, &records, &metadata).expect("create failed");
+        let mut index = MmapTurbovecIndex::open(&index_path).expect("open failed");
+        assert!(!index.needs_compaction());
+
+        // Tombstone old file and append new delta record without rewriting `.bin`
+        let del = index.mark_deleted_where_file(|fp| fp == "src/base_7.rs");
+        assert_eq!(del, 1);
+
+        let updated_content =
+            "pub fn quantum_flux_capacitor_handler() { /* freshly edited overlay symbol */ }"
+                .to_string();
+        let updated_vec = crate::context::search::semantic::SemanticIndex::embed(&updated_content);
+        let appended = index.append_delta_records(
+            vec![TurbovecRecord::from_f32_with_wht(&updated_vec)],
+            vec![ChunkMetadata {
+                file_path: "src/base_7.rs".to_string(),
+                start_line: 1,
+                end_line: 12,
+                symbol_name: Some("quantum_flux_capacitor_handler".to_string()),
+                symbol_kind: Some("function".to_string()),
+                content: updated_content,
+            }],
+        );
+        assert_eq!(appended, 1);
+        assert_eq!(index.active_record_count(), 40);
+        assert_eq!(index.delta_record_count(), 1);
+        assert!(!index.needs_compaction());
+
+        // Cheap O(1) Arc-backed clone preserves overlay visibility
+        let cloned = index.clone();
+        let q = crate::context::search::semantic::SemanticIndex::embed(
+            "quantum_flux_capacitor_handler freshly edited overlay",
+        );
+        let hits = cloned.search(&q, 3);
+        assert!(!hits.is_empty());
+        assert_eq!(
+            hits[0].0, 40,
+            "Top hit must resolve to LSM delta virtual slot 40"
+        );
+        let meta = cloned
+            .get_metadata(40)
+            .expect("delta metadata must resolve");
+        assert_eq!(
+            meta.symbol_name.as_deref(),
+            Some("quantum_flux_capacitor_handler")
+        );
+
+        // Verify tombstone fragmentation compaction threshold (> 25% deleted)
+        for i in 0..12 {
+            index.mark_deleted(i);
+        }
+        assert!(
+            index.needs_compaction(),
+            "Deleting >25% of base slots must trigger compaction"
         );
 
         let _ = fs::remove_file(&index_path);

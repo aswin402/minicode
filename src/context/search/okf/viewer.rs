@@ -1,5 +1,6 @@
+use super::attestation::{attest_code_symbol, find_workspace_root_for_bundle};
 use super::viewer_assets::{VIZ_CSS, VIZ_HTML_TEMPLATE, VIZ_JS};
-use super::{is_stale, normalize_verified, trust_tier, OkfDocument};
+use super::{compute_knowledge_confidence, is_stale, normalize_verified, trust_tier, OkfDocument};
 use crate::error::{ContextError, Result};
 use pulldown_cmark::{Event, Options, Parser, Tag, TagEnd};
 use serde::{Deserialize, Serialize};
@@ -24,6 +25,20 @@ pub struct BrokenWikiLink {
     pub target_concept: String,
 }
 
+/// Concept whose cited repo code sources were modified after its verification/generation timestamp.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DriftedConcept {
+    pub concept_id: String,
+    pub drifted_sources: Vec<String>,
+}
+
+/// Concept whose declared Tree-sitter `ast_hash` no longer matches the live source symbol.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BrokenCodeAttestation {
+    pub concept_id: String,
+    pub reason: String,
+}
+
 /// Bidirectional OpenKB / OKF v0.2 knowledge graph health report (`okf_bundle(action="lint")`).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WikiLintReport {
@@ -33,6 +48,10 @@ pub struct WikiLintReport {
     pub orphaned_concepts: Vec<String>,
     pub stale_concepts: Vec<String>,
     pub deprecated_linked_concepts: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub drifted_concepts: Vec<DriftedConcept>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub broken_code_attestations: Vec<BrokenCodeAttestation>,
     pub healthy: bool,
 }
 
@@ -52,6 +71,8 @@ struct ViewerConcept {
     sources: Value,
     trust_tier: String,
     stale: bool,
+    drifted_sources: Vec<String>,
+    code_attestation_error: Option<String>,
     links_to: Vec<String>,
 }
 
@@ -155,6 +176,7 @@ fn walk_concepts(bundle_root: &Path) -> Vec<ViewerConcept> {
     let mut md_files = Vec::new();
     collect_md_files(bundle_root, &mut md_files);
     md_files.sort();
+    let workspace_root = find_workspace_root_for_bundle(bundle_root);
 
     let mut concepts = Vec::new();
     for md_path in md_files {
@@ -180,6 +202,13 @@ fn walk_concepts(bundle_root: &Path) -> Vec<ViewerConcept> {
         let doc_dir = md_path.parent().unwrap_or(bundle_root);
         let links_to = extract_links(body, doc_dir, bundle_root);
         let verified_list = normalize_verified(&fm);
+        let confidence = compute_knowledge_confidence(&fm, Some(&workspace_root), None);
+        let code_attestation_error = attest_code_symbol(&workspace_root, &fm).and_then(|v| {
+            (!v.ok).then(|| {
+                v.reason
+                    .unwrap_or_else(|| "AST code attestation failed".to_string())
+            })
+        });
 
         concepts.push(ViewerConcept {
             id: concept_id.clone(),
@@ -200,6 +229,8 @@ fn walk_concepts(bundle_root: &Path) -> Vec<ViewerConcept> {
             sources: serde_json::to_value(&fm.sources).unwrap_or(json!([])),
             trust_tier: trust_tier(&fm).to_string(),
             stale: is_stale(&fm, None),
+            drifted_sources: confidence.drifted_sources,
+            code_attestation_error,
             links_to,
         });
     }
@@ -409,12 +440,26 @@ pub fn lint_bundle_graph(bundle_root: &Path) -> Result<WikiLintReport> {
     let mut broken_links = Vec::new();
     let mut stale_concepts = Vec::new();
     let mut deprecated_linked_set = BTreeSet::new();
+    let mut drifted_concepts = Vec::new();
+    let mut broken_code_attestations = Vec::new();
     let mut connected_ids = BTreeSet::new();
     let mut seen_edges = BTreeSet::new();
 
     for c in &concepts {
         if c.stale {
             stale_concepts.push(c.id.clone());
+        }
+        if !c.drifted_sources.is_empty() {
+            drifted_concepts.push(DriftedConcept {
+                concept_id: c.id.clone(),
+                drifted_sources: c.drifted_sources.clone(),
+            });
+        }
+        if let Some(ref reason) = c.code_attestation_error {
+            broken_code_attestations.push(BrokenCodeAttestation {
+                concept_id: c.id.clone(),
+                reason: reason.clone(),
+            });
         }
         for target in &c.links_to {
             if target == &c.id {
@@ -449,7 +494,9 @@ pub fn lint_bundle_graph(bundle_root: &Path) -> Result<WikiLintReport> {
     let deprecated_linked_concepts: Vec<String> = deprecated_linked_set.into_iter().collect();
     let healthy = broken_links.is_empty()
         && stale_concepts.is_empty()
-        && deprecated_linked_concepts.is_empty();
+        && deprecated_linked_concepts.is_empty()
+        && drifted_concepts.is_empty()
+        && broken_code_attestations.is_empty();
 
     Ok(WikiLintReport {
         total_concepts: concepts.len(),
@@ -458,6 +505,8 @@ pub fn lint_bundle_graph(bundle_root: &Path) -> Result<WikiLintReport> {
         orphaned_concepts,
         stale_concepts,
         deprecated_linked_concepts,
+        drifted_concepts,
+        broken_code_attestations,
         healthy,
     })
 }
@@ -650,6 +699,65 @@ mod tests {
         assert_eq!(
             report.deprecated_linked_concepts,
             vec!["concepts/legacy-vec".to_string()]
+        );
+    }
+
+    #[test]
+    fn test_lint_bundle_graph_detects_code_provenance_drift_and_ast_mismatch() {
+        let dir = tempdir().unwrap();
+        let ws = dir.path();
+        fs::create_dir_all(ws.join(".minicode")).unwrap();
+        fs::create_dir_all(ws.join("src")).unwrap();
+        let bundle = ws.join("docs");
+        fs::create_dir_all(&bundle).unwrap();
+
+        fs::write(
+            ws.join("src/pricing.rs"),
+            "pub fn price_total(x: u64) -> u64 { x * 10 }\n",
+        )
+        .unwrap();
+
+        let mut fm = OkfFrontmatter {
+            concept_type: "Architecture".to_string(),
+            title: Some("Pricing Spec".to_string()),
+            verified_events: vec![crate::context::okf::OkfVerification {
+                by: "human:reviewer".to_string(),
+                at: "2020-01-01T00:00:00Z".to_string(),
+            }],
+            sources: vec![crate::context::okf::OkfSource {
+                resource: "src/pricing.rs#price_total".to_string(),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        fm.extensions
+            .insert("code_ref".to_string(), json!("src/pricing.rs#price_total"));
+        fm.extensions.insert(
+            "ast_hash".to_string(),
+            json!("ast_fnv1a64:0000000000000000"),
+        );
+
+        write_concept_doc(
+            &bundle,
+            "specs/pricing",
+            fm,
+            "# Pricing\nSpec body.\n",
+            false,
+        )
+        .unwrap();
+
+        let report = lint_bundle_graph(&bundle).unwrap();
+        assert!(!report.healthy);
+        assert_eq!(report.drifted_concepts.len(), 1);
+        assert_eq!(report.drifted_concepts[0].concept_id, "specs/pricing");
+        assert_eq!(
+            report.drifted_concepts[0].drifted_sources,
+            vec!["src/pricing.rs".to_string()]
+        );
+        assert_eq!(report.broken_code_attestations.len(), 1);
+        assert_eq!(
+            report.broken_code_attestations[0].concept_id,
+            "specs/pricing"
         );
     }
 }

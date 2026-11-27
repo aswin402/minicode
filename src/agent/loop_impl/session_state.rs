@@ -185,6 +185,8 @@ impl AgentLoop {
         self.config = config;
         self.provider = provider;
         self.kv_watermark_idx = 0;
+        self.prefix_ledger.reset();
+        self.context_chunk_cache.clear_all_prefix_anchors();
         self.last_provider_call_at = None;
         self.compactor.update_model(
             &self.config.provider.model,
@@ -327,11 +329,16 @@ impl AgentLoop {
         );
 
         // 2. CAPC KV-cache break-even 4-tier progressive auto-compaction
+        let prev_wm = self.kv_watermark_idx;
         let metrics = self.compactor.compact_with_kv_watermark(
             &mut self.messages,
             self.current_turn_id,
             &mut self.kv_watermark_idx,
         );
+        if self.kv_watermark_idx < prev_wm {
+            self.context_chunk_cache
+                .invalidate_prefix_anchors_from(self.kv_watermark_idx);
+        }
 
         if let Some(ref m) = metrics {
             self.compactor
@@ -787,6 +794,8 @@ impl AgentLoop {
         self.cleanup_empty_session_file();
         self.messages.clear();
         self.kv_watermark_idx = 0;
+        self.prefix_ledger.reset();
+        self.context_chunk_cache.clear_all_prefix_anchors();
         self.last_provider_call_at = None;
         self.current_turn_id = 0;
         self.cumulative_tokens_used = 0;
@@ -801,6 +810,7 @@ impl AgentLoop {
         self.session_active_mcp_servers.clear();
         self.session_active_tool_names.clear();
         self.session_active_skills.clear();
+        self.session_tool_order.clear();
         self.session_emitted_ui_warehouse_sig = None;
         self.last_human_prompt = None;
         self.cached_static_system_prompt = None;
@@ -957,6 +967,8 @@ impl AgentLoop {
         .ok();
         self.messages.clear();
         self.kv_watermark_idx = 0;
+        self.prefix_ledger.reset();
+        self.context_chunk_cache.clear_all_prefix_anchors();
         self.last_provider_call_at = None;
         self.active_working_set.clear();
 
@@ -1230,6 +1242,8 @@ impl AgentLoop {
         if message_index < self.messages.len() {
             self.messages.truncate(message_index);
             self.kv_watermark_idx = self.kv_watermark_idx.min(self.messages.len());
+            self.context_chunk_cache
+                .invalidate_prefix_anchors_from(self.messages.len());
             tracing::info!(
                 target_turn = target_turn_id,
                 remaining_messages = self.messages.len(),
