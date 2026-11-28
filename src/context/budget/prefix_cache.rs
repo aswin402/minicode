@@ -31,12 +31,6 @@ const DEFAULT_L1_MAX_BYTES: usize = 2 * 1024 * 1024;
 const DEFAULT_L2_MAX_BYTES: usize = 4 * 1024 * 1024;
 /// Maximum number of lines to run full DP Myers/LCS line-diff over before falling back to full block.
 const MAX_DELTA_DIFF_LINES: usize = 1200;
-/// CacheBlend breakeven ratio: only emit a selective delta when the rendered delta payload is
-/// strictly below 35% of the full content size and saves at least 256 bytes.
-const CACHEBLEND_MAX_DELTA_RATIO: f64 = 0.35;
-const CACHEBLEND_MIN_BYTES_SAVED: usize = 256;
-const CACHEBLEND_MIN_LINES_IDENTICAL: usize = 20;
-const CACHEBLEND_MIN_LINES_DELTA: usize = 28;
 
 // ============================================================================
 // 1. Rolling FNV-1a Hashing Helpers
@@ -538,15 +532,15 @@ impl ContextChunkCache {
 
             if is_live_in_prefix {
                 let anchor_idx = prev.prefix_msg_idx;
-                if prev.content_hash == new_hash && new_line_count >= CACHEBLEND_MIN_LINES_IDENTICAL
-                {
+                if prev.content_hash == new_hash {
                     let rendered_ref = format!(
                         "[CacheBlend: `{}` unchanged ({} lines); reuse exact block already in KV prefix at message #{}]",
                         trimmed_key,
                         new_line_count,
                         anchor_idx + 1
                     );
-                    if new_content.len() > rendered_ref.len() + 64 {
+                    // Exact breakeven cost model: emit reference iff payload shrinks by >50% after header overhead.
+                    if rendered_ref.len().saturating_mul(2) < new_content.len() {
                         let bytes_saved = new_content.len() - rendered_ref.len();
                         return BlendDecision::IdenticalPrefixRef {
                             prefix_msg_idx: anchor_idx,
@@ -555,34 +549,30 @@ impl ContextChunkCache {
                             rendered_ref,
                         };
                     }
-                } else if prev.content_hash != new_hash
-                    && new_line_count >= CACHEBLEND_MIN_LINES_DELTA
+                } else if let Some((delta_body, changed_lines)) =
+                    compute_selective_line_delta(&prev.content, new_content)
                 {
-                    if let Some((delta_body, changed_lines)) =
-                        compute_selective_line_delta(&prev.content, new_content)
+                    let delta_header = format!(
+                        "[CacheBlend Selective Delta for `{}` relative to KV-cached base at message #{} ({} changed lines; unchanged lines omitted)]:\n",
+                        trimmed_key,
+                        anchor_idx + 1,
+                        changed_lines,
+                    );
+                    let rendered_delta = format!("{}{}", delta_header, delta_body);
+                    // Exact breakeven cost model: emit selective delta iff serialized delta + header
+                    // is strictly smaller than half the full block and saves more than the header cost itself.
+                    let bytes_saved = new_content.len().saturating_sub(rendered_delta.len());
+                    if rendered_delta.len().saturating_mul(2) < new_content.len()
+                        && bytes_saved > delta_header.len()
                     {
-                        let rendered_delta = format!(
-                            "[CacheBlend Selective Delta for `{}` relative to KV-cached base at message #{} ({} changed lines; unchanged lines omitted)]:\n{}",
-                            trimmed_key,
-                            anchor_idx + 1,
+                        // Keep `prev.content` & `prev.prefix_msg_idx` anchored to the full base
+                        // block in the prefix so subsequent reads also diff cleanly against it.
+                        return BlendDecision::SelectiveDelta {
+                            prefix_msg_idx: anchor_idx,
+                            bytes_saved,
                             changed_lines,
-                            delta_body
-                        );
-                        let ratio = rendered_delta.len() as f64 / new_content.len().max(1) as f64;
-                        if ratio < CACHEBLEND_MAX_DELTA_RATIO
-                            && new_content.len().saturating_sub(rendered_delta.len())
-                                >= CACHEBLEND_MIN_BYTES_SAVED
-                        {
-                            let bytes_saved = new_content.len() - rendered_delta.len();
-                            // Keep `prev.content` & `prev.prefix_msg_idx` anchored to the full base
-                            // block in the prefix so subsequent reads also diff cleanly against it.
-                            return BlendDecision::SelectiveDelta {
-                                prefix_msg_idx: anchor_idx,
-                                bytes_saved,
-                                changed_lines,
-                                rendered_delta,
-                            };
-                        }
+                            rendered_delta,
+                        };
                     }
                 }
             }

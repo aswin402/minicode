@@ -3,30 +3,45 @@ use crate::error::{Result, ToolError};
 use std::sync::OnceLock;
 use std::time::Duration;
 
+fn build_web_client(
+    timeout_secs: u64,
+    connect_secs: u64,
+    force_ipv4: bool,
+) -> Option<reqwest::Client> {
+    let mut builder = reqwest::Client::builder()
+        .connect_timeout(Duration::from_secs(connect_secs))
+        .timeout(Duration::from_secs(timeout_secs))
+        .user_agent(WEB_USER_AGENT);
+    if force_ipv4 {
+        builder = builder.local_address(std::net::IpAddr::V4(std::net::Ipv4Addr::UNSPECIFIED));
+    }
+    builder.build().ok()
+}
+
 fn web_http_client() -> Option<&'static reqwest::Client> {
     static CLIENT: OnceLock<Option<reqwest::Client>> = OnceLock::new();
     CLIENT
-        .get_or_init(|| {
-            reqwest::Client::builder()
-                .timeout(Duration::from_secs(WEB_TIMEOUT_SECS))
-                .user_agent(WEB_USER_AGENT)
-                .build()
-                .ok()
-        })
+        .get_or_init(|| build_web_client(WEB_TIMEOUT_SECS, 8, false))
+        .as_ref()
+}
+
+fn web_http_client_ipv4() -> Option<&'static reqwest::Client> {
+    static CLIENT: OnceLock<Option<reqwest::Client>> = OnceLock::new();
+    CLIENT
+        .get_or_init(|| build_web_client(WEB_TIMEOUT_SECS, 8, true))
         .as_ref()
 }
 
 fn probe_http_client() -> Option<&'static reqwest::Client> {
     static CLIENT: OnceLock<Option<reqwest::Client>> = OnceLock::new();
     CLIENT
-        .get_or_init(|| {
-            reqwest::Client::builder()
-                .timeout(Duration::from_secs(3))
-                .user_agent(WEB_USER_AGENT)
-                .build()
-                .ok()
-        })
+        .get_or_init(|| build_web_client(3, 2, false))
         .as_ref()
+}
+
+fn probe_http_client_ipv4() -> Option<&'static reqwest::Client> {
+    static CLIENT: OnceLock<Option<reqwest::Client>> = OnceLock::new();
+    CLIENT.get_or_init(|| build_web_client(3, 2, true)).as_ref()
 }
 
 enum NegotiatedContent {
@@ -182,13 +197,21 @@ impl SmartMarkdownExtractor {
 
     async fn negotiate_or_fetch(url: &str) -> Option<NegotiatedContent> {
         let client = web_http_client()?;
+        let ipv4_client = web_http_client_ipv4().unwrap_or(client);
 
-        let resp = client
-            .get(url)
-            .header("Accept", "text/markdown, text/plain;q=0.9, text/html;q=0.8")
-            .send()
-            .await
-            .ok()?;
+        let resp = crate::agent::providers::send_request_with_ipv4_fallback(
+            url,
+            client,
+            ipv4_client,
+            |c| {
+                c.get(url).header(
+                    "Accept",
+                    "text/markdown, application/json;q=0.95, text/plain;q=0.9, text/html;q=0.8",
+                )
+            },
+        )
+        .await
+        .ok()?;
 
         if !resp.status().is_success() {
             return None;
@@ -224,7 +247,7 @@ impl SmartMarkdownExtractor {
         }
 
         // Route non-HTML HTTP responses (PDF, DOCX, XLSX, PPTX, EPUB, IPYNB, RSS/Atom, CSV, ZIP)
-        // through the priority-ordered DocumentConverterRegistry before falling back to plain text.
+        // through the priority-ordered DocumentConverterRegistry before falling back to JSON/plain text.
         if let Ok(Some(converted)) =
             crate::context::doc_convert::DocumentConverterRegistry::global().convert_bytes(
                 bounded,
@@ -241,6 +264,23 @@ impl SmartMarkdownExtractor {
                 markdown: converted.markdown,
                 source_label: format!("DocumentConverter ({})", converted.converter_name),
             });
+        }
+
+        // Structured JSON API responses (`application/json`, `application/vnd.github+json`, etc.):
+        // render cleanly as a fenced JSON block in 1 request instead of double-fetching + running htmd.
+        if content_type.contains("application/json") || content_type.contains("+json") {
+            let text = String::from_utf8_lossy(bounded);
+            let trimmed = text.trim();
+            if !trimmed.is_empty() {
+                let rendered = serde_json::from_str::<serde_json::Value>(trimmed)
+                    .ok()
+                    .and_then(|v| serde_json::to_string_pretty(&v).ok())
+                    .unwrap_or_else(|| trimmed.to_string());
+                return Some(NegotiatedContent::Converted {
+                    markdown: format!("```json\n{}\n```", rendered),
+                    source_label: "JSON API Response".to_string(),
+                });
+            }
         }
 
         if content_type.contains("text/plain") && !url.ends_with(".html") {
@@ -267,9 +307,17 @@ impl SmartMarkdownExtractor {
         ];
 
         let client = probe_http_client()?;
+        let ipv4_client = probe_http_client_ipv4().unwrap_or(client);
 
         for candidate in candidate_urls {
-            if let Ok(resp) = client.get(&candidate).send().await {
+            if let Ok(resp) = crate::agent::providers::send_request_with_ipv4_fallback(
+                &candidate,
+                client,
+                ipv4_client,
+                |c| c.get(&candidate),
+            )
+            .await
+            {
                 if resp.status().is_success() {
                     let content_type = resp
                         .headers()
@@ -324,15 +372,20 @@ impl SmartMarkdownExtractor {
         }
     }
 
-    /// Fetches raw HTML body from a URL
+    /// Fetches raw HTML body from a URL with automatic IPv4 fallback on broken IPv6 networks.
     async fn fetch_raw_html(url: &str) -> Result<String> {
         let client = web_http_client()
             .ok_or_else(|| ToolError::CommandExec("Failed to initialize HTTP client".into()))?;
+        let ipv4_client = web_http_client_ipv4().unwrap_or(client);
 
-        let response =
-            client.get(url).send().await.map_err(|e| {
-                ToolError::CommandExec(format!("Failed fetching URL {}: {}", url, e))
-            })?;
+        let response = crate::agent::providers::send_request_with_ipv4_fallback(
+            url,
+            client,
+            ipv4_client,
+            |c| c.get(url),
+        )
+        .await
+        .map_err(|e| ToolError::CommandExec(format!("Failed fetching URL {}: {}", url, e)))?;
 
         let status = response.status();
         if !status.is_success() {

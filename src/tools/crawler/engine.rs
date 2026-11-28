@@ -138,13 +138,56 @@ impl CrawlerEngine {
 
             match fetch_res {
                 Ok(resp) if resp.status().is_success() => {
-                    let text = resp.text().await.unwrap_or_default();
-                    if text.is_empty() {
+                    let content_type = resp
+                        .headers()
+                        .get(reqwest::header::CONTENT_TYPE)
+                        .and_then(|v| v.to_str().ok())
+                        .unwrap_or("")
+                        .to_string();
+                    let raw_bytes = match resp.bytes().await {
+                        Ok(b) if !b.is_empty() => b,
+                        _ => continue,
+                    };
+                    let info = crate::context::doc_convert::StreamInfo::sniff(
+                        &raw_bytes,
+                        Some(&current_url),
+                        (!content_type.is_empty()).then_some(content_type.as_str()),
+                    );
+                    if info.is_visual_image {
+                        total_skipped += 1;
                         continue;
                     }
 
-                    let title = MarkdownDistiller::extract_title(&text);
-                    let md = MarkdownDistiller::distill_to_markdown(&text, &current_url);
+                    let is_html_doc = info.mime_type == "text/html"
+                        || content_type.to_ascii_lowercase().contains("text/html")
+                        || content_type.to_ascii_lowercase().contains("xhtml");
+                    let (title, md, html_for_links) = if is_html_doc {
+                        let text = String::from_utf8_lossy(&raw_bytes).into_owned();
+                        let t = MarkdownDistiller::extract_title(&text);
+                        let m = MarkdownDistiller::distill_to_markdown(&text, &current_url);
+                        (t, m, Some(text))
+                    } else if let Ok(Some(converted)) =
+                        crate::context::doc_convert::DocumentConverterRegistry::global()
+                            .convert_bytes(
+                                &raw_bytes,
+                                Some(&current_url),
+                                (!content_type.is_empty()).then_some(content_type.as_str()),
+                                crate::context::doc_convert::ConversionPolicy::WebOrStream,
+                            )
+                    {
+                        if converted.converter_name == "binary_inspector" {
+                            total_skipped += 1;
+                            continue;
+                        }
+                        let t = converted.title.unwrap_or_else(|| current_url.clone());
+                        (t, converted.markdown, None)
+                    } else if info.is_utf8_text {
+                        let text = String::from_utf8_lossy(&raw_bytes).into_owned();
+                        (current_url.clone(), text, None)
+                    } else {
+                        total_skipped += 1;
+                        continue;
+                    };
 
                     // Check query relevance if filter is provided
                     let is_relevant = match &query_filter {
@@ -175,24 +218,26 @@ impl CrawlerEngine {
                         p_lock.push(page);
                     }
 
-                    // Discover children links if depth limit not reached
+                    // Discover children links from HTML pages if depth limit not reached
                     if depth < config.max_depth {
-                        let links = MarkdownDistiller::extract_links(
-                            &text,
-                            &current_url,
-                            &base_origin_clone,
-                            path_prefix_clone.as_deref(),
-                        );
+                        if let Some(ref text) = html_for_links {
+                            let links = MarkdownDistiller::extract_links(
+                                text,
+                                &current_url,
+                                &base_origin_clone,
+                                path_prefix_clone.as_deref(),
+                            );
 
-                        let mut v_lock = visited_clone.lock().await;
-                        let mut q_lock = queue_clone.lock().await;
+                            let mut v_lock = visited_clone.lock().await;
+                            let mut q_lock = queue_clone.lock().await;
 
-                        for link in links {
-                            if !v_lock.contains(&link)
-                                && crate::tools::web::validate_ssrf(&link).is_ok()
-                            {
-                                v_lock.insert(link.clone());
-                                q_lock.push_back((link, depth + 1));
+                            for link in links {
+                                if !v_lock.contains(&link)
+                                    && crate::tools::web::validate_ssrf(&link).is_ok()
+                                {
+                                    v_lock.insert(link.clone());
+                                    q_lock.push_back((link, depth + 1));
+                                }
                             }
                         }
                     }

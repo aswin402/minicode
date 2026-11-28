@@ -107,6 +107,14 @@ impl RepoMapExtractor {
         }
     }
 
+    /// Single source of truth for file extensions supported by the compiled Tree-sitter AST grammars.
+    #[inline]
+    #[must_use]
+    pub fn supports_extension(ext: &str) -> bool {
+        let lower = ext.trim_start_matches('.').to_ascii_lowercase();
+        crate::constants::SUPPORTED_LANG_EXTENSIONS.contains(&lower.as_str())
+    }
+
     /// Parses in-memory source code and extracts definition symbols using Tree-sitter without redundant disk I/O.
     pub fn extract_symbols_from_str(&self, extension: &str, code: &str) -> Result<Vec<SymbolDef>> {
         let (lang, query_str) = match extension {

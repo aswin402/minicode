@@ -1,5 +1,4 @@
 use crate::constants::{BLOCKED_PREFIXES, REDACTED_PLACEHOLDER, SECRET_PATTERNS};
-use regex::{Regex, RegexSet};
 use std::collections::HashSet;
 use std::sync::OnceLock;
 
@@ -10,23 +9,178 @@ const SECRET_SHANNON_ENTROPY_MIN_BITS: f64 = 4.10;
 /// Minimum candidate value length for entropy-based secret redaction.
 const SECRET_ENTROPY_MIN_LEN: usize = 20;
 
-/// Compiled regex pattern with descriptive labels for both compact and typed redaction modes.
-struct RedactionPattern {
-    regex: Regex,
-    label: &'static str,
+#[derive(Clone, Copy)]
+enum TokenBodyClass {
+    /// `[A-Za-z0-9]`
+    Alnum,
+    /// `[A-Za-z0-9_-]`
+    Base64Url,
+    /// `[A-Za-z0-9_]`
+    Word,
+    /// `[0-9A-Z]`
+    UpperAlnum,
+}
+
+impl TokenBodyClass {
+    #[inline]
+    fn accepts(self, b: u8) -> bool {
+        match self {
+            Self::Alnum => b.is_ascii_alphanumeric(),
+            Self::Base64Url => b.is_ascii_alphanumeric() || b == b'-' || b == b'_',
+            Self::Word => b.is_ascii_alphanumeric() || b == b'_',
+            Self::UpperAlnum => b.is_ascii_uppercase() || b.is_ascii_digit(),
+        }
+    }
+}
+
+/// Declarative specification for prefixed provider credentials (zero regex).
+struct PrefixTokenRule {
+    prefix: &'static str,
+    min_body_len: usize,
+    exact_body_len: Option<usize>,
+    body_class: TokenBodyClass,
     replacement: &'static str,
     typed_replacement: &'static str,
     warning_msg: &'static str,
 }
 
-/// Zero-leak secret redaction engine.
+/// Priority-ordered prefix table (more specific prefixes like `sk-ant-`/`sk-proj-` precede `sk-`).
+const PREFIX_TOKEN_RULES: &[PrefixTokenRule] = &[
+    PrefixTokenRule {
+        prefix: "sk-ant-",
+        min_body_len: 20,
+        exact_body_len: None,
+        body_class: TokenBodyClass::Base64Url,
+        replacement: REDACTED_PLACEHOLDER,
+        typed_replacement: "[REDACTED-ANTHROPIC-KEY]",
+        warning_msg: "Anthropic API Key detected",
+    },
+    PrefixTokenRule {
+        prefix: "sk-cp-",
+        min_body_len: 32,
+        exact_body_len: None,
+        body_class: TokenBodyClass::Base64Url,
+        replacement: REDACTED_PLACEHOLDER,
+        typed_replacement: "[REDACTED-MINIMAX-KEY]",
+        warning_msg: "MiniMax API Key detected",
+    },
+    PrefixTokenRule {
+        prefix: "sk-proj-",
+        min_body_len: 20,
+        exact_body_len: None,
+        body_class: TokenBodyClass::Base64Url,
+        replacement: REDACTED_PLACEHOLDER,
+        typed_replacement: "[REDACTED-OPENAI-KEY]",
+        warning_msg: "OpenAI API Key detected",
+    },
+    PrefixTokenRule {
+        prefix: "sk_live_",
+        min_body_len: 24,
+        exact_body_len: None,
+        body_class: TokenBodyClass::Alnum,
+        replacement: REDACTED_PLACEHOLDER,
+        typed_replacement: "[REDACTED-STRIPE-KEY]",
+        warning_msg: "Stripe API Key detected",
+    },
+    PrefixTokenRule {
+        prefix: "sk_test_",
+        min_body_len: 24,
+        exact_body_len: None,
+        body_class: TokenBodyClass::Alnum,
+        replacement: REDACTED_PLACEHOLDER,
+        typed_replacement: "[REDACTED-STRIPE-KEY]",
+        warning_msg: "Stripe API Key detected",
+    },
+    PrefixTokenRule {
+        prefix: "rk_live_",
+        min_body_len: 24,
+        exact_body_len: None,
+        body_class: TokenBodyClass::Alnum,
+        replacement: REDACTED_PLACEHOLDER,
+        typed_replacement: "[REDACTED-STRIPE-KEY]",
+        warning_msg: "Stripe API Key detected",
+    },
+    PrefixTokenRule {
+        prefix: "rk_test_",
+        min_body_len: 24,
+        exact_body_len: None,
+        body_class: TokenBodyClass::Alnum,
+        replacement: REDACTED_PLACEHOLDER,
+        typed_replacement: "[REDACTED-STRIPE-KEY]",
+        warning_msg: "Stripe API Key detected",
+    },
+    PrefixTokenRule {
+        prefix: "sk-",
+        min_body_len: 20,
+        exact_body_len: None,
+        body_class: TokenBodyClass::Alnum,
+        replacement: REDACTED_PLACEHOLDER,
+        typed_replacement: "[REDACTED-OPENAI-KEY]",
+        warning_msg: "OpenAI API Key detected",
+    },
+    PrefixTokenRule {
+        prefix: "github_pat_",
+        min_body_len: 22,
+        exact_body_len: None,
+        body_class: TokenBodyClass::Word,
+        replacement: REDACTED_PLACEHOLDER,
+        typed_replacement: "[REDACTED-GITHUB-PAT]",
+        warning_msg: "GitHub PAT detected",
+    },
+    PrefixTokenRule {
+        prefix: "ghp_",
+        min_body_len: 36,
+        exact_body_len: None,
+        body_class: TokenBodyClass::Word,
+        replacement: REDACTED_PLACEHOLDER,
+        typed_replacement: "[REDACTED-GITHUB-PAT]",
+        warning_msg: "GitHub PAT detected",
+    },
+    PrefixTokenRule {
+        prefix: "ghs_",
+        min_body_len: 36,
+        exact_body_len: None,
+        body_class: TokenBodyClass::Word,
+        replacement: REDACTED_PLACEHOLDER,
+        typed_replacement: "[REDACTED-GITHUB-PAT]",
+        warning_msg: "GitHub PAT detected",
+    },
+    PrefixTokenRule {
+        prefix: "AKIA",
+        min_body_len: 16,
+        exact_body_len: Some(16),
+        body_class: TokenBodyClass::UpperAlnum,
+        replacement: REDACTED_PLACEHOLDER,
+        typed_replacement: "[REDACTED-AWS-ACCESS-KEY-ID]",
+        warning_msg: "AWS Access Key ID detected",
+    },
+    PrefixTokenRule {
+        prefix: "AIza",
+        min_body_len: 35,
+        exact_body_len: Some(35),
+        body_class: TokenBodyClass::Base64Url,
+        replacement: REDACTED_PLACEHOLDER,
+        typed_replacement: "[REDACTED-GEMINI-KEY]",
+        warning_msg: "Gemini/Google API Key detected",
+    },
+];
+
+struct ScanMatch {
+    end: usize,
+    replacement: &'static str,
+    typed_replacement: &'static str,
+    warning_msg: &'static str,
+}
+
+/// Zero-leak, zero-regex secret redaction engine.
 ///
-/// Uses a single-pass `RegexSet` DFA automaton so clean tool outputs scan in one linear pass
-/// with zero backtracking or intermediate string clones, combined with lazy-allocating Shannon
-/// entropy inspection and exact-match host environment secret harvesting.
+/// Combines:
+/// 1. Multi-line PEM private key block FSM
+/// 2. Single-pass O(n) lexical scanner (provider prefix table, Slack/JWT/Bearer structural validators,
+///    and credential assignment lexer)
+/// 3. Lazy-allocating Shannon byte-entropy classifier for novel/unlisted tokens
+/// 4. Exact-match host environment secret harvesting
 pub struct SecretRedactor {
-    regex_set: Option<RegexSet>,
-    patterns: Vec<RedactionPattern>,
     /// Exact secret values harvested from the host environment at init time
     env_secrets: HashSet<String>,
 }
@@ -37,33 +191,23 @@ impl SecretRedactor {
         GLOBAL_REDACTOR.get_or_init(Self::new)
     }
 
-    /// Constructs a new redactor with compiled DFA `RegexSet`, patterns, and harvested env secrets.
+    /// Constructs a new redactor with harvested env secrets.
     fn new() -> Self {
-        let (regex_set, patterns) = Self::build_patterns();
         let env_secrets = Self::harvest_env_secrets();
 
         tracing::info!(
-            pattern_count = patterns.len(),
-            dfa_ready = regex_set.is_some(),
+            prefix_rule_count = PREFIX_TOKEN_RULES.len(),
             env_secret_count = env_secrets.len(),
-            "SecretRedactor initialized"
+            "SecretRedactor initialized (zero-regex deterministic FSM)"
         );
 
-        Self {
-            regex_set,
-            patterns,
-            env_secrets,
-        }
+        Self { env_secrets }
     }
 
-    /// Creates a redactor with only regex patterns (no env harvesting).
-    /// Useful for testing without side effects on the process environment.
+    /// Creates a redactor with only deterministic lexical/entropy rules (no env harvesting).
     #[cfg(test)]
     pub fn patterns_only() -> Self {
-        let (regex_set, patterns) = Self::build_patterns();
         Self {
-            regex_set,
-            patterns,
             env_secrets: HashSet::new(),
         }
     }
@@ -71,20 +215,12 @@ impl SecretRedactor {
     /// Creates a redactor with custom exact-match secrets for testing.
     #[cfg(test)]
     pub fn with_secrets(secrets: HashSet<String>) -> Self {
-        let (regex_set, patterns) = Self::build_patterns();
         Self {
-            regex_set,
-            patterns,
             env_secrets: secrets,
         }
     }
 
-    /// Apply all redaction rules to the input string.
-    ///
-    /// Order of operations:
-    /// 1. Single-pass `RegexSet` DFA pre-filter -> priority-ordered replacement only for matched rules
-    /// 2. Literal-gated lazy Shannon byte-entropy pass for unlisted provider tokens
-    /// 3. Exact-match env secret replacement
+    /// Apply all redaction rules to the input string (zero-alloc fast path when clean).
     pub fn redact(&self, input: &str) -> String {
         if input.is_empty() {
             return String::new();
@@ -92,35 +228,20 @@ impl SecretRedactor {
 
         let mut output = std::borrow::Cow::Borrowed(input);
 
-        // Phase 1: Single-pass DFA pre-filter; only execute replace_all for patterns that actually matched
-        match &self.regex_set {
-            Some(set) => {
-                let matches = set.matches(&output);
-                if matches.matched_any() {
-                    for idx in matches.iter() {
-                        let pattern = &self.patterns[idx];
-                        if let std::borrow::Cow::Owned(redacted) =
-                            pattern.regex.replace_all(&output, pattern.replacement)
-                        {
-                            tracing::debug!(pattern = pattern.label, "Redacted secret match");
-                            output = std::borrow::Cow::Owned(redacted);
-                        }
-                    }
-                }
-            }
-            None => {
-                for pattern in &self.patterns {
-                    if let std::borrow::Cow::Owned(redacted) =
-                        pattern.regex.replace_all(&output, pattern.replacement)
-                    {
-                        tracing::debug!(pattern = pattern.label, "Redacted secret match");
-                        output = std::borrow::Cow::Owned(redacted);
-                    }
-                }
+        // Phase 1: Multi-line PEM private key block FSM
+        if output.contains("-----BEGIN") {
+            if let Some(redacted) = Self::redact_pem_blocks(&output) {
+                tracing::debug!("Redacted PEM private key block");
+                output = std::borrow::Cow::Owned(redacted);
             }
         }
 
-        // Phase 2: Literal-gated Shannon byte-entropy pass for novel/unlisted provider tokens
+        // Phase 2: Single-pass O(n) lexical scanner (prefixed tokens, Slack, Bearer, JWT, assignments)
+        if let Some((redacted, _)) = Self::scan_and_redact_text(&output, false) {
+            output = std::borrow::Cow::Owned(redacted);
+        }
+
+        // Phase 3: Literal-gated Shannon byte-entropy pass for novel/unlisted provider tokens
         if output.len() >= SECRET_ENTROPY_MIN_LEN && (output.contains('=') || output.contains(':'))
         {
             if let Some(entropy_redacted) =
@@ -131,8 +252,7 @@ impl SecretRedactor {
             }
         }
 
-        // Phase 3: Exact-match env secret replacement
-        // Only replace values that are long enough to avoid false positives
+        // Phase 4: Exact-match env secret replacement
         for secret_val in &self.env_secrets {
             if secret_val.len() >= 8 && output.contains(secret_val.as_str()) {
                 output = std::borrow::Cow::Owned(
@@ -151,66 +271,40 @@ impl SecretRedactor {
             return (String::new(), Vec::new());
         }
 
-        let matched_pattern_indices: Vec<usize> = match &self.regex_set {
-            Some(set) => set.matches(content).iter().collect(),
-            None => (0..self.patterns.len()).collect(),
-        };
-        let maybe_has_entropy = content.len() >= SECRET_ENTROPY_MIN_LEN
-            && (content.contains('=') || content.contains(':'));
-        let has_env_hit = self
-            .env_secrets
-            .iter()
-            .any(|s| s.len() >= 8 && content.contains(s.as_str()));
-
-        // Fast-path: zero line allocations or per-line regex passes when no candidate cues exist
-        if matched_pattern_indices.is_empty() && !maybe_has_entropy && !has_env_hit {
-            return (content.to_string(), Vec::new());
-        }
-
         let mut working = std::borrow::Cow::Borrowed(content);
         let mut warnings = Vec::new();
 
-        // Multi-line PEM private key pass first (only if matched by DFA)
-        if let Some(&pem_idx) = matched_pattern_indices
-            .iter()
-            .find(|&&idx| self.patterns[idx].label == "private_key_block")
-        {
-            let pem_pat = &self.patterns[pem_idx];
-            if let std::borrow::Cow::Owned(redacted) = pem_pat
-                .regex
-                .replace_all(&working, pem_pat.typed_replacement)
-            {
-                warnings.push((1, pem_pat.warning_msg.to_string()));
+        // Phase 1: Multi-line PEM private key FSM
+        if working.contains("-----BEGIN") {
+            if let Some(redacted) = Self::redact_pem_blocks(&working) {
+                warnings.push((1, "PEM Private Key detected".to_string()));
                 working = std::borrow::Cow::Owned(redacted);
             }
         }
 
-        let active_line_patterns: Vec<&RedactionPattern> = matched_pattern_indices
-            .into_iter()
-            .map(|idx| &self.patterns[idx])
-            .filter(|p| p.label != "private_key_block")
-            .collect();
+        let maybe_has_entropy = working.len() >= SECRET_ENTROPY_MIN_LEN
+            && (working.contains('=') || working.contains(':'));
+        let has_env_hit = self
+            .env_secrets
+            .iter()
+            .any(|s| s.len() >= 8 && working.contains(s.as_str()));
 
-        // If only PEM matched (or only non-matching `=`/`:` lines exist), avoid per-line Vec<String>
-        // allocation unless a line actually mutates.
+        // Phase 2: Per-line zero-regex lexical scan + Shannon entropy + env secret pass (lazy alloc)
         let mut out_lines: Option<Vec<String>> = if warnings.is_empty() {
             None
         } else {
             Some(Vec::new())
         };
-
         let mut raw_lines_seen: Vec<&str> = Vec::new();
+
         for (idx, line) in working.lines().enumerate() {
             let line_num = idx + 1;
             let mut current = std::borrow::Cow::Borrowed(line);
 
-            for pattern in &active_line_patterns {
-                if let std::borrow::Cow::Owned(redacted) = pattern
-                    .regex
-                    .replace_all(&current, pattern.typed_replacement)
-                {
-                    current = std::borrow::Cow::Owned(redacted);
-                    warnings.push((line_num, pattern.warning_msg.to_string()));
+            if let Some((redacted, line_warnings)) = Self::scan_and_redact_text(&current, true) {
+                current = std::borrow::Cow::Owned(redacted);
+                for w in line_warnings {
+                    warnings.push((line_num, w.to_string()));
                 }
             }
 
@@ -268,6 +362,403 @@ impl SecretRedactor {
         };
 
         (final_content, warnings)
+    }
+
+    /// Deterministic multi-line PEM private key block FSM (`-----BEGIN ... PRIVATE KEY-----` to `-----END ... PRIVATE KEY-----`).
+    fn redact_pem_blocks(input: &str) -> Option<String> {
+        let mut out: Option<String> = None;
+        let mut cursor = 0usize;
+
+        while let Some(rel_begin) = input[cursor..].find("-----BEGIN") {
+            let start = cursor + rel_begin;
+            let after_begin = &input[start + 10..];
+            let Some(header_end_rel) = after_begin.find("-----") else {
+                break;
+            };
+            let header_mid = after_begin[..header_end_rel].trim();
+            if !header_mid.ends_with("PRIVATE KEY") {
+                cursor = start + 10;
+                continue;
+            }
+            let body_start = start + 10 + header_end_rel + 5;
+            let end_marker = format!("-----END {}-----", header_mid);
+            let Some(end_rel) = input[body_start..].find(&end_marker) else {
+                cursor = body_start;
+                continue;
+            };
+            let block_end = body_start + end_rel + end_marker.len();
+            let buf = out.get_or_insert_with(|| String::with_capacity(input.len()));
+            buf.push_str(&input[cursor..start]);
+            buf.push_str("[REDACTED: PRIVATE KEY]");
+            cursor = block_end;
+        }
+
+        out.map(|mut buf| {
+            buf.push_str(&input[cursor..]);
+            buf
+        })
+    }
+
+    /// Single-pass O(n) lexical scanner replacing all 16 legacy regex rules with zero allocations on clean text.
+    fn scan_and_redact_text(input: &str, typed: bool) -> Option<(String, Vec<&'static str>)> {
+        let bytes = input.as_bytes();
+        let len = bytes.len();
+        let mut out: Option<String> = None;
+        let mut warnings: Vec<&'static str> = Vec::new();
+        let mut last_copy = 0usize;
+        let mut i = 0usize;
+
+        while i < len {
+            if bytes[i] >= 0x80 {
+                i += input[i..].chars().next().map_or(1, char::len_utf8);
+                continue;
+            }
+            let matched = Self::try_match_at(input, bytes, i);
+            if let Some(m) = matched {
+                let buf = out.get_or_insert_with(|| String::with_capacity(len));
+                buf.push_str(&input[last_copy..i]);
+                buf.push_str(if typed {
+                    m.typed_replacement
+                } else {
+                    m.replacement
+                });
+                warnings.push(m.warning_msg);
+                i = m.end;
+                last_copy = i;
+            } else {
+                i += 1;
+            }
+        }
+
+        out.map(|mut buf| {
+            buf.push_str(&input[last_copy..]);
+            (buf, warnings)
+        })
+    }
+
+    /// Attempts deterministic token/credential grammars anchored at byte index `i`.
+    #[inline]
+    fn try_match_at(input: &str, bytes: &[u8], i: usize) -> Option<ScanMatch> {
+        let rest = &input[i..];
+        let b = bytes[i];
+
+        // 1. Prefixed cloud/API provider tokens (dispatch on leading byte)
+        if matches!(b, b's' | b'r' | b'g' | b'A') {
+            for rule in PREFIX_TOKEN_RULES {
+                if rest.starts_with(rule.prefix) {
+                    let body_start = i + rule.prefix.len();
+                    let mut end = body_start;
+                    let max_end = rule
+                        .exact_body_len
+                        .map_or(bytes.len(), |n| (body_start + n).min(bytes.len()));
+                    while end < max_end && rule.body_class.accepts(bytes[end]) {
+                        end += 1;
+                    }
+                    let body_len = end - body_start;
+                    let ok = match rule.exact_body_len {
+                        Some(exact) => body_len == exact,
+                        None => body_len >= rule.min_body_len,
+                    };
+                    if ok {
+                        return Some(ScanMatch {
+                            end,
+                            replacement: rule.replacement,
+                            typed_replacement: rule.typed_replacement,
+                            warning_msg: rule.warning_msg,
+                        });
+                    }
+                }
+            }
+        }
+
+        // 2. Slack tokens: `xox[bpras]-[0-9]{10,}-[A-Za-z0-9]+`
+        if b == b'x'
+            && rest.len() >= 18
+            && rest.starts_with("xox")
+            && matches!(bytes.get(i + 3), Some(b'b' | b'p' | b'r' | b'a' | b's'))
+            && bytes.get(i + 4) == Some(&b'-')
+        {
+            let mut p = i + 5;
+            let digits_start = p;
+            while p < bytes.len() && bytes[p].is_ascii_digit() {
+                p += 1;
+            }
+            if p - digits_start >= 10 && bytes.get(p) == Some(&b'-') {
+                p += 1;
+                let tail_start = p;
+                while p < bytes.len() && bytes[p].is_ascii_alphanumeric() {
+                    p += 1;
+                }
+                if p > tail_start {
+                    return Some(ScanMatch {
+                        end: p,
+                        replacement: REDACTED_PLACEHOLDER,
+                        typed_replacement: "[REDACTED-SLACK-TOKEN]",
+                        warning_msg: "Slack Token detected",
+                    });
+                }
+            }
+        }
+
+        // 3. Bearer token: `Bearer\s+[A-Za-z0-9\-._~+/]{16,}=*`
+        if b == b'B' && rest.starts_with("Bearer") {
+            let mut p = i + 6;
+            let ws_start = p;
+            while p < bytes.len() && matches!(bytes[p], b' ' | b'\t') {
+                p += 1;
+            }
+            if p > ws_start {
+                let tok_start = p;
+                while p < bytes.len()
+                    && (bytes[p].is_ascii_alphanumeric()
+                        || matches!(bytes[p], b'-' | b'.' | b'_' | b'~' | b'+' | b'/'))
+                {
+                    p += 1;
+                }
+                if p - tok_start >= 16 {
+                    while p < bytes.len() && bytes[p] == b'=' {
+                        p += 1;
+                    }
+                    return Some(ScanMatch {
+                        end: p,
+                        replacement: "Bearer [REDACTED]",
+                        typed_replacement: "Bearer [REDACTED]",
+                        warning_msg: "Bearer Token detected",
+                    });
+                }
+            }
+        }
+
+        // 4. Structural 3-part JWT: `eyJ<b64>.eyJ<b64>.<b64>`
+        if b == b'e' && rest.starts_with("eyJ") {
+            let is_b64url = |c: u8| c.is_ascii_alphanumeric() || c == b'-' || c == b'_';
+            let mut p = i + 3;
+            while p < bytes.len() && is_b64url(bytes[p]) {
+                p += 1;
+            }
+            if p > i + 3 && input[p..].starts_with(".eyJ") {
+                p += 4;
+                let s2_start = p;
+                while p < bytes.len() && is_b64url(bytes[p]) {
+                    p += 1;
+                }
+                if p > s2_start && bytes.get(p) == Some(&b'.') {
+                    p += 1;
+                    let s3_start = p;
+                    while p < bytes.len() && is_b64url(bytes[p]) {
+                        p += 1;
+                    }
+                    if p > s3_start {
+                        return Some(ScanMatch {
+                            end: p,
+                            replacement: REDACTED_PLACEHOLDER,
+                            typed_replacement: "[REDACTED-JWT]",
+                            warning_msg: "JWT Token detected",
+                        });
+                    }
+                }
+            }
+        }
+
+        // 5. Credential key=value lexical assignments (only at identifier boundary)
+        if b.is_ascii_alphabetic()
+            && (i == 0 || !bytes[i - 1].is_ascii_alphanumeric() && bytes[i - 1] != b'_')
+        {
+            if let Some(m) = Self::try_match_credential_assignment(input, bytes, i) {
+                return Some(m);
+            }
+        }
+
+        None
+    }
+
+    /// Matches credential assignment forms (`aws_secret_access_key=...`, `password=...`, `api_key=...`,
+    /// hex `secret=...`) at an identifier boundary without regex backtracking.
+    fn try_match_credential_assignment(
+        input: &str,
+        bytes: &[u8],
+        start: usize,
+    ) -> Option<ScanMatch> {
+        // Guard: ignore scoped package keys (`@org/pkg`) or path segments immediately preceding
+        if start > 0 && matches!(bytes[start - 1], b'/' | b'@') {
+            return None;
+        }
+        let mut p = start;
+        while p < bytes.len()
+            && (bytes[p].is_ascii_alphanumeric() || bytes[p] == b'_' || bytes[p] == b'-')
+        {
+            p += 1;
+        }
+        let key_len = p - start;
+        if !(3..=40).contains(&key_len) {
+            return None;
+        }
+        let key_lower = input[start..p].to_ascii_lowercase();
+        let after_key_char = bytes.get(p).copied();
+        if matches!(after_key_char, Some(b'/' | b'@')) {
+            return None;
+        }
+
+        // Classify key family
+        let is_aws_secret = key_lower.starts_with("aws")
+            && key_lower.contains("secret")
+            && key_lower.ends_with("key");
+        let is_conn_pwd = matches!(key_lower.as_str(), "password" | "pwd");
+        let is_generic_kv = matches!(
+            key_lower.as_str(),
+            "apikey"
+                | "api_key"
+                | "api-key"
+                | "apisecret"
+                | "api_secret"
+                | "api-secret"
+                | "apitoken"
+                | "api_token"
+                | "api-token"
+                | "accesstoken"
+                | "access_token"
+                | "access-token"
+                | "authtoken"
+                | "auth_token"
+                | "auth-token"
+                | "secretkey"
+                | "secret_key"
+                | "secret-key"
+                | "clientsecret"
+                | "client_secret"
+                | "client-secret"
+                | "clientkey"
+                | "client_key"
+                | "client-key"
+                | "dbpassword"
+                | "db_password"
+                | "db-password"
+        );
+        let is_hex_key = matches!(key_lower.as_str(), "secret" | "token" | "credential");
+
+        if !is_aws_secret && !is_conn_pwd && !is_generic_kv && !is_hex_key {
+            return None;
+        }
+
+        // Skip optional whitespace, require `=` or `:` (only `=` for connection password)
+        while p < bytes.len() && matches!(bytes[p], b' ' | b'\t') {
+            p += 1;
+        }
+        let sep = *bytes.get(p)?;
+        if is_conn_pwd {
+            if sep != b'=' {
+                return None;
+            }
+        } else if sep != b'=' && sep != b':' {
+            return None;
+        }
+        p += 1;
+        while p < bytes.len() && matches!(bytes[p], b' ' | b'\t') {
+            p += 1;
+        }
+        if p >= bytes.len() {
+            return None;
+        }
+
+        // Optional opening quote
+        let quote = if !is_conn_pwd && matches!(bytes[p], b'"' | b'\'') {
+            let q = bytes[p];
+            p += 1;
+            Some(q)
+        } else {
+            None
+        };
+        let val_start = p;
+
+        if is_aws_secret {
+            while p < bytes.len()
+                && (bytes[p].is_ascii_alphanumeric() || matches!(bytes[p], b'/' | b'+' | b'='))
+            {
+                p += 1;
+            }
+            if p - val_start == 40 {
+                if let Some(q) = quote {
+                    if bytes.get(p) == Some(&q) {
+                        p += 1;
+                    }
+                }
+                return Some(ScanMatch {
+                    end: p,
+                    replacement: REDACTED_PLACEHOLDER,
+                    typed_replacement: "[REDACTED-AWS-SECRET-KEY]",
+                    warning_msg: "AWS Secret Access Key detected",
+                });
+            }
+            return None;
+        }
+
+        if is_conn_pwd {
+            if matches!(
+                bytes[val_start],
+                b';' | b'&' | b'[' | b' ' | b'\t' | b'\n' | b'\r'
+            ) {
+                return None;
+            }
+            while p < bytes.len()
+                && !bytes[p].is_ascii_whitespace()
+                && !matches!(bytes[p], b';' | b'&')
+            {
+                p += 1;
+            }
+            if p - val_start >= 8 {
+                return Some(ScanMatch {
+                    end: p,
+                    replacement: REDACTED_PLACEHOLDER,
+                    typed_replacement: "[REDACTED-SECRET]",
+                    warning_msg: "Connection password detected",
+                });
+            }
+            return None;
+        }
+
+        if is_generic_kv {
+            while p < bytes.len()
+                && (bytes[p].is_ascii_alphanumeric()
+                    || matches!(bytes[p], b'-' | b'.' | b'_' | b'~' | b'+' | b'/'))
+            {
+                p += 1;
+            }
+            if p - val_start >= 16 {
+                if let Some(q) = quote {
+                    if bytes.get(p) == Some(&q) {
+                        p += 1;
+                    }
+                }
+                return Some(ScanMatch {
+                    end: p,
+                    replacement: REDACTED_PLACEHOLDER,
+                    typed_replacement: "[REDACTED-SECRET]",
+                    warning_msg: "Potential generic credential/token detected",
+                });
+            }
+            return None;
+        }
+
+        if is_hex_key {
+            while p < bytes.len() && bytes[p].is_ascii_hexdigit() {
+                p += 1;
+            }
+            if p - val_start >= 32 {
+                if let Some(q) = quote {
+                    if bytes.get(p) == Some(&q) {
+                        p += 1;
+                    }
+                }
+                return Some(ScanMatch {
+                    end: p,
+                    replacement: REDACTED_PLACEHOLDER,
+                    typed_replacement: "[REDACTED-SECRET]",
+                    warning_msg: "Hex secret detected",
+                });
+            }
+        }
+
+        None
     }
 
     /// Computes Shannon byte entropy $H(X) = -\sum p(b) \log_2 p(b)$ in bits per byte.
@@ -447,186 +938,6 @@ impl SecretRedactor {
         }
 
         out
-    }
-
-    /// Compiles all regex patterns for common secret formats alongside a single-pass `RegexSet` DFA.
-    fn build_patterns() -> (Option<RegexSet>, Vec<RedactionPattern>) {
-        let mut raw_patterns: Vec<&str> = Vec::with_capacity(20);
-        let mut patterns = Vec::with_capacity(20);
-
-        // Helper: compile a regex pattern, skipping on error (should never happen with static patterns)
-        let mut add = |label: &'static str,
-                       pat: &'static str,
-                       replacement: &'static str,
-                       typed_replacement: &'static str,
-                       warning_msg: &'static str| match Regex::new(pat) {
-            Ok(regex) => {
-                raw_patterns.push(pat);
-                patterns.push(RedactionPattern {
-                    regex,
-                    label,
-                    replacement,
-                    typed_replacement,
-                    warning_msg,
-                });
-            }
-            Err(e) => {
-                tracing::error!(pattern = label, error = %e, "Failed to compile redaction regex");
-            }
-        };
-
-        // --- Private Key Blocks (multi-line, must come first) ---
-        add(
-            "private_key_block",
-            r"-----BEGIN\s+(?:RSA |EC |DSA |OPENSSH )?PRIVATE KEY-----[\s\S]*?-----END\s+(?:RSA |EC |DSA |OPENSSH )?PRIVATE KEY-----",
-            "[REDACTED: PRIVATE KEY]",
-            "[REDACTED: PRIVATE KEY]",
-            "PEM Private Key detected",
-        );
-
-        // --- Anthropic & MiniMax Keys (must precede generic sk- OpenAI key) ---
-        add(
-            "anthropic_key",
-            r"sk-ant-[a-zA-Z0-9\-_]{20,}",
-            REDACTED_PLACEHOLDER,
-            "[REDACTED-ANTHROPIC-KEY]",
-            "Anthropic API Key detected",
-        );
-        add(
-            "minimax_key",
-            r"sk-cp-[a-zA-Z0-9\-_]{32,}",
-            REDACTED_PLACEHOLDER,
-            "[REDACTED-MINIMAX-KEY]",
-            "MiniMax API Key detected",
-        );
-
-        // --- OpenAI Keys ---
-        add(
-            "openai_project_key",
-            r"sk-proj-[a-zA-Z0-9\-_]{20,}",
-            REDACTED_PLACEHOLDER,
-            "[REDACTED-OPENAI-KEY]",
-            "OpenAI API Key detected",
-        );
-        add(
-            "openai_key",
-            r"sk-[a-zA-Z0-9]{20,}",
-            REDACTED_PLACEHOLDER,
-            "[REDACTED-OPENAI-KEY]",
-            "OpenAI API Key detected",
-        );
-
-        // --- GitHub Tokens ---
-        add(
-            "github_fine_grained",
-            r"github_pat_[A-Za-z0-9_]{22,}",
-            REDACTED_PLACEHOLDER,
-            "[REDACTED-GITHUB-PAT]",
-            "GitHub PAT detected",
-        );
-        add(
-            "github_token",
-            r"gh[ps]_[A-Za-z0-9_]{36,}",
-            REDACTED_PLACEHOLDER,
-            "[REDACTED-GITHUB-PAT]",
-            "GitHub PAT detected",
-        );
-
-        // --- AWS Keys ---
-        add(
-            "aws_access_key",
-            r"AKIA[0-9A-Z]{16}",
-            REDACTED_PLACEHOLDER,
-            "[REDACTED-AWS-ACCESS-KEY-ID]",
-            "AWS Access Key ID detected",
-        );
-        add(
-            "aws_secret_key",
-            r#"(?i)aws[_\s]*(?:secret[_\s]*(?:access[_\s]*)?)?key\s*[=:]\s*['"]?[0-9a-zA-Z/+=]{40}['"]?"#,
-            REDACTED_PLACEHOLDER,
-            "[REDACTED-AWS-SECRET-KEY]",
-            "AWS Secret Access Key detected",
-        );
-
-        // --- Google / Gemini API Key ---
-        add(
-            "google_api_key",
-            r"AIza[0-9A-Za-z\-_]{35}",
-            REDACTED_PLACEHOLDER,
-            "[REDACTED-GEMINI-KEY]",
-            "Gemini/Google API Key detected",
-        );
-
-        // --- Stripe Keys ---
-        add(
-            "stripe_key",
-            r"[rs]k_(?:test|live)_[0-9a-zA-Z]{24,}",
-            REDACTED_PLACEHOLDER,
-            "[REDACTED-STRIPE-KEY]",
-            "Stripe API Key detected",
-        );
-
-        // --- Slack Tokens ---
-        add(
-            "slack_token",
-            r"xox[bpras]-[0-9]{10,}-[a-zA-Z0-9]+",
-            REDACTED_PLACEHOLDER,
-            "[REDACTED-SLACK-TOKEN]",
-            "Slack Token detected",
-        );
-
-        // --- JWT / Bearer Tokens ---
-        add(
-            "bearer_token",
-            r"Bearer\s+[A-Za-z0-9\-._~+/]{16,}=*",
-            "Bearer [REDACTED]",
-            "Bearer [REDACTED]",
-            "Bearer Token detected",
-        );
-        add(
-            "jwt_token",
-            r"eyJ[A-Za-z0-9\-_]+\.eyJ[A-Za-z0-9\-_]+\.[A-Za-z0-9\-_]+",
-            REDACTED_PLACEHOLDER,
-            "[REDACTED-JWT]",
-            "JWT Token detected",
-        );
-
-        // --- Generic Key=Value Assignments ---
-        add(
-            "generic_key_value",
-            r#"(?i)(?:api[_\-]?key|api[_\-]?secret|api[_\-]?token|access[_\-]?token|auth[_\-]?token|secret[_\-]?key|client[_\-]?secret|client[_\-]?key|db[_\-]?password)\s*[=:]\s*['"]?[A-Za-z0-9\-._~+/]{16,}['"]?"#,
-            REDACTED_PLACEHOLDER,
-            "[REDACTED-SECRET]",
-            "Potential generic credential/token detected",
-        );
-
-        // --- Connection String Passwords ---
-        add(
-            "connection_password",
-            r"(?i)(?:password|pwd)\s*=\s*[^;\s&\[]\S{7,}",
-            REDACTED_PLACEHOLDER,
-            "[REDACTED-SECRET]",
-            "Connection password detected",
-        );
-
-        // --- Hex Secrets ---
-        add(
-            "hex_secret",
-            "(?i)(?:secret|token|credential)\\s*[=:]\\s*['\"]?[0-9a-f]{32,}['\"]?",
-            REDACTED_PLACEHOLDER,
-            "[REDACTED-SECRET]",
-            "Hex secret detected",
-        );
-
-        let regex_set = match RegexSet::new(&raw_patterns) {
-            Ok(set) => Some(set),
-            Err(e) => {
-                tracing::error!(error = %e, "Failed to compile redaction RegexSet DFA");
-                None
-            }
-        };
-
-        (regex_set, patterns)
     }
 
     /// Harvests actual secret values from the host environment.
@@ -936,9 +1247,8 @@ Done."#;
     }
 
     #[test]
-    fn test_regex_set_dfa_clean_fast_path_and_multi_line_entropy_preservation() {
+    fn test_zero_regex_fsm_clean_fast_path_and_multi_line_entropy_preservation() {
         let r = SecretRedactor::patterns_only();
-        assert!(r.regex_set.is_some(), "RegexSet DFA must compile cleanly");
 
         let clean_rust =
             "fn main() {\n    let x: usize = 42;\n    let label = \"ordinary_value\";\n}\n";

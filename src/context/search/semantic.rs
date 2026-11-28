@@ -30,20 +30,45 @@ pub struct CodeChunk {
     pub polar_quant2: Option<crate::context::search::quantize::PolarQuant2Fixed>,
 }
 
+enum ChunkVectorRepr<'a> {
+    PolarQuant2(crate::context::search::quantize::PolarQuant2Fixed),
+    DenseF32(&'a [f32]),
+    PolarQuant4Fixed(&'a crate::context::search::quantize::PolarQuant4Fixed),
+    PolarQuant4(&'a crate::context::search::quantize::PolarQuant4),
+    Binary128(&'a crate::context::search::quantize::BinaryVector128),
+    Empty,
+}
+
 impl CodeChunk {
-    pub fn get_polar_quant2(&self) -> crate::context::search::quantize::PolarQuant2Fixed {
+    #[inline]
+    fn best_vector_repr(&self) -> ChunkVectorRepr<'_> {
         if let Some(pq2) = self.polar_quant2 {
-            pq2
+            ChunkVectorRepr::PolarQuant2(pq2)
         } else if !self.vector.is_empty() {
-            crate::context::search::quantize::PolarQuant2Fixed::from_f32_with_wht(&self.vector)
+            ChunkVectorRepr::DenseF32(&self.vector)
         } else if let Some(ref pqf) = self.polar_quant_fixed {
-            let deq = pqf.dequantize();
-            crate::context::search::quantize::PolarQuant2Fixed::from_f32_with_wht(&deq)
+            ChunkVectorRepr::PolarQuant4Fixed(pqf)
         } else if let Some(ref pq) = self.polar_quant {
-            let deq = pq.dequantize();
-            crate::context::search::quantize::PolarQuant2Fixed::from_f32_with_wht(&deq)
+            ChunkVectorRepr::PolarQuant4(pq)
+        } else if let Some(ref bv) = self.binary_vector {
+            ChunkVectorRepr::Binary128(bv)
         } else {
-            crate::context::search::quantize::PolarQuant2Fixed::default()
+            ChunkVectorRepr::Empty
+        }
+    }
+
+    pub fn get_polar_quant2(&self) -> crate::context::search::quantize::PolarQuant2Fixed {
+        use crate::context::search::quantize::PolarQuant2Fixed;
+        match self.best_vector_repr() {
+            ChunkVectorRepr::PolarQuant2(pq2) => pq2,
+            ChunkVectorRepr::DenseF32(v) => PolarQuant2Fixed::from_f32_with_wht(v),
+            ChunkVectorRepr::PolarQuant4Fixed(pqf) => {
+                PolarQuant2Fixed::from_f32_with_wht(&pqf.dequantize())
+            }
+            ChunkVectorRepr::PolarQuant4(pq) => {
+                PolarQuant2Fixed::from_f32_with_wht(&pq.dequantize())
+            }
+            ChunkVectorRepr::Binary128(_) | ChunkVectorRepr::Empty => PolarQuant2Fixed::default(),
         }
     }
 
@@ -78,30 +103,26 @@ impl CodeChunk {
     /// FastScan 2-bit asymmetric dot product using a precomputed `QueryLut2Bit`.
     #[inline]
     pub fn score_with_lut(&self, lut: &crate::context::search::quantize::QueryLut2Bit) -> f32 {
-        if let Some(pq2) = self.polar_quant2 {
-            pq2.score_with_lut(lut)
-        } else {
-            self.get_polar_quant2().score_with_lut(lut)
+        match self.polar_quant2 {
+            Some(pq2) => pq2.score_with_lut(lut),
+            None => self.get_polar_quant2().score_with_lut(lut),
         }
     }
 
     /// Computes similarity score against an un-rotated `f32` query vector using 2-bit Lloyd-Max FastScan
     /// (or full `f32` cosine similarity if legacy raw vector is present).
     pub fn similarity_to_query(&self, query_vec: &[f32]) -> f32 {
-        if let Some(pq2) = self.polar_quant2 {
-            pq2.asymmetric_dot_product_with_wht(query_vec)
-        } else if !self.vector.is_empty() {
-            SemanticIndex::cosine_similarity(query_vec, &self.vector)
-        } else if let Some(ref pqf) = self.polar_quant_fixed {
-            pqf.asymmetric_dot_product(query_vec)
-        } else if let Some(ref pq) = self.polar_quant {
-            pq.asymmetric_dot_product(query_vec)
-        } else if let Some(ref bv) = self.binary_vector {
-            let q_bin =
-                crate::context::search::quantize::BinaryVector128::from_f32_slice(query_vec);
-            bv.cosine_similarity(&q_bin)
-        } else {
-            0.0
+        match self.best_vector_repr() {
+            ChunkVectorRepr::PolarQuant2(pq2) => pq2.asymmetric_dot_product_with_wht(query_vec),
+            ChunkVectorRepr::DenseF32(v) => SemanticIndex::cosine_similarity(query_vec, v),
+            ChunkVectorRepr::PolarQuant4Fixed(pqf) => pqf.asymmetric_dot_product(query_vec),
+            ChunkVectorRepr::PolarQuant4(pq) => pq.asymmetric_dot_product(query_vec),
+            ChunkVectorRepr::Binary128(bv) => {
+                let q_bin =
+                    crate::context::search::quantize::BinaryVector128::from_f32_slice(query_vec);
+                bv.cosine_similarity(&q_bin)
+            }
+            ChunkVectorRepr::Empty => 0.0,
         }
     }
 }

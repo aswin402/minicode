@@ -132,7 +132,7 @@ impl DiffProjector {
                 .and_then(|e| e.to_str())
                 .unwrap_or("");
 
-            if !matches!(ext, "rs" | "ts" | "tsx" | "js" | "jsx" | "py") {
+            if !crate::context::repomap::RepoMapExtractor::supports_extension(ext) {
                 continue;
             }
 

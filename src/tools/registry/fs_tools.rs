@@ -492,16 +492,18 @@ pub(crate) fn check_workspace_constraints(
     let mut violations: Vec<String> = Vec::new();
     let max_violations = 2;
 
-    // 1. Check for unresolved git merge conflict markers
+    // 1. Check for genuine Git 3-way merge conflict markers at column 0
+    // (avoids false positives on decorative comment banners like `/* ============ */`).
+    let is_conflict_marker = |line: &str| {
+        (line.starts_with("<<<<<<<") || line.starts_with(">>>>>>>"))
+            && matches!(line.as_bytes().get(7), None | Some(b' ' | b'\t'))
+    };
     for (idx, line) in added_content.lines().enumerate() {
-        let trimmed = line.trim();
-        if trimmed.starts_with("<<<<<<<")
-            || trimmed.starts_with("=======")
-            || trimmed.starts_with(">>>>>>>")
-        {
+        let raw = line.trim_end_matches('\r');
+        if is_conflict_marker(raw) {
             violations.push(format!(
                 "- [Rule: No unresolved merge conflict markers] Found `{}` at L{}",
-                trimmed.chars().take(15).collect::<String>(),
+                raw.chars().take(15).collect::<String>(),
                 idx + 1
             ));
             break;
@@ -1116,6 +1118,24 @@ mod tests {
         // Inside #[cfg(test)] block, .unwrap() is allowed
         let test_code = "#[cfg(test)]\nmod tests {\n    #[test]\n    fn it_works() {\n        let x = Some(1).unwrap();\n        assert_eq!(x, 1);\n    }\n}\n";
         assert!(check_workspace_constraints(&temp_dir, "src/lib_mod.rs", test_code).is_none());
+
+        // Comment banners with `=====` must NEVER false-trigger merge conflict warnings (minitest87)
+        let banner_js = "/* ============================================================\n   minicode landing\n   ============================================================ */\nconst ok = true;\n";
+        assert!(
+            check_workspace_constraints(&temp_dir, "assets/app.js", banner_js).is_none(),
+            "Comment divider banners must not be flagged as merge conflict markers"
+        );
+
+        // Genuine Git conflict markers at column 0 MUST still be caught
+        let real_conflict =
+            "const a = 1;\n<<<<<<< HEAD\nconst b = 2;\n=======\nconst b = 3;\n>>>>>>> main\n";
+        let conflict_warn = check_workspace_constraints(&temp_dir, "assets/app.js", real_conflict);
+        assert!(
+            conflict_warn
+                .as_deref()
+                .is_some_and(|w| w.contains("No unresolved merge conflict markers")),
+            "Real Git merge conflict markers must be detected"
+        );
 
         std::fs::remove_dir_all(&temp_dir).ok();
     }

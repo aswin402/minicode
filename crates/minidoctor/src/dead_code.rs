@@ -4,29 +4,113 @@
 use crate::config::DoctorConfig;
 use crate::detector::LoadedFile;
 use crate::types::{DeadCodeKind, Diagnostic, DiagnosticCategory, Severity};
-use regex::Regex;
 use std::collections::{HashMap, HashSet};
 use std::hash::{Hash, Hasher};
-use std::sync::OnceLock;
 
 const MAX_DEAD_EXPORTS_REPORTED: usize = 20;
 const MAX_DUPLICATES_REPORTED: usize = 12;
 const DUPLICATE_WINDOW_LINES: usize = 12;
 
-fn js_export_re() -> &'static Regex {
-    static RE: OnceLock<Regex> = OnceLock::new();
-    RE.get_or_init(|| {
-        Regex::new(r#"(?m)^\s*export\s+(?:async\s+)?(?:function|const|let|class|type|interface|enum)\s+([A-Za-z_][A-Za-z0-9_]{3,})"#)
-            .unwrap_or_else(|_| Regex::new("a^").unwrap_or_else(|_| unreachable!()))
-    })
+/// Extracts exported JS/TS symbol names and 1-indexed declaration lines using Tree-sitter AST
+/// (handles multiline signatures, generics, re-exports, and ignores strings/comments cleanly).
+fn extract_js_ts_exports_ast(ext: &str, content: &str) -> Vec<(usize, String)> {
+    let mut parser = tree_sitter::Parser::new();
+    let lang = match ext {
+        "tsx" | "jsx" => tree_sitter_typescript::LANGUAGE_TSX.into(),
+        "ts" | "mts" => tree_sitter_typescript::LANGUAGE_TYPESCRIPT.into(),
+        _ => tree_sitter_javascript::LANGUAGE.into(),
+    };
+    if parser.set_language(&lang).is_err() {
+        return Vec::new();
+    }
+    let Some(tree) = parser.parse(content, None) else {
+        return Vec::new();
+    };
+    let bytes = content.as_bytes();
+    let mut out = Vec::new();
+    let root = tree.root_node();
+    let mut cursor = root.walk();
+
+    for child in root.children(&mut cursor) {
+        if child.kind() != "export_statement" {
+            continue;
+        }
+        let Some(decl) = child.child_by_field_name("declaration") else {
+            continue;
+        };
+        match decl.kind() {
+            "function_declaration"
+            | "generator_function_declaration"
+            | "class_declaration"
+            | "abstract_class_declaration"
+            | "interface_declaration"
+            | "type_alias_declaration"
+            | "enum_declaration" => {
+                if let Some(name_node) = decl.child_by_field_name("name") {
+                    if let Ok(name) = name_node.utf8_text(bytes) {
+                        if name.len() >= 4 {
+                            out.push((name_node.start_position().row + 1, name.to_string()));
+                        }
+                    }
+                }
+            }
+            "lexical_declaration" | "variable_declaration" => {
+                let mut dcur = decl.walk();
+                for sub in decl.children(&mut dcur) {
+                    if sub.kind() == "variable_declarator" {
+                        if let Some(name_node) = sub.child_by_field_name("name") {
+                            if name_node.kind() == "identifier" {
+                                if let Ok(name) = name_node.utf8_text(bytes) {
+                                    if name.len() >= 4 {
+                                        out.push((
+                                            name_node.start_position().row + 1,
+                                            name.to_string(),
+                                        ));
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    out
 }
 
-fn py_top_def_re() -> &'static Regex {
-    static RE: OnceLock<Regex> = OnceLock::new();
-    RE.get_or_init(|| {
-        Regex::new(r#"(?m)^(?:async\s+)?(?:def|class)\s+([A-Za-z][A-Za-z0-9_]{3,})\s*[\(:]"#)
-            .unwrap_or_else(|_| Regex::new("a^").unwrap_or_else(|_| unreachable!()))
-    })
+/// Extracts undecorated top-level Python `def`/`class` definitions using Tree-sitter AST
+/// (automatically skipping `decorated_definition` routes/CLI handlers and private `_`/`test_` names).
+fn extract_py_top_defs_ast(content: &str) -> Vec<(usize, String)> {
+    let mut parser = tree_sitter::Parser::new();
+    if parser
+        .set_language(&tree_sitter_python::LANGUAGE.into())
+        .is_err()
+    {
+        return Vec::new();
+    }
+    let Some(tree) = parser.parse(content, None) else {
+        return Vec::new();
+    };
+    let bytes = content.as_bytes();
+    let mut out = Vec::new();
+    let root = tree.root_node();
+    let mut cursor = root.walk();
+
+    for child in root.children(&mut cursor) {
+        // Decorated functions/classes appear as `decorated_definition`, so matching only
+        // direct `function_definition` / `class_definition` skips FastAPI/Click decorators cleanly.
+        if matches!(child.kind(), "function_definition" | "class_definition") {
+            if let Some(name_node) = child.child_by_field_name("name") {
+                if let Ok(name) = name_node.utf8_text(bytes) {
+                    if name.len() >= 4 && !name.starts_with("test_") && !name.starts_with('_') {
+                        out.push((name_node.start_position().row + 1, name.to_string()));
+                    }
+                }
+            }
+        }
+    }
+    out
 }
 
 fn is_entrypoint_file(rel_path: &str) -> bool {
@@ -107,10 +191,8 @@ pub fn detect_dead_code_and_duplicates(
         file_tokens_cache.push(uniq);
     }
 
-    // 2. Unused exports (JS/TS `export ...` and Python module-level `def/class` never referenced in any other file)
+    // 2. Unused exports (JS/TS `export ...` and Python module-level `def/class` via Tree-sitter AST)
     if !cfg.is_rule_ignored("dead/unused-export") {
-        let js_re = js_export_re();
-        let py_re = py_top_def_re();
         let mut reported = 0usize;
 
         for f in files {
@@ -119,43 +201,10 @@ pub fn detect_dead_code_and_duplicates(
                 continue;
             }
             let candidates: Vec<(usize, String)> = match f.ext.as_str() {
-                "ts" | "tsx" | "js" | "jsx" | "mts" | "mjs" => js_re
-                    .captures_iter(&f.content)
-                    .filter_map(|cap| {
-                        let m = cap.get(1)?;
-                        let line = f.content[..m.start()]
-                            .bytes()
-                            .filter(|&b| b == b'\n')
-                            .count()
-                            + 1;
-                        Some((line, m.as_str().to_string()))
-                    })
-                    .collect(),
-                "py" => py_re
-                    .captures_iter(&f.content)
-                    .filter_map(|cap| {
-                        let m = cap.get(1)?;
-                        let name = m.as_str();
-                        if name.starts_with("test_") || name.starts_with('_') {
-                            return None;
-                        }
-                        let line = f.content[..m.start()]
-                            .bytes()
-                            .filter(|&b| b == b'\n')
-                            .count()
-                            + 1;
-                        // Skip decorated FastAPI routes / CLI commands
-                        let prev_line = if line > 1 {
-                            f.content.lines().nth(line - 2).unwrap_or("").trim()
-                        } else {
-                            ""
-                        };
-                        if prev_line.starts_with('@') {
-                            return None;
-                        }
-                        Some((line, name.to_string()))
-                    })
-                    .collect(),
+                "ts" | "tsx" | "js" | "jsx" | "mts" | "mjs" => {
+                    extract_js_ts_exports_ast(&f.ext, &f.content)
+                }
+                "py" => extract_py_top_defs_ast(&f.content),
                 _ => Vec::new(),
             };
 

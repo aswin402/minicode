@@ -218,43 +218,16 @@ impl TaskComplexityScorer {
         let external_dependents = impacted_modules.len().saturating_sub(predicted_files.len());
         let blast_radius = impacted_modules.len().max(predicted_files.len()).max(1);
 
-        // 3. Multi-factor structural complexity score (1..=10)
-        let mut raw_score = 1u32;
+        // 3. Continuous multi-factor structural complexity model (1..=10)
+        // Replaces discrete step-function `if/else` buckets with smooth logarithmic scaling
+        // over CodeGraph topology, PageRank hub centrality, AST surface, and domain spread.
+        let file_fanout = (1.85 * (1.0 + predicted_files.len() as f64).ln()).min(3.0);
+        let blast_coupling = (1.55 * (1.0 + external_dependents as f64).ln()).min(3.0)
+            + if has_cyclic_dependency { 1.0 } else { 0.0 };
+        let symbol_surface = (1.25 * (1.0 + matched_symbol_count as f64).ln()).min(2.0)
+            + (max_centrality_ratio - 1.0).clamp(0.0, 1.0);
 
-        // Factor A: Predicted target file fan-out
-        if predicted_files.len() >= crate::constants::COMPLEXITY_HIGH_FILE_COUNT_THRESHOLD {
-            raw_score += 3;
-        } else if predicted_files.len() >= crate::constants::COMPLEXITY_MEDIUM_FILE_COUNT_THRESHOLD
-            || predicted_files.len() >= 2
-        {
-            raw_score += 2;
-        } else if !predicted_files.is_empty() {
-            raw_score += 1;
-        }
-
-        // Factor B: Transitive CodeGraph blast radius + SCC cycle coupling
-        if external_dependents >= 6 {
-            raw_score += 3;
-        } else if external_dependents >= 2 {
-            raw_score += 2;
-        } else if external_dependents >= 1 {
-            raw_score += 1;
-        }
-        if has_cyclic_dependency {
-            raw_score += 1;
-        }
-
-        // Factor C: AST symbol surface & PageRank hub centrality
-        if matched_symbol_count >= 4 {
-            raw_score += 2;
-        } else if matched_symbol_count >= 1 {
-            raw_score += 1;
-        }
-        if max_centrality_ratio >= 2.0 {
-            raw_score += 1;
-        }
-
-        // Factor D: Discrete architectural transformation breadth (tokenized stems, zero substring false positives)
+        // Discrete architectural transformation breadth (tokenized stems, zero substring false positives)
         let arch_breadth_hits = raw_tokens
             .iter()
             .filter(|&&tok| {
@@ -264,15 +237,15 @@ impl TaskComplexityScorer {
                     .any(|&arch| stem.starts_with(arch) || tok.starts_with(arch))
             })
             .count();
-        raw_score += (arch_breadth_hits as u32).min(4);
+        let breadth_term = (arch_breadth_hits as f64).min(4.0);
 
         let domain_spread =
             crate::context::search::intent_filter::IntentClassifier::detect(task_description).len();
-        if domain_spread >= 3 {
-            raw_score += 1;
-        }
+        let domain_term = (domain_spread.saturating_sub(2) as f64).min(1.0);
 
-        let score = raw_score.clamp(1, 10);
+        let continuous_score =
+            1.0 + file_fanout + blast_coupling + symbol_surface + breadth_term + domain_term;
+        let score = (continuous_score.round() as u32).clamp(1, 10);
         let risk_level = match score {
             1..=3 => "LOW",
             4..=6 => "MEDIUM",

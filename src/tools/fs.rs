@@ -1089,24 +1089,20 @@ pub fn look_at_with_options(
     let want_exports = mode == "all" || mode == "exports";
     let want_structure = mode == "all" || mode == "structure";
 
-    if matches!(ext_lower.as_str(), "json" | "toml" | "yaml" | "yml") {
-        let mut keys = Vec::new();
-        for (idx, line) in lines.iter().enumerate() {
-            let trimmed = line.trim();
-            if trimmed.is_empty() || trimmed.starts_with('#') || trimmed.starts_with("//") {
-                continue;
-            }
-            let indent = line.len().saturating_sub(line.trim_start().len());
-            if indent <= 2
-                && (trimmed.starts_with('[') || trimmed.contains(':') || trimmed.contains('='))
-            {
-                keys.push(format!("  L{:>4}: {}", idx + 1, trimmed));
-            }
-        }
-        out.push_str(&format!("## Top-Level Sections / Keys ({})\n", keys.len()));
-        for k in keys.iter().take(60) {
-            out.push_str(k);
-            out.push('\n');
+    // Structured configuration parsing via real JSON / TOML / YAML parsers instead of indentation heuristics
+    if let Ok(serde_json::Value::Object(map)) = serde_json::from_str::<serde_json::Value>(&content)
+    {
+        out.push_str(&format!("## JSON Top-Level Keys ({})\n", map.len()));
+        for (k, v) in map.iter().take(60) {
+            let desc = match v {
+                serde_json::Value::Array(a) => format!("array[{}]", a.len()),
+                serde_json::Value::Object(o) => format!("object{{{}}}", o.len()),
+                serde_json::Value::String(_) => "string".to_string(),
+                serde_json::Value::Number(n) => format!("number({})", n),
+                serde_json::Value::Bool(b) => format!("bool({})", b),
+                serde_json::Value::Null => "null".to_string(),
+            };
+            out.push_str(&format!("  - `{}`: {}\n", k, desc));
         }
         out.push_str(&format!(
             "\n*Use `read_file(path: \"{}\", start_line: X, end_line: Y)` to inspect specific sections.*",
@@ -1114,22 +1110,76 @@ pub fn look_at_with_options(
         ));
         return Ok(out);
     }
+    if ext_lower == "toml" {
+        if let Ok(toml::Value::Table(tbl)) = toml::from_str::<toml::Value>(&content) {
+            out.push_str(&format!("## TOML Top-Level Sections ({})\n", tbl.len()));
+            for (k, v) in tbl.iter().take(60) {
+                let desc = match v {
+                    toml::Value::Table(t) => format!("table{{{}}}", t.len()),
+                    toml::Value::Array(a) => format!("array[{}]", a.len()),
+                    toml::Value::String(_) => "string".to_string(),
+                    toml::Value::Integer(n) => format!("int({})", n),
+                    toml::Value::Float(f) => format!("float({})", f),
+                    toml::Value::Boolean(b) => format!("bool({})", b),
+                    toml::Value::Datetime(d) => format!("datetime({})", d),
+                };
+                out.push_str(&format!("  - `[{}]` ({})\n", k, desc));
+            }
+            out.push_str(&format!(
+                "\n*Use `read_file(path: \"{}\", start_line: X, end_line: Y)` to inspect specific sections.*",
+                relative_path
+            ));
+            return Ok(out);
+        }
+    }
+
+    // Parse source file ONCE with Tree-sitter AST (`RepoMapExtractor` + `ArchParser`)
+    let extractor = crate::context::ast::repomap::RepoMapExtractor::new();
+    let all_ast_symbols = extractor
+        .extract_symbols_from_str(&ext_lower, &content)
+        .unwrap_or_default();
+    let has_ast = !all_ast_symbols.is_empty();
 
     if want_imports {
-        let mut imports = Vec::new();
-        for (idx, line) in lines.iter().enumerate() {
-            let trimmed = line.trim();
-            if trimmed.starts_with("use ")
-                || trimmed.starts_with("pub use ")
-                || trimmed.starts_with("import ")
-                || (trimmed.starts_with("from ") && trimmed.contains(" import "))
-                || trimmed.starts_with("#include ")
-                || (trimmed.contains("require(")
-                    && (trimmed.starts_with("const ") || trimmed.starts_with("let ")))
-            {
-                imports.push(format!("  L{:>4}: {}", idx + 1, trimmed));
+        let mut imports: Vec<String> = if has_ast {
+            let mut from_ast: Vec<(usize, String)> = all_ast_symbols
+                .iter()
+                .filter(|s| s.kind == "import")
+                .map(|s| (s.line_number, s.signature.clone()))
+                .collect();
+            if from_ast.is_empty() {
+                from_ast = crate::context::governance::arch_parser::ArchParser::extract_imports(
+                    relative_path,
+                    &content,
+                    &ext_lower,
+                )
+                .into_iter()
+                .map(|imp| (imp.line_number, imp.raw))
+                .collect();
             }
-        }
+            from_ast.sort_by_key(|(ln, _)| *ln);
+            from_ast.dedup();
+            from_ast
+                .into_iter()
+                .map(|(ln, sig)| format!("  L{:>4}: {}", ln, sig))
+                .collect()
+        } else {
+            // Minimal fallback only for languages without a compiled Tree-sitter grammar
+            lines
+                .iter()
+                .enumerate()
+                .filter_map(|(idx, line)| {
+                    let t = line.trim();
+                    let first_tok = t.split_whitespace().next().unwrap_or("");
+                    matches!(
+                        first_tok,
+                        "import" | "include" | "#include" | "using" | "require"
+                    )
+                    .then(|| format!("  L{:>4}: {}", idx + 1, t))
+                })
+                .collect()
+        };
+        imports.truncate(100);
         out.push_str(&format!("## Imports & Dependencies ({})\n", imports.len()));
         if imports.is_empty() {
             out.push_str("  *(none detected)*\n");
@@ -1146,18 +1196,31 @@ pub fn look_at_with_options(
     }
 
     if want_exports {
-        let mut exports = Vec::new();
-        for (idx, line) in lines.iter().enumerate() {
-            let trimmed = line.trim();
-            if trimmed.starts_with("pub ")
-                || trimmed.starts_with("pub(crate) ")
-                || trimmed.starts_with("export ")
-                || trimmed.starts_with("__all__")
-            {
-                let clean = trimmed.trim_end_matches('{').trim_end_matches(';').trim();
-                exports.push(format!("  L{:>4}: {}", idx + 1, clean));
-            }
-        }
+        let exports: Vec<String> = if has_ast {
+            all_ast_symbols
+                .iter()
+                .filter(|s| s.kind != "import")
+                .filter(|s| {
+                    let sig = s.signature.trim_start();
+                    sig.starts_with("pub ")
+                        || sig.starts_with("pub(")
+                        || sig.starts_with("export ")
+                        || (ext_lower == "py" && !s.name.starts_with('_'))
+                })
+                .map(|s| format!("  L{:>4}: [{}] {}", s.line_number, s.kind, s.signature))
+                .collect()
+        } else {
+            lines
+                .iter()
+                .enumerate()
+                .filter_map(|(idx, line)| {
+                    let t = line.trim();
+                    let first_tok = t.split_whitespace().next().unwrap_or("");
+                    matches!(first_tok, "export" | "public")
+                        .then(|| format!("  L{:>4}: {}", idx + 1, t.trim_end_matches('{').trim()))
+                })
+                .collect()
+        };
         out.push_str(&format!(
             "## Exports & Public Surface ({})\n",
             exports.len()
@@ -1177,13 +1240,10 @@ pub fn look_at_with_options(
     }
 
     if want_structure {
-        let extractor = crate::context::ast::repomap::RepoMapExtractor::new();
-        let ast_symbols = extractor
-            .extract_symbols_from_str(&ext_lower, &content)
-            .unwrap_or_default()
+        let ast_symbols: Vec<_> = all_ast_symbols
             .into_iter()
             .filter(|s| s.kind != "import")
-            .collect::<Vec<_>>();
+            .collect();
 
         if !ast_symbols.is_empty() {
             out.push_str(&format!(
@@ -1211,27 +1271,29 @@ pub fn look_at_with_options(
                 ));
             }
         } else {
-            // Fallback structural scan for languages without active Tree-sitter grammar
+            // Token-level structural scan only for languages without an active Tree-sitter grammar
+            const DECL_HEADS: &[&str] = &[
+                "fn",
+                "struct",
+                "enum",
+                "trait",
+                "impl",
+                "def",
+                "class",
+                "function",
+                "interface",
+                "type",
+                "func",
+                "module",
+                "protocol",
+            ];
             let mut defs = Vec::new();
             for (idx, line) in lines.iter().enumerate() {
                 let trimmed = line.trim();
-                if trimmed.starts_with("fn ")
-                    || trimmed.starts_with("pub fn ")
-                    || trimmed.starts_with("async fn ")
-                    || trimmed.starts_with("pub async fn ")
-                    || trimmed.starts_with("struct ")
-                    || trimmed.starts_with("pub struct ")
-                    || trimmed.starts_with("enum ")
-                    || trimmed.starts_with("trait ")
-                    || trimmed.starts_with("impl")
-                    || trimmed.starts_with("def ")
-                    || trimmed.starts_with("async def ")
-                    || trimmed.starts_with("class ")
-                    || trimmed.starts_with("function ")
-                    || trimmed.starts_with("interface ")
-                    || trimmed.starts_with("type ")
-                    || trimmed.starts_with("func ")
-                {
+                let head = trimmed
+                    .split_whitespace()
+                    .find(|t| !matches!(*t, "pub" | "public" | "private" | "export" | "async"));
+                if head.is_some_and(|h| DECL_HEADS.contains(&h)) {
                     defs.push(format!(
                         "  L{:>4}: {}",
                         idx + 1,

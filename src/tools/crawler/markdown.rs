@@ -86,8 +86,10 @@ impl MarkdownDistiller {
                                 }
                             }
 
-                            // Filter out binary / media extensions
-                            if !Self::is_binary_or_asset(&resolved_str) {
+                            // Skip render-only static web assets (images/media/fonts/scripts/stylesheets);
+                            // document links (HTML, Markdown, PDF, DOCX, XLSX, EPUB, CSV, XML, etc.) are allowed
+                            // and routed through `DocumentConverterRegistry` upon fetch.
+                            if !Self::is_non_document_web_asset(&resolved) {
                                 links.push(resolved_str);
                             }
                         }
@@ -101,16 +103,26 @@ impl MarkdownDistiller {
         links
     }
 
-    fn is_binary_or_asset(url: &str) -> bool {
-        let lower = url.to_lowercase();
-        let blacklisted = [
-            ".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg", ".ico", ".pdf", ".zip", ".tar",
-            ".gz", ".tgz", ".wasm", ".css", ".js", ".mjs", ".woff", ".woff2", ".ttf", ".eot",
-            ".mp4", ".mp3", ".avi", ".mov",
-        ];
-        blacklisted
-            .iter()
-            .any(|ext| lower.ends_with(ext) || lower.contains(&format!("{}?", ext)))
+    /// Classifies URL path suffixes by web-asset class so browser-rendering static assets
+    /// (images, media, fonts, stylesheets, scripts, WebAssembly) are skipped pre-fetch while
+    /// convertible documents (`.pdf`, `.docx`, `.xlsx`, `.epub`, `.ipynb`, `.csv`, `.xml`, etc.)
+    /// remain crawlable and are converted via `DocumentConverterRegistry` upon response inspection.
+    fn is_non_document_web_asset(url: &Url) -> bool {
+        let Some(ext) = std::path::Path::new(url.path())
+            .extension()
+            .and_then(|e| e.to_str())
+        else {
+            return false;
+        };
+        let ext_lower = ext.to_ascii_lowercase();
+        let mime_group = match ext_lower.as_str() {
+            "png" | "jpg" | "jpeg" | "gif" | "webp" | "svg" | "ico" | "avif" | "bmp" => "image",
+            "mp4" | "webm" | "avi" | "mov" | "mp3" | "wav" | "ogg" => "media",
+            "woff" | "woff2" | "ttf" | "otf" | "eot" => "font",
+            "css" | "js" | "mjs" | "cjs" | "wasm" | "map" => "asset",
+            _ => "document",
+        };
+        mime_group != "document"
     }
 }
 

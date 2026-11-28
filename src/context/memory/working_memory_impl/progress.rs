@@ -389,31 +389,35 @@ impl WorkingMemory {
             };
 
             let mut completing_parent_subtasks = false;
+            let transition_marker = |line: &str, from_markers: &[&str], to_marker: &str| {
+                from_markers
+                    .iter()
+                    .find(|&&m| line.contains(m))
+                    .map(|&m| line.replacen(m, to_marker, 1))
+            };
+            let target_transition: Option<(&[&str], &str)> = if is_done {
+                Some((&["[ ]", "[>]", "[/]"], "[x]"))
+            } else if is_active {
+                Some((&["[ ]", "[x]"], "[>]"))
+            } else if is_pending {
+                Some((&["[x]", "[>]"], "[ ]"))
+            } else {
+                None
+            };
 
             for (line_idx, line) in content.lines().enumerate() {
                 if completing_parent_subtasks {
                     if Self::is_indented_subtask_line(line) {
-                        let replaced = line
-                            .replacen("[ ]", "[x]", 1)
-                            .replacen("[>]", "[x]", 1)
-                            .replacen("[/]", "[x]", 1);
+                        let replaced = transition_marker(line, &["[ ]", "[>]", "[/]"], "[x]")
+                            .unwrap_or_else(|| line.to_string());
                         updated_lines.push(replaced);
                         continue;
-                    } else {
-                        completing_parent_subtasks = false;
                     }
+                    completing_parent_subtasks = false;
                 }
                 if auto_completed_earlier_lines.contains(&line_idx) {
-                    if line.contains("[>]") {
-                        updated_lines.push(line.replacen("[>]", "[x]", 1));
-                        modified = true;
-                        continue;
-                    } else if line.contains("[/]") {
-                        updated_lines.push(line.replacen("[/]", "[x]", 1));
-                        modified = true;
-                        continue;
-                    } else if line.contains("[ ]") {
-                        updated_lines.push(line.replacen("[ ]", "[x]", 1));
+                    if let Some(replaced) = transition_marker(line, &["[>]", "[/]", "[ ]"], "[x]") {
+                        updated_lines.push(replaced);
                         modified = true;
                         continue;
                     }
@@ -421,48 +425,21 @@ impl WorkingMemory {
                 if line_idx == target_line_idx {
                     if is_done {
                         completing_parent_subtasks = true;
-                        if line.contains("[ ]") {
-                            updated_lines.push(line.replacen("[ ]", "[x]", 1));
-                            modified = true;
-                            continue;
-                        } else if line.contains("[>]") {
-                            updated_lines.push(line.replacen("[>]", "[x]", 1));
-                            modified = true;
-                            continue;
-                        } else if line.contains("[/]") {
-                            updated_lines.push(line.replacen("[/]", "[x]", 1));
-                            modified = true;
-                            continue;
-                        }
-                    } else if is_active {
-                        if line.contains("[ ]") {
-                            updated_lines.push(line.replacen("[ ]", "[>]", 1));
-                            modified = true;
-                            continue;
-                        } else if line.contains("[x]") {
-                            updated_lines.push(line.replacen("[x]", "[>]", 1));
-                            modified = true;
-                            continue;
-                        }
-                    } else if is_pending {
-                        if line.contains("[x]") {
-                            updated_lines.push(line.replacen("[x]", "[ ]", 1));
-                            modified = true;
-                            continue;
-                        } else if line.contains("[>]") {
-                            updated_lines.push(line.replacen("[>]", "[ ]", 1));
+                    }
+                    if let Some((from_set, to_marker)) = target_transition {
+                        if let Some(replaced) = transition_marker(line, from_set, to_marker) {
+                            updated_lines.push(replaced);
                             modified = true;
                             continue;
                         }
                     }
                 }
 
-                if Some(line_idx) == next_active_line_idx
-                    && !Self::is_indented_subtask_line(line)
-                    && line.contains("[ ]")
-                {
-                    updated_lines.push(line.replacen("[ ]", "[>]", 1));
-                    continue;
+                if Some(line_idx) == next_active_line_idx && !Self::is_indented_subtask_line(line) {
+                    if let Some(replaced) = transition_marker(line, &["[ ]"], "[>]") {
+                        updated_lines.push(replaced);
+                        continue;
+                    }
                 }
 
                 updated_lines.push(line.to_string());

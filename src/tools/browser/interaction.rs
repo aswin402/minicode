@@ -208,7 +208,13 @@ pub enum BatchStep {
         #[serde(default, deserialize_with = "deserialize_opt_u64_lenient")]
         timeout_ms: Option<u64>,
     },
-    #[serde(alias = "wait", alias = "delay")]
+    #[serde(
+        alias = "wait",
+        alias = "delay",
+        alias = "wait_for_delay",
+        alias = "sleep",
+        alias = "pause"
+    )]
     WaitDelay {
         #[serde(
             default,
@@ -2409,14 +2415,23 @@ mod tests {
     fn test_batch_step_parse_steps_supports_snapshot_and_aliases() {
         let val = serde_json::json!([
             {"action": "wait_for_network_idle", "timeout_ms": 5000},
+            {"action": "wait_for_delay", "seconds": 3},
             {"action": "snapshot"},
             {"action": "dom_snapshot"},
             {"action": "inspect"}
         ]);
-        let steps = BatchStep::parse_steps(&val).expect("snapshot variants should parse cleanly");
-        assert_eq!(steps.len(), 4);
-        assert_eq!(steps[1], BatchStep::Snapshot {});
+        let steps = BatchStep::parse_steps(&val)
+            .expect("snapshot & wait_for_delay variants should parse cleanly");
+        assert_eq!(steps.len(), 5);
+        assert_eq!(
+            steps[1],
+            BatchStep::WaitDelay {
+                ms: 0,
+                seconds: Some(3.0)
+            }
+        );
         assert_eq!(steps[2], BatchStep::Snapshot {});
         assert_eq!(steps[3], BatchStep::Snapshot {});
+        assert_eq!(steps[4], BatchStep::Snapshot {});
     }
 }

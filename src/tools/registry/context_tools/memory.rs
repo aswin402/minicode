@@ -596,9 +596,15 @@ pub(crate) fn resolve_plan_title(raw_args: &serde_json::Value, workspace_root: &
     "Task Plan".to_string()
 }
 
-/// Promotes any project `milestones` not yet covered by `steps` (by morphological domain-token
-/// coverage) into macro `steps`, preventing truncated 1-step plans when an upstream gateway or
-/// model puts detailed substeps on Phase 1 while listing Phases 2..M in `milestones`.
+/// Promotes any trailing project `milestones` not yet covered by `steps` (by morphological
+/// domain-token coverage or verification-modality equivalence) into macro `steps`, preventing
+/// truncated 1-step plans when an upstream gateway or model puts detailed substeps on Phase 1
+/// while listing Phases 2..M in `milestones`.
+///
+/// Uses monotonic suffix order (`mi > last_covered`): only milestones strictly after the last
+/// covered milestone are appended, so pre-plan discovery milestones (e.g. `milestones[0]` already
+/// completed before `create_plan`) or interior milestones merged into earlier steps are never
+/// chronologically inverted onto the tail after a terminal verification/archive step.
 fn reconcile_steps_with_milestones(
     steps: &mut Vec<String>,
     step_substeps: &mut Vec<Vec<String>>,
@@ -614,33 +620,63 @@ fn reconcile_steps_with_milestones(
     }
 
     let existing_count = steps.len();
-    for milestone in ms {
-        let m_trimmed = milestone.trim();
-        if m_trimmed.is_empty() {
-            continue;
-        }
-        let m_tokens = WorkingMemory::extract_domain_tokens(m_trimmed);
-        if m_tokens.is_empty() {
-            continue;
-        }
-        let m_is_verify = WorkingMemory::step_requires_runtime_verification(m_trimmed);
-        let required_overlap = m_tokens.len().div_ceil(2).max(1);
-        let is_covered = (0..existing_count).any(|idx| {
-            if m_is_verify && !WorkingMemory::step_requires_runtime_verification(&steps[idx]) {
-                return false;
+    let covered: Vec<bool> = ms
+        .iter()
+        .map(|milestone| {
+            let m_trimmed = milestone.trim();
+            if m_trimmed.is_empty() {
+                return true;
             }
-            let subs_joined = step_substeps
-                .get(idx)
-                .map(|s| s.join(" "))
-                .unwrap_or_default();
-            let combined_lower = format!("{} {}", steps[idx], subs_joined).to_ascii_lowercase();
-            let matched = m_tokens
-                .iter()
-                .filter(|tok| WorkingMemory::stem_token_matches_task(tok, &combined_lower))
-                .count();
-            matched >= required_overlap
-        });
-        if !is_covered {
+            let m_tokens: Vec<String> = WorkingMemory::extract_domain_tokens(m_trimmed)
+                .into_iter()
+                .filter(|tok| !tok.bytes().all(|b| b.is_ascii_digit()) && tok != "across")
+                .collect();
+            if m_tokens.is_empty() {
+                return true;
+            }
+            let m_is_verify = WorkingMemory::step_requires_runtime_verification(m_trimmed);
+            let m_is_browser = WorkingMemory::step_requires_browser_verification(m_trimmed);
+            let m_is_static = WorkingMemory::step_requires_static_build_or_lint(m_trimmed);
+            let required_overlap = m_tokens.len().div_ceil(2).max(1);
+            (0..existing_count).any(|idx| {
+                if m_is_verify && !WorkingMemory::step_requires_runtime_verification(&steps[idx]) {
+                    return false;
+                }
+                // Semantic verification-modality equivalence: never append a duplicate Browser QA or
+                // static build/lint step when an existing step already covers that verification modality.
+                if m_is_browser && WorkingMemory::step_requires_browser_verification(&steps[idx]) {
+                    return true;
+                }
+                if m_is_static
+                    && !m_is_browser
+                    && WorkingMemory::step_requires_static_build_or_lint(&steps[idx])
+                {
+                    return true;
+                }
+                let subs_joined = step_substeps
+                    .get(idx)
+                    .map(|s| s.join(" "))
+                    .unwrap_or_default();
+                let combined_lower = format!("{} {}", steps[idx], subs_joined).to_ascii_lowercase();
+                let matched = m_tokens
+                    .iter()
+                    .filter(|tok| WorkingMemory::stem_token_matches_task(tok, &combined_lower))
+                    .count();
+                matched >= required_overlap
+            })
+        })
+        .collect();
+
+    let last_covered = covered.iter().rposition(|&c| c);
+    for (mi, (milestone, &is_covered)) in ms.iter().zip(covered.iter()).enumerate() {
+        if is_covered {
+            continue;
+        }
+        if last_covered.is_some_and(|last| mi <= last) {
+            continue;
+        }
+        let m_trimmed = milestone.trim();
+        if !m_trimmed.is_empty() {
             steps.push(m_trimmed.to_string());
             step_substeps.push(Vec::new());
         }
@@ -1259,26 +1295,59 @@ pub async fn dispatch(
                 _ => {}
             }
 
-            let status = param::require_str_with_aliases(
+            let step_list: Vec<String> = if let Some(arr) = param::opt_string_array(args, "steps")
+                .or_else(|| param::opt_string_array(args, "completed_steps"))
+                .filter(|a| !a.is_empty())
+            {
+                arr
+            } else if let Some(single) = param::get_str_with_aliases(
+                args,
+                &["step", "completed_step", "task", "id", "index"],
+            )
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            {
+                vec![single.to_string()]
+            } else {
+                vec!["active".to_string()]
+            };
+            let status: &str = match param::get_str_with_aliases(
                 args,
                 &["status", "state", "progress"],
-                "update_progress",
-            )?;
-            let step_list: Vec<String> =
-                if let Some(arr) = param::opt_string_array(args, "steps").filter(|a| !a.is_empty())
+            )
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            {
+                Some(explicit) => explicit,
+                None if matches!(
+                    action.as_str(),
+                    "complete"
+                        | "completed"
+                        | "done"
+                        | "finish"
+                        | "in_progress"
+                        | "active"
+                        | "start"
+                        | "pending"
+                        | "blocked"
+                ) =>
                 {
-                    arr
-                } else if let Some(single) = param::get_str_with_aliases(
-                    args,
-                    &["step", "completed_step", "task", "id", "index"],
-                )
-                .map(str::trim)
-                .filter(|s| !s.is_empty())
+                    action.as_str()
+                }
+                None if args.get("completed_step").is_some()
+                    || args.get("completed_steps").is_some()
+                    || step_list.len() > 1 =>
                 {
-                    vec![single.to_string()]
-                } else {
-                    vec!["active".to_string()]
-                };
+                    "completed"
+                }
+                None => {
+                    return Err(ToolError::InvalidArguments {
+                        name: "update_progress".to_string(),
+                        reason: "Missing required argument 'status'".to_string(),
+                    }
+                    .into());
+                }
+            };
             let mut resolved_titles = Vec::with_capacity(step_list.len());
             let mut any_modified = false;
             for s in &step_list {
@@ -2498,5 +2567,135 @@ mod tests {
         .expect("handled")
         .expect("validate ok");
         assert!(val_out.contains("0 error(s), 0 warning(s)"));
+    }
+
+    #[test]
+    fn test_minitest87_no_duplicate_browser_qa_milestone_or_wave0_orphan() {
+        let mut steps = vec![
+            "Foundation: tokens, grid, header".to_string(),
+            "Hero + live terminal".to_string(),
+            "Verification: browser QA at 3 viewports — Serve locally, screenshot desktop/tablet/mobile, run QA audit".to_string(),
+        ];
+        let mut substeps = vec![
+            vec!["Write index.html".to_string()],
+            vec!["Hero copy".to_string()],
+            vec![
+                "Local static server".to_string(),
+                "Browser QA audit + screenshots at 3 viewports".to_string(),
+            ],
+        ];
+        let milestones = vec![
+            "Foundation: token system + hairline grid + header shell".to_string(),
+            "Hero with live terminal agent stream".to_string(),
+            "Browser QA across 1440 / 768 / 390".to_string(),
+            "Final polish and release".to_string(),
+        ];
+        reconcile_steps_with_milestones(&mut steps, &mut substeps, Some(&milestones));
+        assert!(
+            !steps
+                .iter()
+                .any(|s| s == "Browser QA across 1440 / 768 / 390"),
+            "Must NOT duplicate Browser QA milestone when a Browser QA step already exists: {:?}",
+            steps
+        );
+
+        // Also verify any synthetically appended trailing verification step in explicit-dependency DAGs
+        // depends on prior build nodes instead of landing orphaned in Wave 0!
+        let raw_args = serde_json::json!({
+            "steps": [
+                {"id": "t1_shell", "title": "Foundation", "target_files": ["index.html"], "depends_on": []},
+                {"id": "t2_hero", "title": "Hero", "target_files": ["index.html"], "depends_on": ["t1_shell"]}
+            ]
+        });
+        let synth_steps = vec![
+            "Foundation".to_string(),
+            "Hero".to_string(),
+            "Browser QA across 1440 / 768 / 390".to_string(),
+        ];
+        let synth_subs = vec![vec![], vec![], vec![]];
+        let dag = crate::context::memory::task_dag::PlanDag::from_plan_args(
+            "Site",
+            &raw_args,
+            &synth_steps,
+            &synth_subs,
+        )
+        .unwrap();
+        assert!(
+            !dag.nodes[2].depends_on.is_empty(),
+            "Synthetically appended verification step must never be orphaned in Wave 0"
+        );
+        let topo = dag.compute_execution_topology().unwrap();
+        assert!(
+            !topo.topological_waves[0].contains(&2),
+            "Verification step must not be scheduled in Wave 0: {:?}",
+            topo.topological_waves
+        );
+    }
+
+    #[tokio::test]
+    async fn test_e2e_v066_no_preplan_milestone_appended_after_verify_and_batch_update_progress_default_status(
+    ) {
+        // 1. Live E2E regression: `milestones[0]` was already completed before `create_plan`, while
+        //    `steps` covers `milestones[1..=5]` ending at `Verify and archive`. Must NEVER append
+        //    `milestones[0]` as Step 6 after `Verify and archive`!
+        let mut steps = vec![
+            "Foundation: tokens, hairline grid, masthead".to_string(),
+            "Hero + live terminal preview with computed metrics".to_string(),
+            "Architecture matrix + security rows".to_string(),
+            "Browser QA at 1440x900 and 390x844".to_string(),
+            "Verify and archive: Run power_verify on the three files, then archive_plan"
+                .to_string(),
+        ];
+        let mut substeps = vec![Vec::new(); 5];
+        let milestones = vec![
+            "Fetch upstream source of truth (GitHub API repo JSON, README.md, LICENSE)".to_string(),
+            "Foundation: design tokens, hairline grid, masthead header".to_string(),
+            "Hero + live terminal preview with computed metrics".to_string(),
+            "Architecture matrix + Security rows".to_string(),
+            "Browser QA: 1440x900 and 390x844 via browser_batch (wait_for_delay + screenshots)"
+                .to_string(),
+            "power_verify + archive_plan".to_string(),
+        ];
+        reconcile_steps_with_milestones(&mut steps, &mut substeps, Some(&milestones));
+        assert_eq!(
+            steps.len(),
+            5,
+            "Pre-plan milestone[0] must NOT be appended after terminal Verify and archive step: {:?}",
+            steps
+        );
+
+        // 2. Batch `update_progress(steps=[...])` omitting `status` cleanly defaults to `completed`
+        let temp = tempfile::tempdir().unwrap();
+        let wm = crate::context::working_memory::WorkingMemory::new(temp.path());
+        wm.init_two_tier_plan_with_substeps(
+            "Landing",
+            &["Build hero".to_string(), "Verify".to_string()],
+            &[
+                vec![
+                    "Write hero markup".to_string(),
+                    "Write terminal styles".to_string(),
+                ],
+                Vec::new(),
+            ],
+            None,
+            None,
+        )
+        .unwrap();
+
+        let batch_out = dispatch(
+            "update_progress",
+            &serde_json::json!({
+                "steps": ["Write hero markup", "Write terminal styles"]
+            }),
+            temp.path(),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        assert!(batch_out.contains("to 'completed'"), "got:\n{batch_out}");
+        assert!(
+            batch_out.contains("1/2 macro tasks completed"),
+            "got:\n{batch_out}"
+        );
     }
 }

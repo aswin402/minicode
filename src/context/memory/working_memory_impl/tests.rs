@@ -4595,3 +4595,143 @@ fn test_minitest75_completed_substep_does_not_fuzzy_match_earlier_macro_step() {
 
     fs::remove_dir_all(temp_dir).ok();
 }
+
+#[test]
+fn test_minitest87_single_page_shared_files_subplan_todo_progression() {
+    let temp_dir =
+        std::env::temp_dir().join(format!("minicode_test_mt87_{}", uuid::Uuid::new_v4()));
+    fs::create_dir_all(temp_dir.join("assets")).unwrap();
+    fs::create_dir_all(temp_dir.join("minikit_docs/core")).unwrap();
+    fs::create_dir_all(temp_dir.join(".minicode/plan")).unwrap();
+
+    let wm = WorkingMemory::new(&temp_dir);
+    let steps = vec![
+        "Foundation: tokens, grid, header".to_string(),
+        "Hero + live terminal".to_string(),
+        "Philosophy: evidence before assertions".to_string(),
+        "Performance / footprint".to_string(),
+        "Autonomous Swarm DAG".to_string(),
+        "Principles, community, CTA, footer".to_string(),
+        "Verification: browser QA at 3 viewports".to_string(),
+    ];
+    let step_substeps = vec![
+        vec![
+            "Write index.html head + header markup".to_string(),
+            "Write assets/styles.css tokens + grid + header".to_string(),
+            "Write assets/app.js nav + reveal scaffolding".to_string(),
+        ],
+        vec![
+            "Hero copy + CTAs markup".to_string(),
+            "Terminal shell markup with status readout".to_string(),
+            "CSS: hero grid, terminal chrome, glow".to_string(),
+            "JS: scripted event stream with cursor + auto-typing".to_string(),
+        ],
+        vec![],
+        vec![
+            "Metric matrix markup".to_string(),
+            "CSS for shared-border matrix".to_string(),
+        ],
+        vec![
+            "DAG SVG markup + legend".to_string(),
+            "JS: staged DAG activation timeline".to_string(),
+        ],
+        vec![
+            "Principle matrix markup".to_string(),
+            "Community placeholder slots".to_string(),
+            "CTA band + footer".to_string(),
+        ],
+        vec![
+            "Local static server".to_string(),
+            "Browser QA audit + screenshots at 3 viewports".to_string(),
+        ],
+    ];
+    wm.init_two_tier_plan_with_substeps(
+        "minicode landing page",
+        &steps,
+        &step_substeps,
+        None,
+        None,
+    )
+    .unwrap();
+
+    // Persist matching task_dag.json where Steps 1..6 share `["index.html", "assets/styles.css", "assets/app.js"]`
+    let raw_dag_args = serde_json::json!({
+        "steps": [
+            {"id": "t1", "title": steps[0], "target_files": ["index.html", "assets/styles.css", "assets/app.js"], "depends_on": []},
+            {"id": "t2", "title": steps[1], "target_files": ["index.html", "assets/styles.css", "assets/app.js"], "depends_on": ["t1"]},
+            {"id": "t3", "title": steps[2], "target_files": ["index.html", "assets/styles.css"], "depends_on": ["t2"]},
+            {"id": "t4", "title": steps[3], "target_files": ["index.html", "assets/styles.css", "assets/app.js"], "depends_on": ["t3"]},
+            {"id": "t5", "title": steps[4], "target_files": ["index.html", "assets/styles.css", "assets/app.js"], "depends_on": ["t4"]},
+            {"id": "t6", "title": steps[5], "target_files": ["index.html", "assets/styles.css", "assets/app.js"], "depends_on": ["t5"]},
+            {"id": "t7", "title": steps[6], "target_files": [], "depends_on": ["t6"]}
+        ]
+    });
+    let dag = crate::context::memory::task_dag::PlanDag::from_plan_args(
+        "minicode landing page",
+        &raw_dag_args,
+        &steps,
+        &step_substeps,
+    )
+    .unwrap();
+    dag.save(&temp_dir).unwrap();
+
+    // Write full single-page static site (`index.html`, `assets/styles.css`, `assets/app.js`)
+    // matching `minitest87`: `<section class="hero" id="top">` + `data-ui="true"` terminal + later sections
+    let mut html = String::from(
+        "<!DOCTYPE html>\n<html lang=\"en\">\n<head><title>minicode</title></head>\n<body>\n\
+         <header class=\"site-head\" id=\"siteHead\"><nav class=\"nav\"></nav></header>\n\
+         <main id=\"main\">\n\
+         <section class=\"hero\" id=\"top\">\n  <h1 class=\"hero__title\">Autonomous agent</h1>\n\
+           <a class=\"cta\" href=\"#start\">Get Started</a>\n\
+           <div class=\"term\" data-ui=\"true\" aria-label=\"Live minicode terminal session\">\n\
+             <div class=\"term__status\" id=\"termStatus\">READY</div>\n\
+           </div>\n</section>\n\
+         <section class=\"sec\" id=\"philosophy\"><h2>Evidence before assertions</h2></section>\n\
+         <section class=\"sec\" id=\"performance\"><div class=\"metric__matrix\">RSS</div></section>\n\
+         <section class=\"sec\" id=\"swarm\"><svg class=\"dag__svg\"></svg><div class=\"dag__legend\"></div></section>\n\
+         <section class=\"sec\" id=\"principles\"><div class=\"principle__matrix\"></div></section>\n\
+         <section class=\"sec\" id=\"community\"><div class=\"community__placeholder\"></div></section>\n\
+         <section class=\"cta\" id=\"start\"><div class=\"cta__band\"></div></section>\n\
+         </main>\n<footer class=\"foot\">footer</footer>\n</body>\n</html>\n",
+    );
+    for i in 0..15 {
+        html.push_str(&format!("<!-- line {} -->\n", i));
+    }
+    fs::write(temp_dir.join("index.html"), &html).unwrap();
+    fs::write(
+        temp_dir.join("assets/styles.css"),
+        ".hero__grid { display: grid; } .term { box-shadow: 0 0 8px orange; } .matrix { border: 1px solid #333; }\n",
+    )
+    .unwrap();
+    fs::write(
+        temp_dir.join("assets/app.js"),
+        "const TERM_SCRIPT = []; function streamCursorTyping() {} function stagedDagActivationTimeline() {}\n",
+    )
+    .unwrap();
+
+    // Reconcile on build completion + browser QA start: must advance past Step 1..6 directly to Step 7 (Browser QA)!
+    let _ = wm.reconcile_preceding_tasks_on_step_transition(&[
+        "index.html".to_string(),
+        "assets/styles.css".to_string(),
+        "assets/app.js".to_string(),
+    ]);
+    let _ = wm.reconcile_verification_substep_on_tool_transition(
+        "browser_navigate",
+        &serde_json::json!({"url": "http://127.0.0.1:8765/index.html"}),
+        true,
+    );
+
+    let milestones = wm.read_roadmap_milestones();
+    assert_eq!(
+        milestones[0].completed_tasks, 6,
+        "All 6 shared-file single-page build macro steps must advance cleanly instead of freezing at 1/7: {:?}",
+        milestones[0].tasks
+    );
+    assert!(
+        milestones[0].tasks[6].status == TaskItemStatus::InProgress,
+        "Step 7 (Browser QA) must now be active [>], got: {:?}",
+        milestones[0].tasks[6]
+    );
+
+    fs::remove_dir_all(temp_dir).ok();
+}

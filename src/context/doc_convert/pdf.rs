@@ -115,7 +115,8 @@ fn extract_pdf_markdown(bytes: &[u8], source_name: Option<&str>) -> PdfExtractio
         };
     }
 
-    // Compute median body font size across all spans for algorithmic heading detection
+    // Compute robust document typography statistics (median + MAD + upper-cluster centroid)
+    // to separate headings from body text adaptively across arbitrary font scales.
     let mut sizes: Vec<f64> = all_spans
         .iter()
         .map(|s| s.font_size)
@@ -123,6 +124,29 @@ fn extract_pdf_markdown(bytes: &[u8], source_name: Option<&str>) -> PdfExtractio
         .collect();
     sizes.sort_by(|a, b| a.total_cmp(b));
     let median_font = sizes.get(sizes.len() / 2).copied().unwrap_or(11.0);
+    let mut abs_devs: Vec<f64> = sizes.iter().map(|&sz| (sz - median_font).abs()).collect();
+    abs_devs.sort_by(|a, b| a.total_cmp(b));
+    let mad_font = abs_devs.get(abs_devs.len() / 2).copied().unwrap_or(0.0);
+    // Robust upper-tail threshold: median + 2.5*MAD, with a Weber-fraction floor (18%) when
+    // body text accounts for >50% of spans (causing MAD == 0).
+    let heading_floor = (median_font + 2.5 * mad_font).max(median_font * 1.18);
+    // Split detected heading tiers cleanly at the midpoint of the upper font-size cluster.
+    let upper_sizes: Vec<f64> = sizes
+        .iter()
+        .copied()
+        .filter(|&sz| sz >= heading_floor)
+        .collect();
+    let major_heading_floor = if upper_sizes.is_empty() {
+        heading_floor * 1.25
+    } else {
+        let upper_min = upper_sizes[0];
+        let upper_max = *upper_sizes.last().unwrap_or(&upper_min);
+        if (upper_max - upper_min) > 1.0 {
+            0.5 * (upper_min + upper_max)
+        } else {
+            upper_min
+        }
+    };
 
     let total_pages = page_idx.max(1);
     for p in 0..total_pages {
@@ -155,6 +179,21 @@ fn extract_pdf_markdown(bytes: &[u8], source_name: Option<&str>) -> PdfExtractio
             lines.push((sp.y, sp.font_size, sp.text.clone()));
         }
 
+        // Compute adaptive per-page baseline line spacing (`median_dy`) for paragraph break detection
+        let mut line_gaps: Vec<f64> = lines
+            .windows(2)
+            .map(|w| (w[0].0 - w[1].0).abs())
+            .filter(|&dy| dy > 0.5)
+            .collect();
+        line_gaps.sort_by(|a, b| a.total_cmp(b));
+        let median_dy = line_gaps.get(line_gaps.len() / 2).copied();
+
+        // Compute adaptive line-length cap for headings from the page's median line length
+        let mut line_lens: Vec<usize> = lines.iter().map(|(_, _, t)| t.trim().len()).collect();
+        line_lens.sort_unstable();
+        let median_line_len = line_lens.get(line_lens.len() / 2).copied().unwrap_or(60);
+        let heading_len_cap = (median_line_len * 2).clamp(80, 180);
+
         // Group lines into paragraphs and font-size headings
         let mut prev_y: Option<f64> = None;
         let mut paragraph = String::new();
@@ -173,15 +212,17 @@ fn extract_pdf_markdown(bytes: &[u8], source_name: Option<&str>) -> PdfExtractio
             if clean_line.is_empty() {
                 continue;
             }
-            let is_heading = fsize >= median_font * 1.28
-                && clean_line.len() <= 140
+            let is_heading = fsize >= heading_floor
+                && clean_line.len() <= heading_len_cap
                 && !clean_line.ends_with('.');
-            let large_vertical_gap =
-                prev_y.is_some_and(|py| (py - y).abs() > fsize.max(10.0) * 1.65);
+            let gap_threshold = median_dy
+                .map(|dy| dy * 1.35)
+                .unwrap_or_else(|| fsize.max(median_font) * 1.5);
+            let large_vertical_gap = prev_y.is_some_and(|py| (py - y).abs() > gap_threshold);
 
             if is_heading {
                 flush_para(&mut md, &mut paragraph);
-                let prefix = if fsize >= median_font * 1.65 && total_pages == 1 {
+                let prefix = if fsize >= major_heading_floor && total_pages == 1 {
                     "##"
                 } else {
                     "###"
@@ -211,14 +252,57 @@ fn extract_pdf_markdown(bytes: &[u8], source_name: Option<&str>) -> PdfExtractio
     }
 }
 
+/// Tokenizes PDF dictionary `/Key /Value` name pairs cleanly regardless of whitespace formatting.
+fn parse_pdf_dict_keys(dict: &[u8]) -> Vec<(&[u8], Option<&[u8]>)> {
+    let is_delim = |b: u8| {
+        b.is_ascii_whitespace()
+            || matches!(
+                b,
+                b'/' | b'<' | b'>' | b'[' | b']' | b'(' | b')' | b'{' | b'}' | b'%'
+            )
+    };
+    let mut pairs = Vec::new();
+    let mut i = 0;
+    while i < dict.len() {
+        if dict[i] == b'/' {
+            let key_start = i + 1;
+            let mut key_end = key_start;
+            while key_end < dict.len() && !is_delim(dict[key_end]) {
+                key_end += 1;
+            }
+            let key = &dict[key_start..key_end];
+            let mut j = key_end;
+            while j < dict.len() && dict[j].is_ascii_whitespace() {
+                j += 1;
+            }
+            let val = if j < dict.len() && dict[j] == b'/' {
+                let v_start = j + 1;
+                let mut v_end = v_start;
+                while v_end < dict.len() && !is_delim(dict[v_end]) {
+                    v_end += 1;
+                }
+                i = v_end;
+                Some(&dict[v_start..v_end])
+            } else {
+                i = key_end;
+                None
+            };
+            if !key.is_empty() {
+                pairs.push((key, val));
+            }
+        } else {
+            i += 1;
+        }
+    }
+    pairs
+}
+
 fn is_non_text_pdf_stream(dict: &[u8]) -> bool {
-    contains_subslice(dict, b"/Subtype /Image")
-        || contains_subslice(dict, b"/Subtype/Image")
-        || contains_subslice(dict, b"/Type /XRef")
-        || contains_subslice(dict, b"/Type/XRef")
-        || contains_subslice(dict, b"/Subtype /Type1C")
-        || contains_subslice(dict, b"/Subtype/Type1C")
-        || contains_subslice(dict, b"/Length1 ")
+    parse_pdf_dict_keys(dict).into_iter().any(|(k, v)| {
+        (k == b"Subtype" && matches!(v, Some(b"Image" | b"Type1C" | b"CIDFontType0C")))
+            || (k == b"Type" && matches!(v, Some(b"XRef" | b"ObjStm")))
+            || k == b"Length1"
+    })
 }
 
 fn scan_pdf_streams(bytes: &[u8]) -> Vec<(&[u8], &[u8])> {

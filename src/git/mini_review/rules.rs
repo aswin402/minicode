@@ -280,23 +280,11 @@ impl ReviewRuleEngine {
             return Some(ExclusionReason::GeneratedOrVendor);
         }
 
-        // 3. Machine-generated lockfiles
-        const LOCKFILES: &[&str] = &[
-            "cargo.lock",
-            "package-lock.json",
-            "yarn.lock",
-            "pnpm-lock.yaml",
-            "bun.lock",
-            "bun.lockb",
-            "poetry.lock",
-            "uv.lock",
-            "gemfile.lock",
-            "composer.lock",
-            "go.sum",
-            "flake.lock",
-            "pubspec.lock",
-        ];
-        if LOCKFILES.contains(&file_name) {
+        // 3. Machine-generated lockfiles (single source of truth in `constants::GIT_LOCKFILES`)
+        if crate::constants::GIT_LOCKFILES
+            .iter()
+            .any(|lock| lock.eq_ignore_ascii_case(file_name))
+        {
             return Some(ExclusionReason::Lockfile);
         }
 
@@ -538,65 +526,131 @@ fn wildcard_match_segment(pat: &str, text: &str) -> bool {
     pi == p.len()
 }
 
-/// Maps a file path to its built-in precision language/config rule checklist.
+struct BuiltinLanguageRuleSpec {
+    id: &'static str,
+    rule: &'static str,
+    exact_names: &'static [&'static str],
+    name_prefixes: &'static [&'static str],
+    path_prefixes: &'static [&'static str],
+    extensions: &'static [&'static str],
+}
+
+impl BuiltinLanguageRuleSpec {
+    fn matches(&self, lower_path: &str, file_name: &str) -> bool {
+        if !self.path_prefixes.is_empty() {
+            let prefix_ok = self.path_prefixes.iter().any(|p| lower_path.starts_with(p));
+            let ext_ok = self.extensions.is_empty()
+                || self.extensions.iter().any(|e| lower_path.ends_with(e));
+            return prefix_ok && ext_ok;
+        }
+        self.exact_names.contains(&file_name)
+            || self.name_prefixes.iter().any(|p| file_name.starts_with(p))
+            || self.extensions.iter().any(|e| lower_path.ends_with(e))
+    }
+}
+
+const BUILTIN_LANGUAGE_RULES: &[BuiltinLanguageRuleSpec] = &[
+    BuiltinLanguageRuleSpec {
+        id: "cargo_toml",
+        rule: RULE_CARGO_TOML,
+        exact_names: &["cargo.toml"],
+        name_prefixes: &[],
+        path_prefixes: &[],
+        extensions: &[],
+    },
+    BuiltinLanguageRuleSpec {
+        id: "package_json",
+        rule: RULE_PACKAGE_JSON,
+        exact_names: &["package.json"],
+        name_prefixes: &[],
+        path_prefixes: &[],
+        extensions: &[],
+    },
+    BuiltinLanguageRuleSpec {
+        id: "github_workflows",
+        rule: RULE_GITHUB_WORKFLOWS,
+        exact_names: &[],
+        name_prefixes: &[],
+        path_prefixes: &[".github/workflows/"],
+        extensions: &[".yml", ".yaml"],
+    },
+    BuiltinLanguageRuleSpec {
+        id: "docker",
+        rule: RULE_DOCKER,
+        exact_names: &["dockerfile"],
+        name_prefixes: &["dockerfile.", "docker-compose"],
+        path_prefixes: &[],
+        extensions: &[],
+    },
+    BuiltinLanguageRuleSpec {
+        id: "rust",
+        rule: RULE_RUST,
+        exact_names: &[],
+        name_prefixes: &[],
+        path_prefixes: &[],
+        extensions: &[".rs"],
+    },
+    BuiltinLanguageRuleSpec {
+        id: "ts_js_tsx_jsx",
+        rule: RULE_TS_JS,
+        exact_names: &[],
+        name_prefixes: &[],
+        path_prefixes: &[],
+        extensions: &[".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs"],
+    },
+    BuiltinLanguageRuleSpec {
+        id: "python",
+        rule: RULE_PYTHON,
+        exact_names: &[],
+        name_prefixes: &[],
+        path_prefixes: &[],
+        extensions: &[".py"],
+    },
+    BuiltinLanguageRuleSpec {
+        id: "go",
+        rule: RULE_GO,
+        exact_names: &[],
+        name_prefixes: &[],
+        path_prefixes: &[],
+        extensions: &[".go"],
+    },
+    BuiltinLanguageRuleSpec {
+        id: "sql",
+        rule: RULE_SQL,
+        exact_names: &["schema.prisma"],
+        name_prefixes: &[],
+        path_prefixes: &[],
+        extensions: &[".sql"],
+    },
+    BuiltinLanguageRuleSpec {
+        id: "java_kotlin",
+        rule: RULE_JAVA_KOTLIN,
+        exact_names: &[],
+        name_prefixes: &[],
+        path_prefixes: &[],
+        extensions: &[".java", ".kt", ".kts"],
+    },
+    BuiltinLanguageRuleSpec {
+        id: "c_cpp",
+        rule: RULE_C_CPP,
+        exact_names: &[],
+        name_prefixes: &[],
+        path_prefixes: &[],
+        extensions: &[".c", ".cc", ".cpp", ".h", ".hpp"],
+    },
+];
+
+/// Maps a file path to its built-in precision language/config rule checklist via declarative table lookup.
 /// Rules emphasize precision-over-recall and avoid duplicating deterministic compiler/linter checks.
 #[must_use]
 pub fn builtin_language_rule_for_path(rel_path: &str) -> (&'static str, &'static str) {
     let lower = rel_path.replace('\\', "/").to_ascii_lowercase();
     let file_name = lower.rsplit('/').next().unwrap_or(lower.as_str());
 
-    if file_name == "cargo.toml" {
-        return ("cargo_toml", RULE_CARGO_TOML);
-    }
-    if file_name == "package.json" {
-        return ("package_json", RULE_PACKAGE_JSON);
-    }
-    if lower.starts_with(".github/workflows/")
-        && (lower.ends_with(".yml") || lower.ends_with(".yaml"))
-    {
-        return ("github_workflows", RULE_GITHUB_WORKFLOWS);
-    }
-    if file_name == "dockerfile"
-        || file_name.starts_with("dockerfile.")
-        || file_name.starts_with("docker-compose")
-    {
-        return ("docker", RULE_DOCKER);
-    }
-
-    if lower.ends_with(".rs") {
-        return ("rust", RULE_RUST);
-    }
-    if lower.ends_with(".ts")
-        || lower.ends_with(".tsx")
-        || lower.ends_with(".js")
-        || lower.ends_with(".jsx")
-        || lower.ends_with(".mjs")
-        || lower.ends_with(".cjs")
-    {
-        return ("ts_js_tsx_jsx", RULE_TS_JS);
-    }
-    if lower.ends_with(".py") {
-        return ("python", RULE_PYTHON);
-    }
-    if lower.ends_with(".go") {
-        return ("go", RULE_GO);
-    }
-    if lower.ends_with(".sql") || file_name == "schema.prisma" {
-        return ("sql", RULE_SQL);
-    }
-    if lower.ends_with(".java") || lower.ends_with(".kt") || lower.ends_with(".kts") {
-        return ("java_kotlin", RULE_JAVA_KOTLIN);
-    }
-    if lower.ends_with(".c")
-        || lower.ends_with(".cc")
-        || lower.ends_with(".cpp")
-        || lower.ends_with(".h")
-        || lower.ends_with(".hpp")
-    {
-        return ("c_cpp", RULE_C_CPP);
-    }
-
-    ("default", RULE_DEFAULT)
+    BUILTIN_LANGUAGE_RULES
+        .iter()
+        .find(|spec| spec.matches(&lower, file_name))
+        .map_or(("default", RULE_DEFAULT), |spec| (spec.id, spec.rule))
 }
 
 const RULE_DEFAULT: &str = "\

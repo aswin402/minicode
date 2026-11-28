@@ -624,9 +624,45 @@ impl WorkingMemory {
         })
     }
 
-    /// Extracts completed `<section id="...">`, `<header id="...">`, `<nav>`, and `<footer>`
-    /// identifiers from an HTML document (requiring at least 25 lines so starter templates do not trigger).
+    /// Extracts completed `<section>`, `<header>`, `<nav>`, `<main>`, `<footer>`, and `data-ui`
+    /// landmark identifiers (`id`, semantic `class` base names, and `aria-label` tokens) from an
+    /// HTML document (requiring at least 25 lines so starter templates do not trigger).
     fn extract_html_section_ids(html_content: &str) -> std::collections::HashSet<String> {
+        const GENERIC_CSS_LAYOUT_TOKENS: &[&str] = &[
+            "sec",
+            "section",
+            "split",
+            "bleed",
+            "flush",
+            "container",
+            "wrapper",
+            "wrap",
+            "grid",
+            "flex",
+            "row",
+            "col",
+            "inner",
+            "outer",
+            "head",
+            "foot",
+            "site",
+            "main",
+            "page",
+            "dark",
+            "light",
+            "wide",
+            "full",
+            "reveal",
+            "active",
+            "hidden",
+            "visible",
+            "panel",
+            "card",
+            "box",
+            "block",
+            "band",
+            "cell",
+        ];
         let mut ids = std::collections::HashSet::new();
         if html_content.lines().count() < 25 {
             return ids;
@@ -640,6 +676,19 @@ impl WorkingMemory {
             ids.insert("footer".to_string());
         }
 
+        fn extract_attr_value<'a>(open_tag: &'a str, attr_name: &str) -> Option<&'a str> {
+            for quote in ['"', '\''] {
+                let pat = format!("{attr_name}={quote}");
+                if let Some(rel) = open_tag.find(&pat) {
+                    let val_start = rel + pat.len();
+                    if let Some(val_end_rel) = open_tag[val_start..].find(quote) {
+                        return Some(&open_tag[val_start..val_start + val_end_rel]);
+                    }
+                }
+            }
+            None
+        }
+
         let mut search_pos = 0;
         while let Some(rel_lt) = lower[search_pos..].find('<') {
             let tag_start = search_pos + rel_lt;
@@ -648,26 +697,55 @@ impl WorkingMemory {
                 || rest.starts_with("<header")
                 || rest.starts_with("<footer")
                 || rest.starts_with("<nav")
-                || rest.starts_with("<main");
-            if is_section_like {
+                || rest.starts_with("<main")
+                || rest.starts_with("<article");
+            let is_interactive_ui = rest.starts_with("<div");
+            if is_section_like || is_interactive_ui {
                 if let Some(rel_gt) = rest.find('>') {
                     let open_tag = &rest[..rel_gt];
+                    if is_interactive_ui && !open_tag.contains("data-ui=") {
+                        search_pos = tag_start + rel_gt + 1;
+                        continue;
+                    }
                     // If this is a <section>, verify that a closing </section> exists after it
                     let has_closing =
                         !rest.starts_with("<section") || rest[rel_gt..].contains("</section>");
                     if has_closing {
-                        for attr in ["id=\"", "id='"] {
-                            if let Some(id_start_rel) = open_tag.find(attr) {
-                                let quote = attr.chars().last().unwrap_or('"');
-                                let val_start = id_start_rel + attr.len();
-                                if let Some(val_end_rel) = open_tag[val_start..].find(quote) {
-                                    let raw_id = &open_tag[val_start..val_start + val_end_rel];
-                                    for tok in raw_id
-                                        .split(|c: char| !c.is_ascii_alphanumeric())
-                                        .filter(|t| t.len() >= 3)
-                                    {
+                        if let Some(raw_id) = extract_attr_value(open_tag, "id") {
+                            for tok in raw_id
+                                .split(|c: char| !c.is_ascii_alphanumeric())
+                                .filter(|t| t.len() >= 3)
+                            {
+                                ids.insert(tok.to_string());
+                            }
+                        }
+                        if let Some(raw_cls) = extract_attr_value(open_tag, "class") {
+                            for cls_tok in raw_cls.split_whitespace() {
+                                // Only take semantic base class names (before BEM `__`/`--` modifiers)
+                                let base = cls_tok
+                                    .split("__")
+                                    .next()
+                                    .unwrap_or(cls_tok)
+                                    .split("--")
+                                    .next()
+                                    .unwrap_or(cls_tok);
+                                for tok in base
+                                    .split(|c: char| !c.is_ascii_alphanumeric())
+                                    .filter(|t| t.len() >= 3)
+                                {
+                                    if !GENERIC_CSS_LAYOUT_TOKENS.contains(&tok) {
                                         ids.insert(tok.to_string());
                                     }
+                                }
+                            }
+                        }
+                        if let Some(raw_aria) = extract_attr_value(open_tag, "aria-label") {
+                            for tok in raw_aria
+                                .split(|c: char| !c.is_ascii_alphanumeric())
+                                .filter(|t| t.len() >= 4)
+                            {
+                                if !GENERIC_CSS_LAYOUT_TOKENS.contains(&tok) {
+                                    ids.insert(tok.to_string());
                                 }
                             }
                         }
@@ -2622,107 +2700,107 @@ impl WorkingMemory {
             _ => false,
         };
 
-        // Direct macro transition: if the active step is a completed pure-deliverable step and the
-        // immediate next step is a verification gate, starting verification tools auto-completes the
-        // deliverable step so it never stays stuck until the end of verification.
-        // Stage 0 (Tactical Subplan -> Verification Milestone): If the active macro step is a
-        // non-verification deliverable step in `Mode: subplan` whose deliverables are 100% on disk
-        // and the agent begins running build/lint/browser commands for a subsequent verification
-        // macro step, auto-close remaining non-verification (or intermediate static smoke) substeps
-        // across consecutive completed macro steps until reaching the active verification milestone.
-        if self.is_tactical_subplan()
-            && (starts_browser_stage || Self::tool_runs_static_build_or_lint(tool_name, tool_args))
-        {
-            for _ in 0..8 {
-                if !self.is_tactical_subplan() {
-                    break;
-                }
-                let milestones = self.read_roadmap_milestones();
-                let Some(m) = milestones.iter().find(|m| m.is_active) else {
-                    break;
-                };
-                let Some(parent_idx) = m
-                    .tasks
-                    .iter()
-                    .position(|t| t.status == TaskItemStatus::InProgress)
-                else {
-                    break;
-                };
-                let parent_title = &m.tasks[parent_idx].title;
-                let later_has_verification = m.tasks[(parent_idx + 1)..].iter().any(|t| {
-                    t.status != TaskItemStatus::Completed
-                        && Self::step_requires_runtime_verification(&t.title)
-                });
-                if Self::step_requires_runtime_verification(parent_title) || !later_has_verification
-                {
-                    break;
-                }
-                let sub_tasks = self.read_task_plan_tasks();
-                let remaining_indices: Vec<usize> = (0..sub_tasks.len())
-                    .filter(|&i| sub_tasks[i].status != TaskItemStatus::Completed)
-                    .collect();
-                if remaining_indices.is_empty() {
-                    break;
-                }
-                let subs_allow_close = remaining_indices.iter().all(|&i| {
-                    let t = &sub_tasks[i].title;
-                    !Self::step_requires_runtime_verification(t)
-                        || Self::is_deferrable_intermediate_smoke_substep(t)
-                });
-                let deliverables_ready =
-                    (Self::task_declares_verifiable_deliverables(parent_title)
-                        && self.are_task_deliverables_verified_on_disk(parent_idx, &m.tasks))
-                        || (self.is_step_deliverables_satisfied_on_disk(parent_idx, &m.tasks)
-                            && remaining_indices.iter().all(|&i| {
-                                Self::is_deferrable_intermediate_smoke_substep(&sub_tasks[i].title)
-                                    || self.is_step_deliverables_satisfied_on_disk(i, &sub_tasks)
-                            }));
-                if !subs_allow_close || !deliverables_ready {
-                    break;
-                }
-                let mut closed_in_pass = 0usize;
-                for i in remaining_indices {
-                    if self
-                        .update_progress(&sub_tasks[i].title, "completed")
-                        .is_ok()
+        // Unified Stage 0 (Deliverable Macros -> Verification Milestone):
+        // Whether the active non-verification macro step is in `Mode: subplan` or `Mode: direct`
+        // (e.g. a single-section step with `substeps: []` interleaved between subplan steps), when
+        // its deliverables are verified on disk and the agent begins running build/lint/browser
+        // verification for a subsequent uncompleted verification milestone, advance cleanly through
+        // consecutive verified deliverable steps until reaching the active verification milestone.
+        if starts_browser_stage || Self::tool_runs_static_build_or_lint(tool_name, tool_args) {
+            let max_passes = self
+                .read_roadmap_milestones()
+                .iter()
+                .find(|m| m.is_active)
+                .map_or(8, |m| m.tasks.len().max(8));
+            for _ in 0..max_passes {
+                if self.is_tactical_subplan() {
+                    let milestones = self.read_roadmap_milestones();
+                    let Some(m) = milestones.iter().find(|m| m.is_active) else {
+                        break;
+                    };
+                    let Some(parent_idx) = m
+                        .tasks
+                        .iter()
+                        .position(|t| t.status == TaskItemStatus::InProgress)
+                    else {
+                        break;
+                    };
+                    let parent_title = &m.tasks[parent_idx].title;
+                    let later_has_verification = m.tasks[(parent_idx + 1)..].iter().any(|t| {
+                        t.status != TaskItemStatus::Completed
+                            && Self::step_requires_runtime_verification(&t.title)
+                    });
+                    if Self::step_requires_runtime_verification(parent_title)
+                        || !later_has_verification
                     {
-                        closed_in_pass += 1;
+                        break;
+                    }
+                    let sub_tasks = self.read_task_plan_tasks();
+                    let remaining_indices: Vec<usize> = (0..sub_tasks.len())
+                        .filter(|&i| sub_tasks[i].status != TaskItemStatus::Completed)
+                        .collect();
+                    if remaining_indices.is_empty() {
+                        break;
+                    }
+                    let subs_allow_close = remaining_indices.iter().all(|&i| {
+                        let t = &sub_tasks[i].title;
+                        !Self::step_requires_runtime_verification(t)
+                            || Self::is_deferrable_intermediate_smoke_substep(t)
+                    });
+                    let deliverables_ready =
+                        (Self::task_declares_verifiable_deliverables(parent_title)
+                            && self.are_task_deliverables_verified_on_disk(parent_idx, &m.tasks))
+                            || (self.is_step_deliverables_satisfied_on_disk(parent_idx, &m.tasks)
+                                && remaining_indices.iter().all(|&i| {
+                                    Self::is_deferrable_intermediate_smoke_substep(
+                                        &sub_tasks[i].title,
+                                    ) || self.is_step_deliverables_satisfied_on_disk(i, &sub_tasks)
+                                }));
+                    if !subs_allow_close || !deliverables_ready {
+                        break;
+                    }
+                    let mut closed_in_pass = 0usize;
+                    for i in remaining_indices {
+                        if self
+                            .update_progress(&sub_tasks[i].title, "completed")
+                            .is_ok()
+                        {
+                            closed_in_pass += 1;
+                        }
+                    }
+                    if closed_in_pass == 0 {
+                        break;
+                    }
+                    reconciled += closed_in_pass;
+                } else {
+                    let tasks = self.read_parsed_tasks();
+                    let Some(active_idx) = tasks
+                        .iter()
+                        .position(|t| t.status == TaskItemStatus::InProgress)
+                    else {
+                        break;
+                    };
+                    let active_title = &tasks[active_idx].title;
+                    let later_has_verification = tasks[(active_idx + 1)..].iter().any(|t| {
+                        t.status != TaskItemStatus::Completed
+                            && (Self::is_verification_gate_step(&t.title)
+                                || Self::step_requires_runtime_verification(&t.title))
+                    });
+                    if Self::step_requires_runtime_verification(active_title)
+                        || !later_has_verification
+                        || !self.is_step_deliverables_satisfied_on_disk(active_idx, &tasks)
+                    {
+                        break;
+                    }
+                    if self.update_progress(active_title, "completed").is_ok() {
+                        reconciled += 1;
+                    } else {
+                        break;
                     }
                 }
-                if closed_in_pass == 0 {
-                    break;
-                }
-                reconciled += closed_in_pass;
             }
             if reconciled > 0 {
                 self.record_auto_promoted_active_step();
-                return reconciled;
-            }
-        }
-
-        if !self.is_tactical_subplan()
-            && (starts_browser_stage || Self::tool_runs_static_build_or_lint(tool_name, tool_args))
-        {
-            let tasks = self.read_parsed_tasks();
-            if let Some(active_idx) = tasks
-                .iter()
-                .position(|t| t.status == TaskItemStatus::InProgress)
-            {
-                let active_title = &tasks[active_idx].title;
-                if tasks
-                    .get(active_idx + 1)
-                    .is_some_and(|next_t| Self::is_verification_gate_step(&next_t.title))
-                    && !Self::step_requires_runtime_verification(active_title)
-                    && self.is_step_deliverables_satisfied_on_disk(active_idx, &tasks)
-                    && self.update_progress(active_title, "completed").is_ok()
-                {
-                    reconciled += 1;
-                }
-            }
-            if !self.is_tactical_subplan() {
-                if reconciled > 0 {
-                    self.record_auto_promoted_active_step();
-                }
                 return reconciled;
             }
         }
@@ -3622,6 +3700,11 @@ impl WorkingMemory {
             "into",
             "only",
             "none",
+            "markup",
+            "copy",
+            "chrome",
+            "layout",
+            "shell",
         ];
         let expanded = Self::expand_camelcase_to_lower(substep_title);
         let mut out = Vec::new();
@@ -3637,10 +3720,44 @@ impl WorkingMemory {
         out
     }
 
+    /// Checks whether a substep domain token (or its morphological root, `len >= 3`) appears in the
+    /// lowercased target file text on disk.
+    #[inline]
+    fn disk_content_matches_substep_token(disk_lower: &str, tok: &str) -> bool {
+        if disk_lower.contains(tok) {
+            return true;
+        }
+        let root = Self::morphological_root(tok);
+        root.len() >= 3 && disk_lower.contains(root)
+    }
+
+    /// Resolves candidate target files for a macro task: prefers explicit filenames in `macro_title`,
+    /// falling back to structured `target_files` declared on the matching node in `task_dag.json`
+    /// (essential for single-page HTML/CSS/JS plans whose macro titles describe sections rather than
+    /// repeating `index.html`, `assets/styles.css`, `assets/app.js` in every title).
+    fn macro_target_files(&self, macro_title: &str) -> Vec<String> {
+        let from_title = Self::extract_candidate_files(macro_title);
+        if !from_title.is_empty() {
+            return from_title;
+        }
+        let needle = Self::sanitize_step_title(macro_title).to_ascii_lowercase();
+        if needle.is_empty() {
+            return Vec::new();
+        }
+        crate::context::memory::task_dag::PlanDag::load(&self.workspace_root)
+            .and_then(|dag| {
+                dag.nodes
+                    .into_iter()
+                    .find(|n| Self::sanitize_step_title(&n.title).to_ascii_lowercase() == needle)
+            })
+            .map(|n| n.target_files)
+            .unwrap_or_default()
+    }
+
     /// Turn-end / `power_verify` intra-file substep content verification:
-    /// When the parent macro task declares explicit target file(s) (e.g. `src/index.css`) that were
-    /// modified and verified on disk, any remaining child substep without its own file path is
-    /// verified against the parent file's on-disk content.
+    /// When the parent macro task declares explicit target file(s) (in title or `task_dag.json`) that
+    /// were modified and verified on disk, any remaining child substep without its own file path is
+    /// verified against the parent target files' on-disk content.
     ///
     /// NOTE: Intentionally NEVER called from mid-turn `reconcile_preceding_tasks_on_step_transition`
     /// so writing a parent's deliverable file mid-turn leaves the active step `[>]` `DeliverablesReady`
@@ -3672,7 +3789,7 @@ impl WorkingMemory {
         }
 
         let mut reconciled = 0usize;
-        let parent_cands = Self::extract_candidate_files(&parent_task.title);
+        let parent_cands = self.macro_target_files(&parent_task.title);
 
         if !parent_cands.is_empty()
             && parent_cands
@@ -3710,7 +3827,9 @@ impl WorkingMemory {
                     }
                     let matched = tokens
                         .iter()
-                        .filter(|tok| parent_disk_lower.contains(tok.as_str()))
+                        .filter(|tok| {
+                            Self::disk_content_matches_substep_token(&parent_disk_lower, tok)
+                        })
                         .count();
                     if matched * 2 >= tokens.len()
                         && self.update_progress(&sub.title, "completed").is_ok()
@@ -3814,6 +3933,10 @@ impl WorkingMemory {
             if !self.is_candidate_completed_on_disk(m_path) {
                 return false;
             }
+            // Shared multi-section HTML documents can legitimately carry later macro sections in the same edit.
+            if m_path.ends_with(".html") || m_path.ends_with(".htm") {
+                return false;
+            }
             if macro_cands[parent_idx]
                 .iter()
                 .chain(all_sub_cands.iter())
@@ -3846,41 +3969,75 @@ impl WorkingMemory {
             })
         };
 
-        let moved_to_later_macro = modified_files.iter().any(|m_path| {
-            if !self.is_candidate_completed_on_disk(m_path) {
-                return false;
+        let mut html_section_ids = std::collections::HashSet::new();
+        for m_path in modified_files {
+            if (m_path.ends_with(".html") || m_path.ends_with(".htm"))
+                && self.is_candidate_completed_on_disk(m_path)
+            {
+                let full_path = self.workspace_root.join(m_path.trim_start_matches("./"));
+                if let Ok(content) = fs::read_to_string(&full_path) {
+                    html_section_ids.extend(Self::extract_html_section_ids(&content));
+                }
             }
-            let explicitly_claimed_by_later = macro_cands
-                .iter()
-                .enumerate()
-                .skip(parent_idx + 1)
-                .any(|(idx, cands)| {
-                    m.tasks[idx].status != TaskItemStatus::Completed
-                        && cands
+        }
+
+        let moved_to_later_macro = (!html_section_ids.is_empty()
+            && ((parent_idx + 1)..m.tasks.len()).any(|idx| {
+                if m.tasks[idx].status == TaskItemStatus::Completed
+                    || Self::is_verification_gate_step(&m.tasks[idx].title)
+                {
+                    return false;
+                }
+                let has_non_html = macro_cands[idx]
+                    .iter()
+                    .any(|c| !c.ends_with(".html") && !c.ends_with(".htm"));
+                if has_non_html {
+                    return false;
+                }
+                let clauses = Self::split_heading_clauses(&macro_heads[idx]);
+                !clauses.is_empty()
+                    && clauses.iter().all(|clause| {
+                        html_section_ids
                             .iter()
-                            .any(|c| Self::paths_match_by_components(m_path, c))
-                        && preceding_macros_satisfied(idx)
-                });
-            if explicitly_claimed_by_later {
-                return true;
-            }
-            let stems = Self::split_identifier_stem_tokens(m_path);
-            !stems.is_empty()
-                && ((parent_idx + 1)..m.tasks.len()).any(|idx| {
-                    m.tasks[idx].status != TaskItemStatus::Completed
-                        && !Self::is_verification_gate_step(&m.tasks[idx].title)
-                        && Self::is_file_owned_by_task(
-                            m_path,
-                            &stems,
-                            idx,
-                            &m.tasks,
-                            &macro_heads,
-                            &macro_lowers,
-                            &macro_cands,
-                        )
-                        && preceding_macros_satisfied(idx)
-                })
-        });
+                            .any(|sec_id| Self::stem_token_matches_task(sec_id, clause))
+                    })
+                    && preceding_macros_satisfied(idx)
+            }))
+            || modified_files.iter().any(|m_path| {
+                if !self.is_candidate_completed_on_disk(m_path) {
+                    return false;
+                }
+                let explicitly_claimed_by_later = macro_cands
+                    .iter()
+                    .enumerate()
+                    .skip(parent_idx + 1)
+                    .any(|(idx, cands)| {
+                        m.tasks[idx].status != TaskItemStatus::Completed
+                            && cands
+                                .iter()
+                                .any(|c| Self::paths_match_by_components(m_path, c))
+                            && preceding_macros_satisfied(idx)
+                    });
+                if explicitly_claimed_by_later {
+                    return true;
+                }
+                let stems = Self::split_identifier_stem_tokens(m_path);
+                !stems.is_empty()
+                    && ((parent_idx + 1)..m.tasks.len()).any(|idx| {
+                        m.tasks[idx].status != TaskItemStatus::Completed
+                            && !Self::is_verification_gate_step(&m.tasks[idx].title)
+                            && Self::is_file_owned_by_task(
+                                m_path,
+                                &stems,
+                                idx,
+                                &m.tasks,
+                                &macro_heads,
+                                &macro_lowers,
+                                &macro_cands,
+                            )
+                            && preceding_macros_satisfied(idx)
+                    })
+            });
 
         let mut reconciled = 0usize;
         if moved_to_later_macro {
@@ -3903,7 +4060,12 @@ impl WorkingMemory {
     /// Returns the number of tasks updated to `Completed`.
     pub fn reconcile_workspace_tasks(&self, modified_files: &[String]) -> usize {
         let mut reconciled = self.reconcile_subplan_intra_file_content(modified_files);
-        for _ in 0..8 {
+        let max_cascades = self
+            .read_roadmap_milestones()
+            .iter()
+            .find(|m| m.is_active)
+            .map_or(8, |m| m.tasks.len().max(8));
+        for _ in 0..max_cascades {
             let step_reconciled = self.reconcile_subplan_on_later_macro_transition(modified_files);
             if step_reconciled == 0 {
                 break;
@@ -4461,7 +4623,7 @@ impl WorkingMemory {
                                 })
                         })
                     {
-                        let parent_cands = Self::extract_candidate_files(&parent_task.title);
+                        let parent_cands = self.macro_target_files(&parent_task.title);
                         if !parent_cands.is_empty()
                             && parent_cands
                                 .iter()
@@ -4480,7 +4642,12 @@ impl WorkingMemory {
                                 }
                                 let matched = tokens
                                     .iter()
-                                    .filter(|tok| parent_disk_lower.contains(tok.as_str()))
+                                    .filter(|tok| {
+                                        Self::disk_content_matches_substep_token(
+                                            &parent_disk_lower,
+                                            tok,
+                                        )
+                                    })
                                     .count();
                                 if matched * 2 >= tokens.len() {
                                     return true;
@@ -4547,7 +4714,12 @@ impl WorkingMemory {
     ///   as `[x]` so `todo.md` never freezes at `0/N` or batches `update_progress` calls at the end.
     pub fn reconcile_preceding_tasks_on_step_transition(&self, modified_files: &[String]) -> usize {
         let mut reconciled = 0usize;
-        for _ in 0..8 {
+        let max_cascades = self
+            .read_roadmap_milestones()
+            .iter()
+            .find(|m| m.is_active)
+            .map_or(8, |m| m.tasks.len().max(8));
+        for _ in 0..max_cascades {
             let step_reconciled = self.reconcile_subplan_on_later_macro_transition(modified_files);
             if step_reconciled == 0 {
                 break;

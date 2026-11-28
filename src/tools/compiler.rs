@@ -12,6 +12,8 @@ use std::time::Duration;
 pub struct ScopedCompiler;
 
 struct CompilerCheckRule {
+    family: &'static str,
+    max_batch_checks: usize,
     extensions: &'static [&'static str],
     required_marker: Option<&'static str>,
     runner: fn(&Path, &str) -> Option<String>,
@@ -19,21 +21,29 @@ struct CompilerCheckRule {
 
 const COMPILER_CHECK_RULES: &[CompilerCheckRule] = &[
     CompilerCheckRule {
+        family: "rust",
+        max_batch_checks: 1,
         extensions: &[".rs"],
         required_marker: Some("Cargo.toml"),
         runner: ScopedCompiler::check_rust,
     },
     CompilerCheckRule {
+        family: "python",
+        max_batch_checks: 2,
         extensions: &[".py"],
         required_marker: None,
         runner: ScopedCompiler::check_python,
     },
     CompilerCheckRule {
+        family: "typescript",
+        max_batch_checks: 1,
         extensions: &[".ts", ".tsx"],
         required_marker: Some("tsconfig.json"),
         runner: ScopedCompiler::check_typescript,
     },
     CompilerCheckRule {
+        family: "go",
+        max_batch_checks: 1,
         extensions: &[".go"],
         required_marker: Some("go.mod"),
         runner: ScopedCompiler::check_go,
@@ -41,6 +51,17 @@ const COMPILER_CHECK_RULES: &[CompilerCheckRule] = &[
 ];
 
 impl ScopedCompiler {
+    /// Returns the `(compiler_family, max_batch_checks)` metadata for a modified file path
+    /// directly from `COMPILER_CHECK_RULES`, avoiding hardcoded extension branching in callers.
+    #[must_use]
+    pub fn check_budget_family(relative_path: &str) -> Option<(&'static str, usize)> {
+        let lower = relative_path.to_ascii_lowercase();
+        COMPILER_CHECK_RULES
+            .iter()
+            .find(|r| r.extensions.iter().any(|ext| lower.ends_with(ext)))
+            .map(|r| (r.family, r.max_batch_checks))
+    }
+
     /// Detects and executes a scoped compiler or linter check for the modified file/project
     /// using the declarative `COMPILER_CHECK_RULES` table (Rust, Python, TypeScript, Go).
     pub fn run_scoped_check(workspace_root: &Path, relative_path: &str) -> Option<String> {

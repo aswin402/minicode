@@ -75,6 +75,180 @@ fn toml_filter_cache() -> &'static RwLock<TomlCacheMap> {
     CACHE.get_or_init(|| RwLock::new(HashMap::new()))
 }
 
+/// Priority-ordered, trait-based output filter interface replacing hardcoded command `if/else`
+/// dispatch chains with extensible structural + command-aware filters.
+trait OutputFilter: Sync {
+    fn category(&self) -> &'static str;
+    fn try_apply(&self, primary_lower: &str, clean: &str, exit_code: Option<i32>)
+        -> Option<String>;
+}
+
+struct CargoTestFilter;
+impl OutputFilter for CargoTestFilter {
+    fn category(&self) -> &'static str {
+        "cargo"
+    }
+    fn try_apply(
+        &self,
+        primary_lower: &str,
+        clean: &str,
+        exit_code: Option<i32>,
+    ) -> Option<String> {
+        let matched = primary_lower.contains("cargo test")
+            || primary_lower.contains("cargo nextest")
+            || (clean.contains("running ") && clean.contains("test result:"));
+        matched.then(|| RtkFilter::filter_cargo_test(clean, exit_code))
+    }
+}
+
+struct PytestFilter;
+impl OutputFilter for PytestFilter {
+    fn category(&self) -> &'static str {
+        "test"
+    }
+    fn try_apply(
+        &self,
+        primary_lower: &str,
+        clean: &str,
+        exit_code: Option<i32>,
+    ) -> Option<String> {
+        let matched = primary_lower.contains("pytest")
+            || primary_lower.contains("unittest")
+            || (clean.contains("test session starts") && clean.contains("collected "));
+        matched.then(|| RtkFilter::filter_pytest(clean, exit_code))
+    }
+}
+
+struct VitestBunFilter;
+impl OutputFilter for VitestBunFilter {
+    fn category(&self) -> &'static str {
+        "test"
+    }
+    fn try_apply(
+        &self,
+        primary_lower: &str,
+        clean: &str,
+        exit_code: Option<i32>,
+    ) -> Option<String> {
+        let matched = primary_lower.contains("vitest") || primary_lower.contains("bun test");
+        matched.then(|| RtkFilter::filter_vitest_or_bun(clean, exit_code))
+    }
+}
+
+struct GitStatusFilter;
+impl OutputFilter for GitStatusFilter {
+    fn category(&self) -> &'static str {
+        "git"
+    }
+    fn try_apply(
+        &self,
+        primary_lower: &str,
+        clean: &str,
+        _exit_code: Option<i32>,
+    ) -> Option<String> {
+        let matched = primary_lower.starts_with("git ")
+            && primary_lower.contains(" status")
+            && !primary_lower.contains("--porcelain")
+            && !primary_lower.contains(" -s")
+            && !primary_lower.contains("--short");
+        matched.then(|| RtkFilter::filter_git_status(clean))
+    }
+}
+
+struct GitLogFilter;
+impl OutputFilter for GitLogFilter {
+    fn category(&self) -> &'static str {
+        "git"
+    }
+    fn try_apply(
+        &self,
+        primary_lower: &str,
+        clean: &str,
+        _exit_code: Option<i32>,
+    ) -> Option<String> {
+        let matched = primary_lower.starts_with("git ") && primary_lower.contains(" log");
+        matched.then(|| RtkFilter::filter_git_log(clean))
+    }
+}
+
+struct JestFilter;
+impl OutputFilter for JestFilter {
+    fn category(&self) -> &'static str {
+        "test"
+    }
+    fn try_apply(
+        &self,
+        primary_lower: &str,
+        clean: &str,
+        exit_code: Option<i32>,
+    ) -> Option<String> {
+        let matched = (primary_lower.contains("jest")
+            || primary_lower.contains("npm test")
+            || primary_lower.contains("yarn test")
+            || primary_lower.contains("pnpm test"))
+            && RtkFilter::has_jest_signature(clean);
+        matched.then(|| RtkFilter::filter_jest(clean, exit_code))
+    }
+}
+
+struct FsListFilter;
+impl OutputFilter for FsListFilter {
+    fn category(&self) -> &'static str {
+        "fs"
+    }
+    fn try_apply(
+        &self,
+        primary_lower: &str,
+        clean: &str,
+        _exit_code: Option<i32>,
+    ) -> Option<String> {
+        RtkFilter::is_ls_or_find_command(primary_lower).then(|| RtkFilter::filter_ls_or_find(clean))
+    }
+}
+
+struct GroupedLinterFilter;
+impl OutputFilter for GroupedLinterFilter {
+    fn category(&self) -> &'static str {
+        "lint"
+    }
+    fn try_apply(
+        &self,
+        _primary_lower: &str,
+        clean: &str,
+        _exit_code: Option<i32>,
+    ) -> Option<String> {
+        RtkFilter::filter_linter_grouped(clean)
+    }
+}
+
+struct AlignedCliTableFilter;
+impl OutputFilter for AlignedCliTableFilter {
+    fn category(&self) -> &'static str {
+        "table"
+    }
+    fn try_apply(
+        &self,
+        _primary_lower: &str,
+        clean: &str,
+        _exit_code: Option<i32>,
+    ) -> Option<String> {
+        RtkFilter::is_aligned_cli_table(clean).then(|| RtkFilter::filter_table_cli(clean))
+    }
+}
+
+/// Ordered registry of built-in output filters (highest specificity first, structural probes last).
+const BUILTIN_OUTPUT_FILTERS: &[&dyn OutputFilter] = &[
+    &CargoTestFilter,
+    &PytestFilter,
+    &VitestBunFilter,
+    &GitStatusFilter,
+    &GitLogFilter,
+    &JestFilter,
+    &FsListFilter,
+    &GroupedLinterFilter,
+    &AlignedCliTableFilter,
+];
+
 impl RtkFilter {
     /// Intercepts and condenses command output based on command type, using active context window.
     pub fn filter(command: &str, output: &str, exit_code: Option<i32>) -> FilterResult {
@@ -165,41 +339,13 @@ impl RtkFilter {
         };
 
         let (mut filtered, category, mut specialized): (String, &'static str, bool) =
-            if primary_lower.contains("cargo test") || primary_lower.contains("cargo nextest") {
-                (Self::filter_cargo_test(&clean, exit_code), "cargo", true)
-            } else if primary_lower.contains("pytest") || primary_lower.contains("unittest") {
-                (Self::filter_pytest(&clean, exit_code), "test", true)
-            } else if primary_lower.contains("vitest") || primary_lower.contains("bun test") {
-                (Self::filter_vitest_or_bun(&clean, exit_code), "test", true)
-            } else if primary_lower.starts_with("git ")
-                && primary_lower.contains(" status")
-                && !primary_lower.contains("--porcelain")
-                && !primary_lower.contains(" -s")
-                && !primary_lower.contains("--short")
-            {
-                (Self::filter_git_status(&clean), "git", true)
-            } else if primary_lower.starts_with("git ") && primary_lower.contains(" log") {
-                (Self::filter_git_log(&clean), "git", true)
-            } else if (primary_lower.contains("jest")
-                || primary_lower.contains("npm test")
-                || primary_lower.contains("yarn test")
-                || primary_lower.contains("pnpm test"))
-                && Self::has_jest_signature(&clean)
-            {
-                (Self::filter_jest(&clean, exit_code), "test", true)
-            } else if Self::is_ls_or_find_command(&primary_lower) {
-                (Self::filter_ls_or_find(&clean), "fs", true)
-            } else if let Some(grouped) = Self::filter_linter_grouped(&clean) {
-                // Structural diagnostic probe: automatically groups repeated diagnostics from ANY
-                // compiler/linter (`tsc`, `eslint`, `ruff`, `mypy`, `clippy`, `gcc`, `go vet`, `javac`, etc.)
-                (grouped, "lint", true)
-            } else if Self::is_aligned_cli_table(&clean) {
-                // Structural column-alignment probe: automatically compacts ANY aligned CLI table
-                // (`docker ps`, `kubectl get`, `helm list`, `gh pr list`, `ps aux`, `df -h`, etc.)
-                (Self::filter_table_cli(&clean), "table", true)
-            } else {
-                (generic_fallback(), "generic", false)
-            };
+            BUILTIN_OUTPUT_FILTERS
+                .iter()
+                .find_map(|f| {
+                    f.try_apply(&primary_lower, &clean, exit_code)
+                        .map(|out| (out, f.category(), true))
+                })
+                .unwrap_or_else(|| (generic_fallback(), "generic", false));
 
         // Non-empty preservation invariant: a compaction filter must never erase 100% of non-empty stdout/stderr.
         if !clean.trim().is_empty() && filtered.trim().is_empty() {

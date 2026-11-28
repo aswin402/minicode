@@ -2055,7 +2055,7 @@ pub fn extract_first_ghost_word(ghost: &str) -> &str {
 
 fn is_ast_source_file(path: &Path) -> bool {
     let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
-    matches!(ext, "rs" | "ts" | "tsx" | "js" | "jsx" | "py")
+    crate::context::repomap::RepoMapExtractor::supports_extension(ext)
 }
 
 fn classify_symbol_kind(raw_kind: &str) -> Option<(&'static str, bool)> {

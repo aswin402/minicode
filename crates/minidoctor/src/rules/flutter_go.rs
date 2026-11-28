@@ -1,26 +1,116 @@
-//! Real native Rust structural scanners for Flutter/Dart (upgrading `flutter_doctor`'s Phase-1
-//! rule catalog into live static diagnostics) and Go.
+//! Real native Rust structural scanners for Flutter/Dart (zero-regex token lexer & brace-balanced
+//! state machine) and Go.
 
 use crate::detector::LoadedFile;
 use crate::rules::make_diag;
 use crate::types::{Diagnostic, DiagnosticCategory, Severity};
-use regex::Regex;
-use std::sync::OnceLock;
 
-fn controller_decl_re() -> &'static Regex {
-    static RE: OnceLock<Regex> = OnceLock::new();
-    RE.get_or_init(|| {
-        Regex::new(r#"\b(?:TextEditingController|AnimationController|ScrollController|PageController|TabController|FocusNode)\s+([_a-zA-Z]\w*)"#)
-            .unwrap_or_else(|_| Regex::new("a^").unwrap_or_else(|_| unreachable!()))
-    })
+const FLUTTER_CONTROLLER_TYPES: &[&str] = &[
+    "TextEditingController",
+    "AnimationController",
+    "ScrollController",
+    "PageController",
+    "TabController",
+    "FocusNode",
+];
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum DartTok<'a> {
+    Ident(&'a str),
+    Number,
+    Punct(u8),
 }
 
-fn flutter_const_re() -> &'static Regex {
-    static RE: OnceLock<Regex> = OnceLock::new();
-    RE.get_or_init(|| {
-        Regex::new(r#"\b(SizedBox\((?:height|width)\s*:\s*\d+(?:\.\d+)?\)|EdgeInsets\.all\(\d+(?:\.\d+)?\))"#)
-            .unwrap_or_else(|_| Regex::new("a^").unwrap_or_else(|_| unreachable!()))
-    })
+/// Deterministic zero-regex Dart line lexer (skips inline comments and string literals).
+fn lex_dart_line(line: &str) -> Vec<DartTok<'_>> {
+    let bytes = line.as_bytes();
+    let mut toks = Vec::new();
+    let mut i = 0;
+    while i < bytes.len() {
+        let b = bytes[i];
+        if b.is_ascii_whitespace() {
+            i += 1;
+            continue;
+        }
+        if b == b'/' && bytes.get(i + 1) == Some(&b'/') {
+            break;
+        }
+        if b == b'\'' || b == b'"' {
+            let q = b;
+            i += 1;
+            while i < bytes.len() {
+                if bytes[i] == b'\\' {
+                    i += 2;
+                    continue;
+                }
+                if bytes[i] == q {
+                    i += 1;
+                    break;
+                }
+                i += 1;
+            }
+            continue;
+        }
+        if b.is_ascii_alphabetic() || b == b'_' {
+            let start = i;
+            i += 1;
+            while i < bytes.len() && (bytes[i].is_ascii_alphanumeric() || bytes[i] == b'_') {
+                i += 1;
+            }
+            toks.push(DartTok::Ident(&line[start..i]));
+            continue;
+        }
+        if b.is_ascii_digit() {
+            i += 1;
+            while i < bytes.len() && (bytes[i].is_ascii_digit() || bytes[i] == b'.') {
+                i += 1;
+            }
+            toks.push(DartTok::Number);
+            continue;
+        }
+        toks.push(DartTok::Punct(b));
+        i += 1;
+    }
+    toks
+}
+
+/// Extracts `<ControllerType> <varName>` declarations from a tokenized Dart line.
+fn extract_controller_var<'a>(toks: &[DartTok<'a>]) -> Option<&'a str> {
+    for w in toks.windows(2) {
+        if let [DartTok::Ident(ty), DartTok::Ident(var)] = w {
+            if FLUTTER_CONTROLLER_TYPES.contains(ty) {
+                return Some(var);
+            }
+        }
+    }
+    None
+}
+
+/// Detects non-const `SizedBox(height|width: <num>)` or `EdgeInsets.all(<num>)` via token grammar.
+fn has_missing_const_widget(toks: &[DartTok<'_>]) -> bool {
+    for i in 0..toks.len() {
+        let preceded_by_const = i > 0 && toks[i - 1] == DartTok::Ident("const");
+        if preceded_by_const {
+            continue;
+        }
+        // Pattern A: `SizedBox` `(` (`height` | `width`) `:` `<num>` `)`
+        if let Some(
+            [DartTok::Ident("SizedBox"), DartTok::Punct(b'('), DartTok::Ident(dim), DartTok::Punct(b':'), DartTok::Number, DartTok::Punct(b')')],
+        ) = toks.get(i..i + 6)
+        {
+            if matches!(*dim, "height" | "width") {
+                return true;
+            }
+        }
+        // Pattern B: `EdgeInsets` `.` `all` `(` `<num>` `)`
+        if let Some(
+            [DartTok::Ident("EdgeInsets"), DartTok::Punct(b'.'), DartTok::Ident("all"), DartTok::Punct(b'('), DartTok::Number, DartTok::Punct(b')')],
+        ) = toks.get(i..i + 6)
+        {
+            return true;
+        }
+    }
+    false
 }
 
 /// Evaluates real Flutter / Dart diagnostics on `.dart` files.
@@ -33,16 +123,14 @@ pub fn check_flutter_dart(file: &LoadedFile, out: &mut Vec<Diagnostic>) {
 
     // 1. `flutter/dispose-controllers`: Controllers declared in a `State<...>` without `.dispose()`
     if src.contains("extends State<") {
-        let ctrl_re = controller_decl_re();
         for (idx, line) in lines.iter().enumerate() {
             let trimmed = line.trim();
             if trimmed.starts_with("//") {
                 continue;
             }
-            if let Some(caps) = ctrl_re.captures(line) {
-                let var = caps.get(1).map(|m| m.as_str()).unwrap_or("");
-                if !var.is_empty()
-                    && !src.contains(&format!("{var}.dispose()"))
+            let toks = lex_dart_line(line);
+            if let Some(var) = extract_controller_var(&toks) {
+                if !src.contains(&format!("{var}.dispose()"))
                     && !src.contains(&format!("{var}?.dispose()"))
                 {
                     out.push(make_diag(
@@ -90,7 +178,6 @@ pub fn check_flutter_dart(file: &LoadedFile, out: &mut Vec<Diagnostic>) {
     let mut brace_depth: i32 = 0;
     let mut async_start_depth: i32 = 0;
 
-    let const_re = flutter_const_re();
     let mut missing_const_hits = 0usize;
 
     for (idx, line) in lines.iter().enumerate() {
@@ -136,9 +223,14 @@ pub fn check_flutter_dart(file: &LoadedFile, out: &mut Vec<Diagnostic>) {
             }
         }
 
-        let opens = line.chars().filter(|&c| c == '{').count() as i32;
-        let closes = line.chars().filter(|&c| c == '}').count() as i32;
-        brace_depth += opens - closes;
+        let toks = lex_dart_line(line);
+        for tok in &toks {
+            match tok {
+                DartTok::Punct(b'{') => brace_depth += 1,
+                DartTok::Punct(b'}') => brace_depth -= 1,
+                _ => {}
+            }
+        }
         if in_async_method && brace_depth <= async_start_depth {
             in_async_method = false;
             saw_await = false;
@@ -161,7 +253,7 @@ pub fn check_flutter_dart(file: &LoadedFile, out: &mut Vec<Diagnostic>) {
         }
 
         // 5. `flutter/missing-const` (capped to avoid noisy spam in a single file)
-        if missing_const_hits < 3 && !trimmed.contains("const ") && const_re.is_match(trimmed) {
+        if missing_const_hits < 3 && has_missing_const_widget(&toks) {
             missing_const_hits += 1;
             out.push(make_diag(
                 "flutter/missing-const",

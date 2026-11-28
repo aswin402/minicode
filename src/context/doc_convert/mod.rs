@@ -188,10 +188,7 @@ impl StreamInfo {
             }
         }
 
-        let is_visual_image = matches!(
-            mime_type.as_str(),
-            "image/png" | "image/jpeg" | "image/gif" | "image/webp"
-        );
+        let is_visual_image = mime_type.starts_with("image/") && !is_utf8_text;
 
         Self {
             mime_type,
@@ -253,53 +250,60 @@ pub fn compute_shannon_entropy(bytes: &[u8]) -> f64 {
     h
 }
 
-/// Infers structured text MIME type purely from leading grammar tokens and structural markers.
+/// Infers structured text MIME type by probing real structural parsers (JSON root schema,
+/// streaming XML root element / namespace, HTML5 doctype, and statistical tabular variance).
 fn sniff_text_mime(bytes: &[u8], hint_mime: Option<&str>) -> String {
     let head = std::str::from_utf8(&bytes[..bytes.len().min(4096)]).unwrap_or("");
     let trimmed = head.trim_start_matches('\u{FEFF}').trim_start();
-    let lower_head = trimmed
-        .chars()
-        .take(512)
-        .collect::<String>()
-        .to_ascii_lowercase();
 
-    // Jupyter Notebook JSON structure: object containing both `"cells"` and `"nbformat"`
+    // 1. JSON structural root-key inspection (Jupyter Notebook schema: object with `nbformat` + `cells`)
     if trimmed.starts_with('{') {
-        let full_probe = std::str::from_utf8(&bytes[..bytes.len().min(65_536)]).unwrap_or(head);
-        if full_probe.contains("\"nbformat\"") && full_probe.contains("\"cells\"") {
-            return "application/x-ipynb+json".to_string();
+        if let Ok(serde_json::Value::Object(map)) =
+            serde_json::from_slice::<serde_json::Value>(bytes)
+        {
+            if map.contains_key("nbformat") && map.contains_key("cells") {
+                return "application/x-ipynb+json".to_string();
+            }
         }
     }
 
-    // RSS 2.0 / Atom 1.0 XML feeds
-    if lower_head.starts_with("<?xml")
-        || lower_head.starts_with("<rss")
-        || lower_head.starts_with("<feed")
-    {
-        if lower_head.contains("<rss") || lower_head.contains("<rdf:rdf") {
-            return "application/rss+xml".to_string();
+    // 2. Markup structural root-element inspection via our streaming XML DOM parser
+    if trimmed.starts_with('<') {
+        let head_prefix: String = trimmed.chars().take(64).collect();
+        if head_prefix
+            .to_ascii_lowercase()
+            .starts_with("<!doctype html")
+        {
+            return "text/html".to_string();
         }
-        if lower_head.contains("<feed") && lower_head.contains("http://www.w3.org/2005/atom") {
-            return "application/atom+xml".to_string();
+        let probe_len = bytes.len().min(16_384);
+        let probe_str = std::str::from_utf8(&bytes[..probe_len]).unwrap_or(trimmed);
+        if let Some(root) = xml::parse_xml_tree(probe_str) {
+            let root_name = root.local().to_ascii_lowercase();
+            match root_name.as_str() {
+                "rss" | "rdf" => return "application/rss+xml".to_string(),
+                "feed" => {
+                    let is_atom_ns = root
+                        .attr("xmlns")
+                        .is_some_and(|ns| ns.to_ascii_lowercase().contains("atom"));
+                    if is_atom_ns
+                        || root.first_child("entry").is_some()
+                        || root.first_child("title").is_some()
+                    {
+                        return "application/atom+xml".to_string();
+                    }
+                }
+                "html" => return "text/html".to_string(),
+                _ => {}
+            }
         }
-        if lower_head.contains("<feed") && lower_head.contains("<entry") {
-            return "application/atom+xml".to_string();
-        }
-    }
-
-    // HTML documents
-    if lower_head.starts_with("<!doctype html")
-        || lower_head.starts_with("<html")
-        || (lower_head.starts_with("<?xml") && lower_head.contains("<html"))
-    {
-        return "text/html".to_string();
     }
 
     if let Some(hint) = hint_mime {
         return hint.to_string();
     }
 
-    // Statistical tabular detection (minimum column-count variance across sample lines)
+    // 3. Statistical tabular detection (minimum column-count variance across sample lines)
     if structured::infer_tabular_delimiter(trimmed).is_some() {
         return "text/csv".to_string();
     }

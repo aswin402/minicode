@@ -218,7 +218,7 @@ impl PlanDag {
             assigned_ids.push(unique_id);
         }
 
-        let mut nodes = Vec::with_capacity(reconciled_steps.len());
+        let mut nodes: Vec<PlanDagNode> = Vec::with_capacity(reconciled_steps.len());
         for (idx, step_str) in reconciled_steps.iter().enumerate() {
             let clean_title = WorkingMemory::sanitize_step_title(step_str);
             let subs = reconciled_substeps.get(idx).cloned().unwrap_or_default();
@@ -255,21 +255,42 @@ impl PlanDag {
                 .map(|o| str_list(o, &["depends_on", "dependencies"]))
                 .unwrap_or_default();
             let depends_on: Vec<String> = if explicit_dependencies {
-                raw_deps
-                    .into_iter()
-                    .map(|dep| {
-                        if seen_ids.contains(&dep) {
-                            return dep;
+                if obj_opt.is_none() && idx > 0 {
+                    // Synthetically appended milestone step (not authored in raw JSON `steps`):
+                    // wire it cleanly after prior nodes instead of leaving it orphaned in Wave 0.
+                    if WorkingMemory::step_requires_runtime_verification(&clean_title) {
+                        let non_verify_prior: Vec<String> = nodes
+                            .iter()
+                            .filter(|n| {
+                                !WorkingMemory::step_requires_runtime_verification(&n.title)
+                            })
+                            .map(|n| n.id.clone())
+                            .collect();
+                        if non_verify_prior.is_empty() {
+                            vec![assigned_ids[idx - 1].clone()]
+                        } else {
+                            non_verify_prior
                         }
-                        if let Ok(one_based) = dep.parse::<usize>() {
-                            if one_based >= 1 && one_based <= assigned_ids.len() {
-                                return assigned_ids[one_based - 1].clone();
+                    } else {
+                        vec![assigned_ids[idx - 1].clone()]
+                    }
+                } else {
+                    raw_deps
+                        .into_iter()
+                        .map(|dep| {
+                            if seen_ids.contains(&dep) {
+                                return dep;
                             }
-                        }
-                        dep
-                    })
-                    .filter(|d| d != &assigned_ids[idx])
-                    .collect()
+                            if let Ok(one_based) = dep.parse::<usize>() {
+                                if one_based >= 1 && one_based <= assigned_ids.len() {
+                                    return assigned_ids[one_based - 1].clone();
+                                }
+                            }
+                            dep
+                        })
+                        .filter(|d| d != &assigned_ids[idx])
+                        .collect()
+                }
             } else if idx == 0 {
                 Vec::new()
             } else {

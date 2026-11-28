@@ -222,7 +222,7 @@ fn extract_file_containers(path: &Path, content: &str) -> Vec<StructuralContaine
             .collect();
     }
 
-    if matches!(ext, "rs" | "py" | "js" | "jsx" | "ts" | "tsx") {
+    if crate::context::repomap::RepoMapExtractor::supports_extension(ext) {
         let extractor = crate::context::repomap::RepoMapExtractor::new();
         if let Ok(symbols) = extractor.extract_symbols_from_str(ext, content) {
             return symbols

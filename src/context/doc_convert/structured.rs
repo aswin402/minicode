@@ -337,9 +337,33 @@ fn distill_inline_html(raw: &str) -> String {
 // 3. Statistical Delimited Table Converter (CSV/TSV/PSV, Priority 35)
 // ============================================================================
 
+/// Returns `true` when an unquoted cell contains unbalanced syntax delimiters (`()`, `{}`, `[]`),
+/// which occurs in source code expressions/declarations but not in flat tabular data cells.
+fn cell_has_unbalanced_brackets(cell: &str) -> bool {
+    let mut paren: i32 = 0;
+    let mut brace: i32 = 0;
+    let mut bracket: i32 = 0;
+    for b in cell.bytes() {
+        match b {
+            b'(' => paren += 1,
+            b')' => paren -= 1,
+            b'{' => brace += 1,
+            b'}' => brace -= 1,
+            b'[' => bracket += 1,
+            b']' => bracket -= 1,
+            _ => {}
+        }
+        if paren < 0 || brace < 0 || bracket < 0 {
+            return true;
+        }
+    }
+    paren != 0 || brace != 0 || bracket != 0
+}
+
 /// Statistically infers the most likely field delimiter among `[',', '\t', ';', '|']` by
 /// minimizing normalized column-count variance across the first 25 non-empty lines while
-/// rejecting prose or source code (zero regexes, zero extension hardcoding).
+/// rejecting prose or source code via purely structural & statistical invariants
+/// (zero regexes, zero extension hardcoding, zero language keyword lists).
 #[must_use]
 pub fn infer_tabular_delimiter(text: &str) -> Option<char> {
     const CANDIDATES: [char; 4] = [',', '\t', ';', '|'];
@@ -353,35 +377,58 @@ pub fn infer_tabular_delimiter(text: &str) -> Option<char> {
         return None;
     }
 
-    // Reject source code / JSON / Markdown / XML blocks immediately via structural invariants
+    // Structural container rejection: JSON objects/arrays and XML/HTML start with enclosure markers.
     let first = sample_lines[0].trim_start();
-    if first.starts_with('{')
-        || first.starts_with('[')
-        || first.starts_with('<')
-        || first.starts_with('#')
-        || first.starts_with("//")
-        || first.starts_with("/*")
-        || first.starts_with("use ")
-        || first.starts_with("pub ")
-        || first.starts_with("fn ")
-        || first.starts_with("import ")
-        || first.starts_with("def ")
-        || first.starts_with("class ")
-    {
+    if matches!(first.as_bytes().first(), Some(b'{' | b'[' | b'<')) {
+        return None;
+    }
+
+    // Reject source code blocks structurally via line-level syntax-punctuation density
+    // (balanced block braces `{`/`}` or statement-ending `;` without interior separators).
+    let brace_lines = sample_lines
+        .iter()
+        .filter(|l| {
+            let t = l.trim_end();
+            t.ends_with('{') || t.ends_with('}') || t == "};"
+        })
+        .count();
+    if brace_lines * 4 >= sample_lines.len() {
         return None;
     }
 
     let mut best: Option<(char, f64)> = None;
     for delim in CANDIDATES {
-        let counts: Vec<usize> = sample_lines
+        let rows: Vec<Vec<String>> = sample_lines
             .iter()
-            .map(|l| parse_rfc4180_row(l, delim).len())
+            .map(|l| parse_rfc4180_row(l, delim))
             .collect();
+        let counts: Vec<usize> = rows.iter().map(Vec::len).collect();
         let min_c = counts.iter().copied().min().unwrap_or(0);
         let max_c = counts.iter().copied().max().unwrap_or(0);
         if min_c < 2 || max_c > 128 {
             continue;
         }
+
+        // Reject statement-terminator false positives (e.g. `foo();` split on `;` -> `["foo()", ""]`):
+        // if >60% of rows end with an empty trailing cell, the candidate is a line terminator, not a column separator.
+        let trailing_empty_rows = rows
+            .iter()
+            .filter(|r| r.last().is_some_and(|c| c.is_empty()))
+            .count();
+        if trailing_empty_rows * 5 > rows.len() * 3 {
+            continue;
+        }
+
+        // Reject source-code argument lists / expressions where splitting on the delimiter fractures
+        // paired brackets (`fn foo(a, b)` -> unbalanced `(` in cell 0 and `)` in cell 1).
+        let unbalanced_rows = rows
+            .iter()
+            .filter(|r| r.iter().any(|cell| cell_has_unbalanced_brackets(cell)))
+            .count();
+        if unbalanced_rows * 5 > rows.len() {
+            continue;
+        }
+
         let mean = counts.iter().sum::<usize>() as f64 / counts.len() as f64;
         let variance = counts
             .iter()

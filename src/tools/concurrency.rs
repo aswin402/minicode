@@ -336,6 +336,79 @@ pub fn classify_tool_with_args(name: &str, args: &serde_json::Value) -> ToolSafe
     classify_tool(canonical)
 }
 
+/// Declarative capability bitflags describing tool behavior so agent-loop hooks and
+/// reconcilers query structured capabilities instead of repeating hardcoded tool-name lists.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct ToolCapabilities(u16);
+
+impl ToolCapabilities {
+    pub const READ_ONLY: u16 = 1 << 0;
+    pub const MUTATES_FS: u16 = 1 << 1;
+    pub const SHELL_EXEC: u16 = 1 << 2;
+    pub const VERIFICATION: u16 = 1 << 3;
+    pub const CONTENT_READER: u16 = 1 << 4;
+    pub const CONTROL_BARRIER: u16 = 1 << 5;
+    pub const SUBAGENT_DISPATCH: u16 = 1 << 6;
+
+    #[inline]
+    #[must_use]
+    pub const fn has(self, flag: u16) -> bool {
+        (self.0 & flag) != 0
+    }
+
+    #[inline]
+    #[must_use]
+    pub const fn is_shell_exec(self) -> bool {
+        self.has(Self::SHELL_EXEC)
+    }
+
+    #[inline]
+    #[must_use]
+    pub const fn is_verification(self) -> bool {
+        self.has(Self::VERIFICATION)
+    }
+
+    #[inline]
+    #[must_use]
+    pub const fn is_content_reader(self) -> bool {
+        self.has(Self::CONTENT_READER)
+    }
+}
+
+/// Resolves structured [`ToolCapabilities`] for any canonical or aliased tool name.
+#[must_use]
+pub fn tool_capabilities(name: &str) -> ToolCapabilities {
+    let canonical = crate::tools::meta::canonical_name(name);
+    let mut bits = 0u16;
+    match classify_tool(canonical) {
+        ToolSafetyLevel::ReadOnly => bits |= ToolCapabilities::READ_ONLY,
+        ToolSafetyLevel::ControlBarrier => bits |= ToolCapabilities::CONTROL_BARRIER,
+        ToolSafetyLevel::Mutating => {}
+    }
+    if crate::constants::FILE_MODIFYING_TOOLS.contains(&canonical) {
+        bits |= ToolCapabilities::MUTATES_FS;
+    }
+    if matches!(
+        canonical,
+        "exec_cmd" | "sandbox_exec" | "bash" | "shell" | "run_command"
+    ) {
+        bits |= ToolCapabilities::SHELL_EXEC;
+    }
+    if matches!(
+        canonical,
+        "power_verify" | "minipower_verify" | "project_doctor" | "minidoctor" | "doctor"
+    ) {
+        bits |= ToolCapabilities::VERIFICATION;
+    }
+    if matches!(canonical, "read_file" | "look_at" | "batch_read") {
+        bits |= ToolCapabilities::CONTENT_READER;
+    }
+    if is_subagent_dispatch_tool(canonical) {
+        bits |= ToolCapabilities::SUBAGENT_DISPATCH;
+    }
+    ToolCapabilities(bits)
+}
+
 /// Convenience helper to check if a tool is read-only.
 #[inline]
 #[allow(dead_code)]

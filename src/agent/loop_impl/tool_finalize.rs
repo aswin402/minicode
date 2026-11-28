@@ -684,36 +684,28 @@ impl AgentLoop {
                         let _ = event_sender.send(mod_ev);
                     }
                     if tool_result.success
-                        && matches!(tool_call.name.as_str(), "exec_cmd" | "sandbox_exec")
+                        && crate::tools::concurrency::tool_capabilities(&tool_call.name)
+                            .is_shell_exec()
                         && !tool_result.output.contains("[Compiler ")
                     {
-                        let mut checked_rs = false;
-                        let mut checked_ts = false;
-                        let mut checked_py = 0usize;
+                        let mut family_counts: std::collections::HashMap<&'static str, usize> =
+                            std::collections::HashMap::new();
                         let mut compiler_notes = Vec::new();
                         for rel_p in &newly_changed {
-                            let should_check = if rel_p.ends_with(".rs") && !checked_rs {
-                                checked_rs = true;
-                                true
-                            } else if (rel_p.ends_with(".ts") || rel_p.ends_with(".tsx"))
-                                && !checked_ts
+                            if let Some((family, max_checks)) =
+                                crate::tools::compiler::ScopedCompiler::check_budget_family(rel_p)
                             {
-                                checked_ts = true;
-                                true
-                            } else if rel_p.ends_with(".py") && checked_py < 2 {
-                                checked_py += 1;
-                                true
-                            } else {
-                                false
-                            };
-                            if should_check {
-                                if let Some(diag) =
-                                    crate::tools::compiler::ScopedCompiler::run_scoped_check(
-                                        &self.workspace_root,
-                                        rel_p,
-                                    )
-                                {
-                                    compiler_notes.push(diag);
+                                let count = family_counts.entry(family).or_insert(0);
+                                if *count < max_checks {
+                                    *count += 1;
+                                    if let Some(diag) =
+                                        crate::tools::compiler::ScopedCompiler::run_scoped_check(
+                                            &self.workspace_root,
+                                            rel_p,
+                                        )
+                                    {
+                                        compiler_notes.push(diag);
+                                    }
                                 }
                             }
                         }
@@ -915,10 +907,8 @@ impl AgentLoop {
                 self.fetch_tracker.invalidate_local_reads();
             } else {
                 if !output_for_llm.contains("[CCR Summary:")
-                    && matches!(
-                        crate::tools::meta::canonical_name(&tool_call.name),
-                        "read_file" | "look_at"
-                    )
+                    && crate::tools::concurrency::tool_capabilities(&tool_call.name)
+                        .is_content_reader()
                 {
                     if let Some(target_path) = crate::tools::param::opt_path(&tool_call.arguments) {
                         let start_l = tool_call
@@ -1049,18 +1039,34 @@ impl AgentLoop {
                 Some(&tool_result.output),
             );
             if !tool_images.is_empty() {
+                // Enforce a strict global active-image cap across ALL prior tool messages
+                // (not just after `kv_watermark_idx`), preventing multi-megabyte base64 PNG
+                // accumulation from bloating context >200K tokens and triggering transport timeouts.
+                const MAX_ACTIVE_TOOL_IMAGES: usize = 4;
+                let mut active_image_budget = tool_images.len();
                 tool_msg = tool_msg.with_images(tool_images);
-                let wm_idx = self.kv_watermark_idx.min(self.messages.len());
-                let mut seen_image_tools = 0usize;
-                for prev in self.messages[wm_idx..].iter_mut().rev() {
-                    if prev.role == crate::agent::types::Role::Tool
-                        && prev.images.as_ref().is_some_and(|imgs| !imgs.is_empty())
-                    {
-                        seen_image_tools += 1;
-                        if seen_image_tools >= 4 {
-                            prev.images = None;
+                let mut earliest_pruned_idx: Option<usize> = None;
+                for (msg_idx, prev) in self.messages.iter_mut().enumerate().rev() {
+                    if prev.role == crate::agent::types::Role::Tool {
+                        if let Some(ref imgs) = prev.images {
+                            if !imgs.is_empty() {
+                                if active_image_budget >= MAX_ACTIVE_TOOL_IMAGES {
+                                    let dropped = imgs.len();
+                                    prev.images = None;
+                                    prev.content.push_str(&format!(
+                                        "\n[{} earlier screenshot image(s) detached from active prompt to keep multimodal payload lean; files remain on disk]",
+                                        dropped
+                                    ));
+                                    earliest_pruned_idx = Some(msg_idx);
+                                } else {
+                                    active_image_budget += imgs.len();
+                                }
+                            }
                         }
                     }
+                }
+                if let Some(pruned_idx) = earliest_pruned_idx {
+                    self.kv_watermark_idx = self.kv_watermark_idx.min(pruned_idx);
                 }
             }
         }
@@ -1094,7 +1100,7 @@ impl AgentLoop {
             && !is_noop_progress_call
             && (tool_call.name.contains("plan")
                 || tool_call.name == "update_progress"
-                || matches!(tool_call.name.as_str(), "power_verify" | "minipower_verify")
+                || crate::tools::concurrency::tool_capabilities(&tool_call.name).is_verification()
                 || tool_call.arguments.to_string().contains("todo.md"))
         {
             self.emit_current_plan(Some(turn_id), event_sender);

@@ -237,40 +237,40 @@ impl AccessibilityManager {
                     );
                 }
 
+                const A11Y_NAME_FALLBACK_ATTRS: &[(&str, bool, bool)] = &[
+                    ("aria-label", true, false),
+                    ("title", true, false),
+                    ("alt", false, false),
+                    ("placeholder", true, false),
+                    ("value", false, true),
+                    ("name", true, false),
+                    ("id", true, false),
+                ];
                 let display_name = if !clean_name.is_empty() {
                     if is_sensitive {
                         "[MASKED]".to_string()
                     } else {
                         clean_name
                     }
-                } else if let Some(aria_label) =
-                    attrs.get("aria-label").filter(|s| !s.trim().is_empty())
-                {
-                    aria_label.trim().to_string()
-                } else if let Some(title) = attrs.get("title").filter(|s| !s.trim().is_empty()) {
-                    title.trim().to_string()
-                } else if let Some(alt) =
-                    extract_attribute(tag_content, "alt").filter(|s| !s.trim().is_empty())
-                {
-                    alt.trim().to_string()
-                } else if let Some(placeholder) =
-                    attrs.get("placeholder").filter(|s| !s.trim().is_empty())
-                {
-                    placeholder.trim().to_string()
-                } else if let Some(value) =
-                    extract_attribute(tag_content, "value").filter(|s| !s.trim().is_empty())
-                {
-                    if is_sensitive {
-                        "[MASKED]".to_string()
-                    } else {
-                        value.trim().to_string()
-                    }
-                } else if let Some(name) = attrs.get("name").filter(|s| !s.trim().is_empty()) {
-                    name.trim().to_string()
-                } else if let Some(id) = attrs.get("id").filter(|s| !s.trim().is_empty()) {
-                    id.trim().to_string()
                 } else {
-                    format!("Unnamed {}", default_role)
+                    A11Y_NAME_FALLBACK_ATTRS
+                        .iter()
+                        .find_map(|&(attr_key, use_map, mask_if_sensitive)| {
+                            let raw = if use_map {
+                                attrs.get(attr_key).cloned()
+                            } else {
+                                extract_attribute(tag_content, attr_key)
+                            };
+                            let val = raw
+                                .map(|s| s.trim().to_string())
+                                .filter(|s| !s.is_empty())?;
+                            Some(if mask_if_sensitive && is_sensitive {
+                                "[MASKED]".to_string()
+                            } else {
+                                val
+                            })
+                        })
+                        .unwrap_or_else(|| format!("Unnamed {}", default_role))
                 };
 
                 raw_elements.push(RawElement {
